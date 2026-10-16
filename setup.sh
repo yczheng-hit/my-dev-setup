@@ -128,7 +128,8 @@ step "pi configuration"
 # lastChangelogVersion, ...) are kept. "repo:<path>" package entries become
 # absolute paths into this checkout.
 settings_tmp="$(mktemp)"
-trap 'rm -f "$settings_tmp"' EXIT
+herdr_tmp=""
+trap 'rm -f "$settings_tmp"; if [ -n "$herdr_tmp" ]; then rm -f "$herdr_tmp"; fi' EXIT
 node -e '
   const fs = require("fs"), path = require("path");
   const [repo, src, dst, out] = process.argv.slice(1);
@@ -143,6 +144,10 @@ install_file "$settings_tmp" "$PI_DIR/settings.json"
 for f in keybindings.json pi-cc-extensions.json WATCHDOG.yml; do
   install_file "$REPO/pi/$f" "$PI_DIR/$f"
 done
+for theme in "$REPO"/pi/themes/*.json; do
+  [ -f "$theme" ] || continue
+  install_file "$theme" "$PI_DIR/themes/$(basename "$theme")"
+done
 install_file "$REPO/pi/permissions.json" "$(dirname "$PI_DIR")/permissions.json"
 
 # Extensions and per-extension config files, mirrored into $PI_DIR/extensions.
@@ -152,8 +157,22 @@ done
 
 # ---------------------------------------------------------------- herdr
 step "herdr configuration"
-install_file "$REPO/herdr/config.toml" "$HERDR_DIR/config.toml"
-if [ "$DRY_RUN" = 0 ]; then
+herdr_src="$REPO/herdr/config.toml"
+if [ ! -x /bin/zsh ]; then
+  if [ -x /bin/bash ]; then
+    herdr_tmp="$(mktemp)"
+    sed 's|^default_shell = "/bin/zsh"$|default_shell = "/bin/bash"|' "$herdr_src" > "$herdr_tmp"
+    herdr_src="$herdr_tmp"
+    log "shell      /bin/zsh unavailable; using /bin/bash"
+  else
+    warn "neither /bin/zsh nor /bin/bash is available; herdr config not applied"
+    herdr_src=""
+  fi
+fi
+if [ -n "$herdr_src" ]; then
+  install_file "$herdr_src" "$HERDR_DIR/config.toml"
+fi
+if [ "$DRY_RUN" = 0 ] && [ -n "$herdr_src" ]; then
   herdr config check || warn "herdr config check reported problems"
 fi
 

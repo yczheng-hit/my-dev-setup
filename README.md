@@ -35,7 +35,7 @@ git pull --ff-only
 - npm 插件按清单由 pi 在下一次启动时自动安装。版本未锁定，更新插件另行执行 `pi update --extensions`。
 - 官方 herdr integration 用 `herdr integration install pi` 安装，不搬运生成文件。
 - 同一个 herdr 插件 ID 如果已注册到另一个目录，保留原注册并警告，不偷偷替换。
-- 不读写 `auth.json`、`models.json`、`models-store.json`、session、日志、缓存。
+- 不读写 `auth.json`、`models.json`、`models-store.json`、session、日志、缓存。**部署配置与插件不需要登录或密钥**；只有实际使用需要认证的模型、联网服务时，才另行配置对应账号/凭据。
 
 > **配置的实际内容包含默认模型和权限规则。** 默认模型仅保存 ID，不保存 key；在没有这些模型的机器上，可以删除 `defaultProvider`、`defaultModel`、`enabledModels` 这几个字段，沿用本机选择。权限规则包含 SSH/SCP 的 allowlist，见 `pi/permissions.json` 与 `pi/extensions/picc-permission-modes/config.json`；不需要时应先删除对应项。
 >
@@ -54,7 +54,8 @@ my-dev-setup/
 ├── herdr/
 │   └── config.toml                         # Ctrl+Q prefix、blocked reason sidebar
 ├── pi/
-│   ├── settings.json                       # 插件清单、cc-dark 主题、UI、模型偏好
+│   ├── settings.json                       # 插件清单、claude-dark 主题、UI、模型偏好
+│   ├── themes/claude-dark.json              # 自定义主题
 │   ├── keybindings.json                    # Ctrl+E / Alt+T 切换 thinking，End 到行尾
 │   ├── pi-cc-extensions.json               # diff、卡片、footer 等 UI 偏好
 │   ├── WATCHDOG.yml                        # pi-omp-advisor 的 main watchdog 关闭
@@ -109,7 +110,8 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 1. **计划文件修复**：`EnterPlanMode` 立即返回当前 session 的确切计划路径；`ExitPlanMode` 在计划缺失、为空或不可读时留在 plan mode，要求先写计划，不弹批准窗口。
 2. **计划批准弹窗**：选项顺序改为 **1. bypass permissions（Enter 默认）**、2. accept edits（Shift+Tab）、3. 留在 plan mode；全屏模式下鼠标滚轮只滚动计划内容。
 3. **底栏交给 pi-hud-footer**：不再自己 `setFooter`，改为发布 `permission-mode` 状态；颜色可在 `modeColors` 配置。
-4. **（2026-10-15 新增）shell 解析错误不再打到屏幕上**：带 JS 模板字符串的 heredoc 会让 shell-quote 报 `Bad substitution`，原来被 `console.error` 直接画在编辑器和 HUD 上。现在默认静默；需要诊断时设置 `PICC_DEBUG=/绝对路径` 写入文件。权限判断不变。
+4. **shell 解析错误不再打到屏幕上**：带 JS 模板字符串的 heredoc 会让 shell-quote 报 `Bad substitution`，原来被 `console.error` 直接画在编辑器和 HUD 上。现在默认静默；需要诊断时设置 `PICC_DEBUG=/绝对路径` 写入文件。权限判断不变。
+5. **权限模式标签不再加粗**：RGB 颜色只设置前景色，不再发送 ANSI 粗体指令，避免底栏粗体样式泄漏到后续文字。
 
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 1 处本地改动：去掉 HUD 两行和工具行左侧的一个空格缩进。改动见 `patches/pi-hud-footer/0.8.0-local.patch`；已验证“npm 原版 + 这个 patch”与 `packages/pi-hud-footer` 完全一致。
 
@@ -123,17 +125,20 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-review (8.0.1)
 pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (6.4.6)  pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
+pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
 ```
 
 pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件），没有本地改动。
 
-`cc-dark` 主题由 `pi-cc-extensions` 提供。
+当前 `claude-dark` 主题由 `pi/themes/claude-dark.json` 部署，不需要借助 `pi-cc-extensions` 的 `cc-dark`。Pi 还设置 `hideThinkingBlock: true`（隐藏思考块）。
+
+**pi-cc-steer 的行为提示：** `git:github.com/panbergco/pi-cc-steer` 从公开上游 `main` 安装；除了对话中途插入消息，它默认还会替换 Pi 的 `bash` 工具，提供后台命令和 `bg_list` / `bg_output` / `bg_stop`，超时 120 秒的命令会转后台而非直接终止，原有 shell 路径/前缀设置可能被忽略。只要 steering、不想替换 bash 时，启动 Pi 前设置 `PI_CC_STEER_BACKGROUND=0`。`/reload` 会丢掉尚未交给模型的内存消息；详见插件自己的 README。
 
 ## 兼容性
 
 参考环境：herdr **0.9.3**、pi **1.2.0**、Node.js **24.x**。
 
-herdr 配置使用 `default_shell = "/bin/zsh"`。目标机器没有这个路径时，编辑 `herdr/config.toml` 改成可用 shell；不要盲目部署。
+herdr 模板配置使用 `/bin/zsh`；`setup.sh` 会在它不可用时自动生成使用 `/bin/bash` 的本机配置，不修改仓库里的模板。如果两个路径都不可用，会警告并跳过 herdr 配置。
 
 ## 日常维护
 
@@ -174,10 +179,10 @@ tmp=$(mktemp -d) && (cd "$tmp" && npm pack pi-hud-footer@<新版本> --silent &&
 
 ## 当前验证范围
 
-2026-10-16 同步后，在 Mac 临时 HOME 中完整运行两次：
+2026-10-16 最近一次同步后，在 Mac 临时 HOME 中完整运行：
 
 - 从 GitHub clone 了 pi-btw-split（`845ef90`）和 herdr-monitor（`38b164a`）；herdr-monitor 用 Python 3.12 装进 venv。第二次运行没有任何文件变化。
-- `settings.json` 合并后保留 `deviceId`；`pi list` 能解析 4 个本地包：picc-permission-modes、pi-btw-split、pi-hud-footer、pi-subagent-hud。
+- `settings.json` 合并后保留 `deviceId`；`pi list` 无报错，能解析 4 个本地包（picc-permission-modes、pi-btw-split、pi-hud-footer、pi-subagent-hud）和 `pi-cc-steer` 的 Git 源；主题文件也部署成功。
 - picc 全套测试：530 通过、4 失败、6 跳过。失败的 4 个与 `LOCAL-PATCH.md` 记录的既有失败完全相同（默认配置目录、bypass 下 deny 规则、`~` 计划路径、Windows 路径），不是这次改动引入的；新增的 parse-noise 测试通过。
 - pi-subagent-hud 单元测试 15/15 通过。
 - herdr 的 plugin/server 命令连到本机正在运行的 herdr，已有 `local.pi-btw-light` 注册指向 `~/tools/pi-btw-split`，所以只警告、没有替换。

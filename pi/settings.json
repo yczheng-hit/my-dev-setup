@@ -24,10 +24,11 @@
     "npm:pi-web-access",
     "npm:pi-sticky-last-prompt",
     "repo:packages/pi-hud-footer",
-    "repo:packages/pi-subagent-hud"
+    "repo:packages/pi-subagent-hud",
+    "git:github.com/panbergco/pi-cc-steer"
   ],
-  "hideThinkingBlock": false,
-  "theme": "cc-dark",
+  "hideThinkingBlock": true,
+  "theme": "claude-dark",
   "showHardwareCursor": true,
   "terminal": {
     "showTerminalProgress": true

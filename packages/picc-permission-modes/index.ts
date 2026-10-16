@@ -461,7 +461,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     const hex = /^#?([0-9a-f]{6})$/i.exec(color);
     if (hex) {
       const n = parseInt(hex[1], 16);
-      return `\u001b[1;38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}\u001b[22;39m`;
+      return `\u001b[38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}\u001b[39m`;
     }
     try {
       return theme ? theme.fg(color, text) : text;
