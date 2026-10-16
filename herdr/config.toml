@@ -5,13 +5,32 @@ default_shell = "/bin/zsh"
 
 [keys]
 prefix = "ctrl+q"
+focus_pane_up = "prefix+k"
+focus_pane_down = "prefix+j"
+focus_pane_left = "prefix+left"
+focus_pane_right = "prefix+right"
+previous_agent = "prefix+up"
+next_agent = "prefix+down"
+last_pane = "prefix+o"
+switch_tab = ""
+focus_agent = "prefix+1..9"
+
+[theme]
+name = "tokyo-night"
+auto_switch = false
 
 # Show why a pi pane is blocked (set by ~/.pi/agent/extensions/herdr-ui-prompt-blocked.ts)
 [ui.sidebar.agents]
 rows = [
-  ["state_icon", { token = "$blocked_reason", bold = true, rules = [
-    { equals = "plan ready", fg = "#89b4fa" },
-    { equals = "approval", fg = "#f38ba8" },
-  ] }, "machine", "workspace", "tab"],
+  [
+    "state_icon",
+    { token = "$blocked_reason", rules = [
+      { equals = "plan ready", fg = "#7aa2f7" },
+      { equals = "approval", fg = "#f7768e" },
+    ] },
+    "machine",
+    "workspace",
+    "tab",
+  ],
   ["agent"],
 ]

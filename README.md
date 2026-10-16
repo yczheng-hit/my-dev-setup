@@ -52,7 +52,7 @@ my-dev-setup/
 │   ├── pi-btw-split/
 │   └── herdr-monitor/
 ├── herdr/
-│   └── config.toml                         # Ctrl+Q prefix、blocked reason sidebar
+│   └── config.toml                         # 本机 Herdr 快捷键、tokyo-night 主题、blocked reason 侧栏
 ├── pi/
 │   ├── settings.json                       # 插件清单、claude-dark 主题、UI、模型偏好
 │   ├── themes/claude-dark.json              # 自定义主题
