@@ -1,0 +1,16 @@
+{
+  "name": "pi-subagent-hud",
+  "version": "0.1.2",
+  "private": true,
+  "description": "Show running pi-subagents children as claude-hud style segments on the HUD status line",
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/subagent-hud.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

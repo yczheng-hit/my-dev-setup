@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "language": "auto",
+  "style": "classic",
+  "cacheRateMode": "total",
+  "currency": "USD",
+  "exchangeRate": 6.8,
+  "display": {
+    "all": {
+      "toolsLine": false,
+      "modelName": true,
+      "tokenRate": true,
+      "turnDuration": false
+    },
+    "border": {
+      "toolsLine": true
+    }
+  },
+  "barWidth": 18,
+  "maxTools": 7,
+  "usageScope": "branch"
+}

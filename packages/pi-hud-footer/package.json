@@ -1,0 +1,51 @@
+{
+  "name": "pi-hud-footer",
+  "version": "0.8.0",
+  "description": "Claude HUD style custom footer for pi coding agent.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "statusline",
+    "footer",
+    "hud"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liao666brant/pi-hud-footer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/liao666brant/pi-hud-footer/issues"
+  },
+  "homepage": "https://github.com/liao666brant/pi-hud-footer#readme",
+  "files": [
+    "extensions",
+    "docs",
+    "examples",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/custom-footer.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
+    "@types/node": "24.12.4",
+    "typescript": "5.9.3"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

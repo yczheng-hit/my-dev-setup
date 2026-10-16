@@ -1,0 +1,462 @@
+--- a/enterPlanModeTool.ts
++++ b/enterPlanModeTool.ts
+@@ -1,5 +1,5 @@
+ import { Type } from "typebox";
+-import { defineTool } from "@earendil-works/pi-coding-agent";
++import { defineTool, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+ export const ENTER_PLAN_MODE_PROMPT = `Use this tool proactively when you're about to start a non-trivial implementation task. Getting user sign-off on your approach before writing code prevents wasted effort and ensures alignment. This tool transitions you into plan mode where you can explore the codebase and design an implementation approach for user approval.
+ ## When to Use This Tool
+ **Prefer using EnterPlanMode** for implementation tasks unless they're simple. Use it when ANY of these conditions apply:
+@@ -62,7 +62,7 @@
+ - If unsure whether to use it, err on the side of planning - it's better to get alignment upfront than to redo work
+ - Users appreciate being consulted before significant changes are made to their codebase`;
+ export interface EnterPlanModeState {
+-  onEnterPlanMode: () => void;
++  onEnterPlanMode: (ctx: ExtensionContext) => Promise<string>;
+   onDeclinePlanMode: () => void;
+ }
+ export function makeEnterPlanModeTool(state: EnterPlanModeState) {
+@@ -95,12 +95,12 @@
+           details: { entered: false, declined: true },
+         };
+       }
+-      state.onEnterPlanMode();
++      const instructions = await state.onEnterPlanMode(ctx);
+       return {
+         content: [
+           {
+             type: "text",
+-            text: "Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.",
++            text: `Entered plan mode. You should now focus on exploring the codebase and designing an implementation approach.\n\n${instructions}`,
+           },
+         ],
+         details: { entered: true, declined: false },
+--- a/exitPlanModeDialog.ts
++++ b/exitPlanModeDialog.ts
+@@ -6,6 +6,8 @@
+   type MarkdownTheme,
+   matchesKey,
+   type TUI,
++  type TuiMouseEvent,
++  type TuiMouseEventResult,
+ } from "@earendil-works/pi-tui";
+ import type { Theme } from "@earendil-works/pi-coding-agent";
+ import { shortenPath } from "./utils.ts";
+@@ -45,16 +47,16 @@
+ }
+ const OPTIONS_NORMAL: ExitPlanModeDialogOption[] = [
+   {
+-    id: "acceptEdits",
+-    label: "Yes, auto-accept edits on plan exit",
+-    shortcutHint: "shift+tab",
+-  },
+-  {
+     id: "bypassPermissions",
+     label: "Yes, bypass permissions on plan exit",
+     shortcutHint: "enter",
+   },
+   {
++    id: "acceptEdits",
++    label: "Yes, auto-accept edits on plan exit",
++    shortcutHint: "shift+tab",
++  },
++  {
+     id: "no",
+     label: "No, stay in plan mode",
+     shortcutHint: "esc",
+@@ -263,6 +265,15 @@
+     this.closed = true;
+     this.done(result);
+   }
++  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
++    if (this.closed || event.type !== "wheel") return undefined;
++    if (event.x < 0 || event.x >= event.width || event.y < 0 || event.y >= event.height) {
++      return undefined;
++    }
++    // Consume even boundary/no-op wheels so the conversation behind the
++    // approval overlay never scrolls. Pi owns wheel acceleration and redraws.
++    return { handled: true, render: this.scrollPlan(event.wheelDelta ?? 0) };
++  }
+   handleInput(data: string): void {
+     if (this.closed) return;
+     if (matchesKey(data, "escape")) {
+@@ -270,7 +281,7 @@
+       return;
+     }
+     if (matchesKey(data, "shift+tab")) {
+-      this.setSelectedIndex(0);
++      this.setSelectedIndex(this.options.findIndex((opt) => opt.id === "acceptEdits"));
+       this.finish({ action: "acceptEdits" });
+       return;
+     }
+@@ -419,25 +430,27 @@
+     return lines;
+   }
+   /** Build a one-line scroll indicator showing the current position
+-   *  within the plan. Format: "▼ line 23-58 of 120 · PgUp/PgDn to scroll". */
++   *  within the plan, with keyboard and fullscreen mouse-wheel hints. */
+   private scrollIndicator(start: number, total: number, visible: number): string {
+     const end = Math.min(start + visible, total);
+-    return `▼ ${start + 1}-${end} of ${total} · PgUp/PgDn to scroll`;
++    return `▼ ${start + 1}-${end} of ${total} · PgUp/PgDn to scroll · mouse wheel (fullscreen)`;
+   }
+   /** Adjust the plan scroll offset by `delta` rows, clamped to the
+    *  valid range `[0, maxScrollOffset]`. Ensures the plan is rendered
+    *  before trying to scroll so the cache is always populated. */
+-  private scrollPlan(delta: number): void {
++  private scrollPlan(delta: number): boolean {
+     const width = Math.max(10, this.cachedWidth > 0 ? this.cachedWidth : 80);
+     const planLines = this.getPlanLines(width);
+     const viewport = this.planViewportSize();
+     const scrollable = Math.max(1, viewport - 1);
+-    const maxOffset = Math.max(0, planLines.length - scrollable);
++    const maxOffset = planLines.length > viewport ? planLines.length - scrollable : 0;
+     const next = Math.max(0, Math.min(maxOffset, this.scrollOffset + delta));
+     if (next !== this.scrollOffset) {
+       this.scrollOffset = next;
+       this.invalidate();
++      return true;
+     }
++    return false;
+   }
+   /** Set the plan scroll offset to an absolute value, clamped to the
+    *  valid range. Ensures the plan is rendered before scrolling. */
+@@ -446,7 +459,7 @@
+     const planLines = this.getPlanLines(width);
+     const viewport = this.planViewportSize();
+     const scrollable = Math.max(1, viewport - 1);
+-    const maxOffset = Math.max(0, planLines.length - scrollable);
++    const maxOffset = planLines.length > viewport ? planLines.length - scrollable : 0;
+     const next = Math.max(0, Math.min(maxOffset, offset));
+     if (next !== this.scrollOffset) {
+       this.scrollOffset = next;
+--- a/exitPlanModeTool.ts
++++ b/exitPlanModeTool.ts
+@@ -21,14 +21,14 @@
+   feedback?: string;
+ }
+ const OPTIONS_TUI: string[] = [
+-  "Yes, auto-accept edits on plan exit",
+   "Yes, bypass permissions on plan exit",
++  "Yes, auto-accept edits on plan exit",
+   "No, stay in plan mode",
+   "No, and let me refine the plan",
+ ];
+ const OPTIONS_HEADLESS: string[] = [
+-  "Yes, auto-accept edits on plan exit",
+   "Yes, bypass permissions on plan exit",
++  "Yes, auto-accept edits on plan exit",
+   "No, stay in plan mode",
+ ];
+ const EXIT_PLAN_MODE_PROMPT = `Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval.
+@@ -73,15 +73,18 @@
+       ),
+     }),
+     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+-      let planText = "";
++      const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
++      let planText: string;
+       try {
+         planText = await state.planText(ctx);
+       } catch {
+-        planText = "(no plan file found)";
++        return planNotReadyResult(planPath, "unreadable-plan");
+       }
++      if (!planText.trim()) {
++        return planNotReadyResult(planPath, "missing-or-empty-plan");
++      }
+       let result: ExitPlanModeDialogResult;
+       if (ctx.hasUI) {
+-        const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
+         const factory = createExitPlanModeDialogFactory(
+           planText,
+           planPath,
+@@ -217,5 +220,18 @@
+   return `User has approved your plan. You can now start coding. Start with updating your todo list if applicable.
+ ## Approved Plan:
+ ${plan}`;
++}
++function planNotReadyResult(
++  planPath: string,
++  reason: "unreadable-plan" | "missing-or-empty-plan",
++) {
++  const problem = reason === "unreadable-plan" ? "could not be read" : "is missing or empty";
++  return {
++    content: [{
++      type: "text" as const,
++      text: `Cannot request plan approval: the plan file at ${planPath} ${problem}.\nYou are still in plan mode. Write the complete implementation plan to this exact path using the Write tool, then call ExitPlanMode again. Do not start implementation before the user approves a non-empty plan.`,
++    }],
++    details: { exited: false, reason, planPath },
++  };
+ }
+ export { OPTIONS_TUI, OPTIONS_HEADLESS };
+--- a/index.ts
++++ b/index.ts
+@@ -436,8 +436,54 @@
+    *  `persistState` to record the session's plan-file slug so `/resume`
+    *  reuses the same plan file. */
+   let currentSessionId: string = "";
++  // Local patch: status-chip colours. Override per mode in the user config
++  // (~/.pi/agent/extensions/picc-permission-modes/config.json):
++  //   "modeColors": { "bypassPermissions": "#ff5f5f", "plan": "#5fafff", ... }
++  // A value may be "#rrggbb" or a pi theme colour name ("error", "accent", ...);
++  // set "default" to a colour to also show a chip in default mode.
++  const DEFAULT_MODE_COLORS: Record<PermissionMode, string | null> = {
++    default: null,
++    acceptEdits: "#ccb1ff",
++    plan: "#5fafff",
++    bypassPermissions: "#ff5f5f",
++    auto: "#ffc107",
++  };
++  function loadModeColors(): Record<PermissionMode, string | null> {
++    try {
++      const raw = JSON.parse(readFileSync(resolvePermissionModesConfigPath(), "utf-8"));
++      const user = raw?.modeColors;
++      if (user && typeof user === "object") return { ...DEFAULT_MODE_COLORS, ...user };
++    } catch {
++    }
++    return DEFAULT_MODE_COLORS;
++  }
++  function paintModeText(theme: any, color: string, text: string): string {
++    const hex = /^#?([0-9a-f]{6})$/i.exec(color);
++    if (hex) {
++      const n = parseInt(hex[1], 16);
++      return `\u001b[1;38;2;${(n >> 16) & 255};${(n >> 8) & 255};${n & 255}m${text}\u001b[22;39m`;
++    }
++    try {
++      return theme ? theme.fg(color, text) : text;
++    } catch {
++      return text;
++    }
++  }
+   function updateStatus(ctx: ExtensionContext): void {
+     if (!ctx.hasUI) return;
++    try {
++      const color = loadModeColors()[currentMode];
++      if (!color) {
++        ctx.ui.setStatus("permission-mode", undefined);
++        return;
++      }
++      const meta = MODE_META[currentMode];
++      const text = meta.symbol
++        ? `${meta.symbol} ${meta.title.toLowerCase()}`
++        : meta.title.toLowerCase();
++      ctx.ui.setStatus("permission-mode", paintModeText((ctx.ui as any).theme, color, text));
++    } catch {
++    }
+   }
+   function persistState(): void {
+     const entry: ModesPersistedEntry = {
+@@ -603,16 +649,19 @@
+       "Start in a permission mode: default, acceptEdits, plan, bypassPermissions (or 'auto')",
+     type: "string",
+   });
+-  let lastCtx: ExtensionContext | null = null;
+   pi.registerTool(
+     makeEnterPlanModeTool({
+-      onEnterPlanMode: () => {
++      onEnterPlanMode: async (ctx) => {
+         const previous = currentMode;
+         state.ctx = {
+           ...state.ctx,
+           prePlanMode: previous,
+         };
+-        void setMode("plan", lastCtx ?? makeOfflineCtx(), {});
++        await setMode("plan", ctx, {});
++        // before_agent_start has already run when entry happens mid-turn.
++        // Return the exact path and full workflow now, not on the next prompt.
++        const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
++        return wrapInSystemReminder(planModeInstructions(planPath, existsSync(planPath)));
+       },
+       onDeclinePlanMode: () => {},
+     }),
+@@ -1254,23 +1303,8 @@
+     const sessionId = ctx.sessionManager.getSessionId();
+     const planPath = getPlanFilePath(sessionId);
+     if (!existsSync(planPath)) return "";
+-    try {
+-      return readFileSync(planPath, "utf-8");
+-    } catch {
+-      return "";
+-    }
++    return readFileSync(planPath, "utf-8");
+   }
+-  function makeOfflineCtx(): ExtensionContext {
+-    return {
+-      cwd: process.cwd(),
+-      sessionManager: { getSessionId: () => "ephemeral" } as any,
+-      hasUI: false,
+-      mode: "rpc",
+-      ui: {} as any,
+-      modelRegistry: { find: () => undefined } as any,
+-      model: undefined as any,
+-    } as unknown as ExtensionContext;
+-  }
+   pi.registerTool(
+     makeExitPlanModeTool({
+       planText: async (ctx) => readPlanFile(ctx),
+@@ -1327,117 +1361,14 @@
+     }
+     return undefined;
+   });
+-  function installFooter(ctx: ExtensionContext): void {
+-    if (!ctx.hasUI) return;
+-    const safeFg = (theme: any, color: string, text: string): string => {
+-      try {
+-        return theme.fg(color, text);
+-      } catch {
+-        return text;
+-      }
+-    };
+-    const formatModeLine = (
+-      mode: PermissionMode,
+-    ): { text: string; color: string; hint: string; isAcceptEdits: boolean; isAuto: boolean } => {
+-      const meta = MODE_META[mode];
+-      if (mode === "default") {
+-        return {
+-          text: meta.title,
+-          color: meta.color,
+-          hint: " (shift+tab to cycle)",
+-          isAcceptEdits: false,
+-          isAuto: false,
+-        };
+-      }
+-      const text = `${meta.symbol} ${meta.title.toLowerCase()} on`;
+-      return {
+-        text,
+-        color: meta.color,
+-        hint: " (shift+tab to cycle)",
+-        isAcceptEdits: mode === "acceptEdits",
+-        isAuto: mode === "auto",
+-      };
+-    };
+-    ctx.ui.setFooter((_tui: any, theme: any) => ({
+-      render(width: number): string[] {
+-        const cwd = shortenPath(ctx.cwd);
+-        const cwdText = state.gitBranch ? `${cwd} (${state.gitBranch})` : cwd;
+-        const usage = (ctx as any).getContextUsage?.();
+-        let ctxStr = "";
+-        if (usage && usage.tokens != null && usage.percent != null) {
+-          const fmtK = (n: number) =>
+-            n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`;
+-          ctxStr = `${fmtK(usage.tokens)}/${fmtK(usage.contextWindow)} ${usage.percent.toFixed(1)}%`;
+-        }
+-        const md = (ctx as any).model;
+-        let modelStr = "";
+-        if (md) {
+-          modelStr = md.name ? String(md.name) : String(md.id ?? "");
+-          const thinking =
+-            typeof (pi as any).getThinkingLevel === "function"
+-              ? (pi as any).getThinkingLevel()
+-              : undefined;
+-          if (thinking) modelStr += ` • ${thinking}`;
+-        }
+-        const mode = formatModeLine(currentMode);
+-        const modeHintW = visibleWidth(mode.hint);
+-        const modeBaseW = visibleWidth(mode.text);
+-        const modeFullW = modeBaseW + modeHintW;
+-        const showHint = modeBaseW + modeHintW + 1 <= width;
+-        const cwdW = visibleWidth(cwdText);
+-        const ctxW = visibleWidth(ctxStr);
+-        const modelW = visibleWidth(modelStr);
+-        if (cwdW + ctxW + modelW + 4 <= width) {
+-          const leftGap = Math.max(2, Math.floor((width - ctxW) / 2) - cwdW);
+-          const rightGap = width - cwdW - leftGap - ctxW - modelW;
+-          if (rightGap >= 12) {
+-            const line1 =
+-              safeFg(theme, "muted", cwdText) +
+-              " ".repeat(leftGap) +
+-              safeFg(theme, "dim", ctxStr) +
+-              " ".repeat(rightGap) +
+-              safeFg(theme, "dim", modelStr);
+-            const line2 =
+-              (mode.isAcceptEdits
+-                ? formatAcceptEditsText(theme, mode.text)
+-                : mode.isAuto
+-                  ? formatAutoModeText(theme, mode.text)
+-                  : safeFg(theme, mode.color, mode.text)) +
+-              (showHint ? safeFg(theme, "dim", mode.hint) : "");
+-            return [line1, line2];
+-          }
+-        }
+-        let cwdDisp = cwdText;
+-        let cwdDispW = cwdW;
+-        let ctxDisp = ctxStr;
+-        let ctxDispW = ctxW;
+-        if (cwdW + ctxW + 1 > width) {
+-          cwdDisp = truncateToWidth(cwdText, Math.max(4, width - ctxW - 1));
+-          cwdDispW = visibleWidth(cwdDisp);
+-        }
+-        const gap1 = Math.max(1, width - cwdDispW - ctxDispW);
+-        const line1 =
+-          safeFg(theme, "muted", cwdDisp) +
+-          " ".repeat(gap1) +
+-          safeFg(theme, "dim", ctxDisp);
+-        const line2 =
+-          (mode.isAcceptEdits
+-            ? formatAcceptEditsText(theme, mode.text)
+-            : mode.isAuto
+-              ? formatAutoModeText(theme, mode.text)
+-              : safeFg(theme, mode.color, mode.text)) +
+-          " ".repeat(Math.max(1, width - modeFullW)) +
+-          safeFg(theme, "dim", modelStr);
+-        return [line1, line2];
+-      },
+-      invalidate() {},
+-    }));
+-  }
++  // Local patch: do not take over the footer. The permission mode is published
++  // as the "permission-mode" status chip (see updateStatus) so that the
++  // pi-cc-extensions footer can render it (footerLine2Keys in pi-cc-extensions.json).
++  function installFooter(_ctx: ExtensionContext): void {}
+   async function onSessionStart(
+     event: { reason?: string; previousSessionFile?: string } | undefined,
+     ctx: ExtensionContext,
+   ): Promise<void> {
+-    lastCtx = ctx;
+     state.originalCwd = ctx.cwd;
+     currentSessionId = ctx.sessionManager.getSessionId();
+     const reason = event?.reason;
+@@ -1519,7 +1450,6 @@
+     _event: unknown,
+     ctx: ExtensionContext,
+   ): Promise<void> {
+-    lastCtx = ctx;
+     await refreshSessionContext(ctx);
+   }
+   function applyFlagOverride(): void {
+@@ -1588,7 +1518,4 @@
+   }
+   pi.on("session_start", onSessionStart);
+   pi.on("session_tree", onSessionTree);
+-  pi.on("session_shutdown", () => {
+-    lastCtx = null;
+-  });
+ }
+\ No newline at end of file
+--- a/upstream/_compat/stubs.ts
++++ b/upstream/_compat/stubs.ts
+@@ -1,10 +1,18 @@
++import { appendFileSync } from "node:fs";
++import { isAbsolute } from "node:path";
++
++/**
++ * Diagnostics only: every caller (upstream/utils/bash/shellQuote.ts) already reports the failure.
++ * Never write to stdout/stderr — under Pi's TUI raw writes land on top of the screen (seen:
++ * "[picc-permission-modes] Bad substitution: new" over the editor and the HUD footer).
++ * Set PICC_DEBUG to an absolute file path to append them there.
++ */
+ export function logError(error: unknown): void {
++  const target = process.env.PICC_DEBUG;
++  if (!target || !isAbsolute(target)) return;
+   try {
+-    if (error instanceof Error) {
+-      console.error(`[picc-permission-modes] ${error.message}`);
+-    } else {
+-      console.error("[picc-permission-modes]", error);
+-    }
++    const message = error instanceof Error ? error.message : String(error);
++    appendFileSync(target, `${new Date().toISOString()} [picc-permission-modes] ${message}\n`);
+   } catch {
+   }
+ }

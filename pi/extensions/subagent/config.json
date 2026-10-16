@@ -1,0 +1,6 @@
+{
+  "toolActivation": "dynamic",
+  "inlineToolDisplay": "summary",
+  "asyncWidget": false,
+  "fleetView": false
+}

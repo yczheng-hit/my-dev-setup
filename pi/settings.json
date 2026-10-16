@@ -1,0 +1,41 @@
+{
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-5-5",
+  "defaultThinkingLevel": "high",
+  "enabledModels": [
+    "anthropic/claude-opus-5-5",
+    "anthropic/claude-fable-5-1",
+    "anthropic/claude-sonnet-5-5",
+    "anthropic/claude-haiku-5-5",
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-6-luna",
+    "openai-codex/gpt-6.1-sol"
+  ],
+  "packages": [
+    "npm:pi-cc-extensions",
+    "repo:packages/picc-permission-modes",
+    "npm:pi-subagents",
+    "npm:@mrclrchtr/supi-review",
+    "npm:pi-omp-advisor",
+    "npm:pi-hashline-edit-pro",
+    "npm:pi-repl-py",
+    "npm:pi-context",
+    "repo:tools/pi-btw-split",
+    "npm:pi-web-access",
+    "npm:pi-sticky-last-prompt",
+    "repo:packages/pi-hud-footer",
+    "repo:packages/pi-subagent-hud"
+  ],
+  "hideThinkingBlock": false,
+  "theme": "cc-dark",
+  "showHardwareCursor": true,
+  "terminal": {
+    "showTerminalProgress": true
+  },
+  "markdown": {
+    "mermaid": "final"
+  },
+  "warnings": {
+    "anthropicExtraUsage": true
+  }
+}

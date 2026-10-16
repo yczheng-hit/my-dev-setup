@@ -1,0 +1,54 @@
+{
+  "autoMode": {
+    "provider": {
+      "apiKey": "${ANTHROPIC_AUTH_TOKEN}",
+      "maxContextChars": 80000
+    },
+    "allow": [
+      "Standard read-only file inspection inside the working directory.",
+      "Standard search/grep/glob operations in the working directory.",
+      "Running tests, linters, and formatters.",
+      "Editing files inside the current working directory.",
+      "git add/commit/diff/log/status/fetch within the repository."
+    ],
+    "softDeny": [
+      "Force pushes (git push -f, git push --force, git push --force-with-lease).",
+      "rm -rf outside the working directory.",
+      "Editing files outside the working directory without explicit authorization.",
+      "Network egress to non-trusted external endpoints.",
+      "git push to a branch that is not the session's working branch."
+    ],
+    "hardDeny": [
+      "rm -rf /, rm -rf $HOME, or equivalent filesystem-wide destructive deletes.",
+      "Force push to main / master / the repository default branch.",
+      "DROP DATABASE / DROP SCHEMA without explicit user confirmation.",
+      "Disabling safety tooling, audit logs, or git hooks.",
+      "Systematic scanning of credential stores (.env, ~/.aws/, keychains, etc.).",
+      "Disabling or removing .claude/ settings, hooks, or rules."
+    ],
+    "environment": [
+      "An autonomous coding agent running inside the user's pi session."
+    ],
+    "classifyAllShell": false,
+    "denialLimits": {
+      "maxConsecutive": 3,
+      "maxTotal": 20
+    },
+    "transcriptMaxChars": 80000
+  },
+  "permissions": {
+    "allow": [
+      "Bash(ssh:*)",
+      "Bash(scp:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "modeColors": {
+    "default": null,
+    "acceptEdits": "#ccb1ff",
+    "plan": "#5fafff",
+    "bypassPermissions": "#ff5f5f",
+    "auto": "#ffc107"
+  }
+}

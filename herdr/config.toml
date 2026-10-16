@@ -1,0 +1,17 @@
+onboarding = false
+
+[terminal]
+default_shell = "/bin/zsh"
+
+[keys]
+prefix = "ctrl+q"
+
+# Show why a pi pane is blocked (set by ~/.pi/agent/extensions/herdr-ui-prompt-blocked.ts)
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", { token = "$blocked_reason", bold = true, rules = [
+    { equals = "plan ready", fg = "#89b4fa" },
+    { equals = "approval", fg = "#f38ba8" },
+  ] }, "machine", "workspace", "tab"],
+  ["agent"],
+]

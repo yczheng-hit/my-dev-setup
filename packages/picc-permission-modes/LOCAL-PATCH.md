@@ -1,0 +1,88 @@
+# Local plan-mode fix
+
+Based on `@ladbabynpm/picc-permission-modes@0.1.3`. The original npm package is retained; this directory is the configured local package.
+
+## Cause and changes
+
+`before_agent_start` runs before the model's tool calls. Entering plan mode mid-turn previously returned neither the plan path nor the workflow, so the model wrote under the workspace's `.pi/plans/` while approval read a different global slugged file.
+
+- `EnterPlanMode` awaits the mode transition and returns the full existing planning instructions with the executing session's exact plan path immediately.
+- `ExitPlanMode` stays in plan mode when the expected file is missing, empty, whitespace-only, or unreadable. It returns the required path and a request to write the plan, without opening approval UI.
+- Removed the unused fallback context after passing the actual execution context to the mode transition.
+- Regression tests cover same-turn entry/write/render/approval, executing-session paths, empty plans, and read failures in TUI and headless paths.
+
+## Approval dialog: wheel and bypass-first ordering
+
+- The normal approval dialog now defaults to **1. bypass permissions** (Enter). **2. auto-accept edits** retains Shift+Tab; selecting 2 then pressing Enter also chooses accept edits. TUI and headless lists use the same order.
+- In Pi **fullscreen** mode, the standard `handleMouse` API consumes wheel events anywhere inside the dialog and scrolls only the plan body. Header, approval selection and footer stay fixed; boundary and fitting/empty-plan wheels do not fall through to the conversation or request unnecessary redraws.
+- Pi's normalized `wheelDelta` is used directly, including its acceleration/Alt multiplier. Closed dialogs and non-wheel/out-of-bounds events are ignored.
+- Fitting plans no longer acquire a hidden one-line offset. PgUp/PgDn and Home/End remain supported. In **regular** mode, mouse scrolling remains terminal-managed; use these keyboard shortcuts for the plan body.
+- Tests first demonstrated the missing wheel handler and old approval ordering, then passed after the changes. Coverage includes real Pi `dispatchMouseEvent`, real approval-factory keyboard actions, headless choice mapping, bounds and redraw flags.
+
+## Validation
+
+Runtime dependencies are installed locally. Test-only peer links under `node_modules` point to this machine's Pi host; these peers are supplied by Pi when it loads the extension.
+
+Run the focused tests without writing fixtures into real user plan storage:
+
+```bash
+cd packages/picc-permission-modes
+test_agent_dir=$(mktemp -d /tmp/pi-plan-mode-test-XXXXXX)
+PI_CODING_AGENT_DIR="$test_agent_dir" npm test -- exitPlanModeDialog.test.ts index.test.ts exitPlanModeTool.test.ts \
+  -t 'ExitPlanModeDialog|dialogOptionsFor|EnterPlanMode tool|ExitPlanMode tool|ExitPlanMode invalid plan guard' \
+  --pool=forks --poolOptions.forks.singleFork
+result=$?
+rm -rf "$test_agent_dir"
+exit "$result"
+```
+
+Focused tests: 82 passed (including the earlier plan-file fix regressions). Pi's real `DefaultResourceLoader` loads this local package and registers both tools without errors.
+
+Full-suite comparison in isolated agent directories: original 496 passed / 4 failed; earlier plan-file patch 505 passed / 4 failed; current patch 534 passed / the exact same 4 failed. Existing/environment-dependent failures are Windows config paths, Windows dangerous paths, bypass-mode deny rules, and the home-relative plan-path test when agent storage is outside the home directory. They were not changed by these fixes. Reports: `/tmp/pi-plan-mode-baseline-results.json`, `/tmp/pi-plan-mode-fixed-results.json`, `/tmp/pi-plan-mode-wheel-results.json`; latest test log: `/tmp/pi-plan-mode-wheel-tests.log`.
+
+## Activation and rollback
+
+`~/.pi/agent/settings.json` selects this local directory instead of `npm:@ladbabynpm/picc-permission-modes`. Run `/reload` in Pi (or restart) to activate; the current loaded extension is not modified in place.
+
+To roll back, replace this package entry with `npm:@ladbabynpm/picc-permission-modes` and run `/reload`. The pre-change settings backup is `~/.pi/agent/settings.json.pre-plan-mode-fix-20261014T011618.bak`.
+
+## Footer: hand over to pi-hud-footer
+
+- `installFooter` no longer calls `ctx.ui.setFooter`; the footer is owned by `npm:pi-hud-footer` (pi-cc-extensions `enableCustomFooter` is false).
+- `updateStatus` publishes the mode as status key `permission-mode` (e.g. `⏵⏵ bypass permissions`), coloured per mode. pi-hud-footer shows extension statuses with their colours intact.
+- Colours: `modeColors` in `~/.pi/agent/extensions/picc-permission-modes/config.json` (`#rrggbb` or pi theme colour; `null` hides the chip, the default for `default`). Built-in defaults: acceptEdits #ccb1ff, plan #5fafff, bypassPermissions #ff5f5f, auto #ffc107. Read on every mode change.
+- The old `Footer: mode line format` tests are `describe.skip`ped. Backups: `index.ts.bak-footer-*`, `~/.pi/agent/pi-cc-extensions.json.bak-*`, `config.json.bak-*`.
+
+## Shell parse errors no longer printed onto the TUI (2026-10-15)
+
+**Symptom.** `[picc-permission-modes] Bad substitution: new` was printed three times on top of the
+editor and the HUD footer. The trigger was a bash command whose quoted heredoc held a JS template
+literal (`${new Date()…}`).
+
+**Cause.**
+- `shell-quote` throws on such text.
+- `tryParseShellCommand` (`upstream/utils/bash/shellQuote.ts`) already returns
+  `{ success: false, error }`.
+- But first it called `logError`, which used `console.error`. Under Pi's TUI, raw stderr writes land
+  on the screen.
+
+**Change.** `upstream/_compat/stubs.ts` `logError` no longer writes to stdout or stderr.
+- Its only callers, the three in `shellQuote.ts`, already handle the error, so permission decisions
+  are unchanged.
+- For diagnostics, set `PICC_DEBUG=/absolute/file`; the messages are appended there.
+- Backup: `upstream/_compat/stubs.ts.bak-parse-noise-*`.
+
+**Tests.**
+- `parse-noise.test.ts` failed before the change (`console.error` was called) and passes after it.
+  It covers the silent default and the `PICC_DEBUG` file.
+- Full suite: 530 passed (including the 2 new), 6 skipped, 4 failed. The same 4 fail with the original `stubs.ts`, so they
+  predate this change:
+  - `config-path` default dir;
+  - `host-mode-env` deny-in-bypass;
+  - tilde plan path;
+  - Windows path.
+- The Pi loader loads `index.ts` with 0 errors.
+
+**Not changed.** Two other raw writes remain, both on error paths only:
+- `index.ts` `console.warn` for auto-mode config issues;
+- `index.ts` `console.error` when `persistState` cannot append.
