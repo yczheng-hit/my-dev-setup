@@ -20,6 +20,8 @@
     "npm:pi-hashline-edit-pro",
     "npm:pi-repl-py",
     "npm:pi-context",
+    "npm:@jl1990/pi-scheduler",
+    "npm:@narumitw/pi-goal",
     "repo:tools/pi-btw-split",
     "npm:pi-web-access",
     "npm:pi-sticky-last-prompt",

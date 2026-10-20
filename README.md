@@ -126,6 +126,8 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-review (8.0.1)
 pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (6.4.6)  pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
+@jl1990/pi-scheduler (0.5.1)    # 定时 prompt / shell 检查；Pi 运行中触发
+@narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
 pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
 ```
 
@@ -134,6 +136,8 @@ pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件）�
 当前 `claude-dark` 主题由 `pi/themes/claude-dark.json` 部署，不需要借助 `pi-cc-extensions` 的 `cc-dark`。Pi 还设置 `hideThinkingBlock: true`（隐藏思考块）。
 
 **pi-cc-steer 的行为提示：** `git:github.com/panbergco/pi-cc-steer` 从公开上游 `main` 安装；除了对话中途插入消息，它默认还会替换 Pi 的 `bash` 工具，提供后台命令和 `bg_list` / `bg_output` / `bg_stop`，超时 120 秒的命令会转后台而非直接终止，原有 shell 路径/前缀设置可能被忽略。只要 steering、不想替换 bash 时，启动 Pi 前设置 `PI_CC_STEER_BACKGROUND=0`。`/reload` 会丢掉尚未交给模型的内存消息；详见插件自己的 README。
+
+**定时与后台唤醒：** [`@jl1990/pi-scheduler`](https://github.com/jl1990/pi-scheduler) 支持 `/schedule prompt once 10m :: 检查任务进度`、`/schedule shell once 5m :: npm test`（该命令默认只执行并记录结果，不自动唤醒；需由模型用 `schedule_task` 设置 `wakeOn`）、`/schedules` 和 `/schedule-cancel <id>`；模型也可以通过 `schedule_task` 设置 `scope: "session"`、`maxRuns` 与 shell 的 `wakeOn: "success" | "failure" | "always" | "change"`。定时 shell 由 scheduler 自己执行并按策略唤醒；立即启动的后台 `bash` 则由**已经安装**的 pi-cc-steer 在完成后自动通知、空闲时唤醒，不需要重复安装。两者都要求 Pi 运行才能按时触发。scheduler 把任务保存在本机 `~/.pi/agent/state/scheduler/tasks.json`，关闭期间不触发但重开同一会话后可能补跑逾期任务；要让任务彻底失效，请 `/schedule-cancel <id>`，不要把本机任务状态提交到仓库。`scope: "session"` 要求持久 Pi 会话，关闭后并不自动删除任务。默认一次性任务或为重复任务设置 `maxRuns`，避免无界自动调用模型。安装/升级由 Pi 按 `pi/settings.json` 的包清单在启动时完成，当前会话执行 `/reload` 后生效。
 
 ## 兼容性
 
