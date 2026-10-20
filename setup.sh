@@ -201,7 +201,7 @@ for manifest in "$REPO"/packages/*/herdr-plugin.toml "$REPO"/tools/*/herdr-plugi
   if [ -z "$linked_root" ]; then
     run herdr plugin link "$root"
     [ "$DRY_RUN" = 1 ] || log "linked     herdr plugin $id"
-  elif [ "$linked_root" = "$root" ]; then
+  elif [ "$linked_root" = "$root" ] || { [ -d "$linked_root" ] && [ "$(cd "$linked_root" && pwd -P)" = "$(cd "$root" && pwd -P)" ]; }; then
     log "unchanged  herdr plugin $id"
   else
     warn "herdr plugin $id is linked to $linked_root, not this repo; left as is."
