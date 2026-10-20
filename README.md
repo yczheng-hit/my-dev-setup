@@ -112,6 +112,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 3. **底栏交给 pi-hud-footer**：不再自己 `setFooter`，改为发布 `permission-mode` 状态；颜色可在 `modeColors` 配置。
 4. **shell 解析错误不再打到屏幕上**：带 JS 模板字符串的 heredoc 会让 shell-quote 报 `Bad substitution`，原来被 `console.error` 直接画在编辑器和 HUD 上。现在默认静默；需要诊断时设置 `PICC_DEBUG=/绝对路径` 写入文件。权限判断不变。
 5. **权限模式标签不再加粗**：RGB 颜色只设置前景色，不再发送 ANSI 粗体指令，避免底栏粗体样式泄漏到后续文字。
+6. **plan mode 只能手动进入**：`config.json` 设置 `"planMode": { "agentCanEnter": false }` 后，不注册模型可以调用的 `EnterPlanMode` 工具，Pi 不会主动切换到 plan mode，也不会弹窗询问。手动入口 `/plan`、`/mode plan`、`Shift+Tab` 照常可用。plan mode 里的 `ExitPlanMode` 计划批准流程不变。本仓库配置已经设为 `false`；删除该字段或改为 `true` 即恢复原版行为。修改后执行 `/reload` 生效。
 
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 1 处本地改动：去掉 HUD 两行和工具行左侧的一个空格缩进。改动见 `patches/pi-hud-footer/0.8.0-local.patch`；已验证“npm 原版 + 这个 patch”与 `packages/pi-hud-footer` 完全一致。
 

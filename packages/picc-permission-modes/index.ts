@@ -265,6 +265,21 @@ function cycleFromMode(
 function resolveAutoModeConfigPath(): string {
   return resolvePermissionModesConfigPath();
 }
+/** Local patch: `planMode.agentCanEnter: false` keeps plan mode user-only. The
+ *  model-callable `EnterPlanMode` tool is not registered, so the agent cannot even
+ *  ask to switch; `/plan`, `/mode plan` and Shift+Tab still work. Default true
+ *  (upstream behavior) when the file, block or field is missing or invalid. */
+export function loadAgentCanEnterPlanModeConfig(configPath: string): boolean {
+  if (!existsSync(configPath)) return true;
+  try {
+    const raw = JSON.parse(stripJsonCommentsForConfig(readFileSync(configPath, "utf-8")));
+    const block = (raw as Record<string, unknown> | null)?.planMode;
+    if (!block || typeof block !== "object") return true;
+    return (block as Record<string, unknown>).agentCanEnter !== false;
+  } catch {
+    return true;
+  }
+}
 export function loadSubagentModeConfig(
   configPath: string,
 ): PermissionMode | undefined {
@@ -386,11 +401,11 @@ export function setInteractiveModeForTests(mode: PermissionMode | undefined): vo
 export default function permissionModesExtension(pi: ExtensionAPI): void {
   initializeAutoMode();
   const resolvedConfigPath = resolveAutoModeConfigPath();
-  const subagentModeOverride = loadSubagentModeConfig(
-    process.env.PICC_PERMISSION_MODES_CONFIG_PATH
-      ? resolvedConfigPath
-      : ensurePermissionModesConfig(resolvedConfigPath),
-  );
+  const permissionModesConfigPath = process.env.PICC_PERMISSION_MODES_CONFIG_PATH
+    ? resolvedConfigPath
+    : ensurePermissionModesConfig(resolvedConfigPath);
+  const subagentModeOverride = loadSubagentModeConfig(permissionModesConfigPath);
+  const agentCanEnterPlanMode = loadAgentCanEnterPlanModeConfig(permissionModesConfigPath);
   const state = emptyState();
   const userPermissions = loadUserPermissions();
   function applyUserPermissions(
@@ -649,7 +664,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       "Start in a permission mode: default, acceptEdits, plan, bypassPermissions (or 'auto')",
     type: "string",
   });
-  pi.registerTool(
+  if (agentCanEnterPlanMode) pi.registerTool(
     makeEnterPlanModeTool({
       onEnterPlanMode: async (ctx) => {
         const previous = currentMode;

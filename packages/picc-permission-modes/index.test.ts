@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { join, sep, dirname } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
-import permissionModesExtension, { loadSubagentModeConfig, setInteractiveModeForTests, CLASSIFIER_NOTE_MARKER } from "./index.ts";
+import permissionModesExtension, { loadAgentCanEnterPlanModeConfig, loadSubagentModeConfig, setInteractiveModeForTests, CLASSIFIER_NOTE_MARKER } from "./index.ts";
 import {
   buildContext,
   generateSuggestions,
@@ -1574,6 +1574,40 @@ describe("ExitPlanMode tool", () => {
     expect(sessionRules).toContain("Bash(*)");
     expect(sessionRules).toContain("Bash(prompt: run tests)");
     expect(sessionRules).toContain("Bash(prompt: install dependencies)");
+  });
+});
+describe("planMode.agentCanEnter (local patch)", () => {
+  const cwd = process.cwd();
+  let savedPath: string | undefined;
+  let dir: string;
+  beforeEach(() => {
+    savedPath = process.env.PICC_PERMISSION_MODES_CONFIG_PATH;
+    dir = mkdtempSync(join(tmpdir(), "pi-plan-entry-"));
+  });
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PICC_PERMISSION_MODES_CONFIG_PATH;
+    else process.env.PICC_PERMISSION_MODES_CONFIG_PATH = savedPath;
+  });
+  function loadWith(config: unknown): FakePi {
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify(config));
+    process.env.PICC_PERMISSION_MODES_CONFIG_PATH = path;
+    const pi = createFakePi();
+    permissionModesExtension(makeFakePiForExtension(pi));
+    return pi;
+  }
+  it("defaults to upstream behavior: the agent may request plan mode", () => {
+    expect(loadAgentCanEnterPlanModeConfig(join(dir, "missing.json"))).toBe(true);
+    expect(loadWith({ planMode: {} }).registeredTools.some((t) => t.name === "EnterPlanMode")).toBe(true);
+  });
+  it("false removes EnterPlanMode but keeps ExitPlanMode and manual /plan", async () => {
+    const pi = loadWith({ planMode: { agentCanEnter: false } });
+    const tools = pi.registeredTools.map((t) => t.name);
+    expect(tools).not.toContain("EnterPlanMode");
+    expect(tools).toContain("ExitPlanMode");
+    await pi.simulateSessionStart(cwd);
+    await pi.simulateCommand("plan", "");
+    expect((pi.appendEntries[pi.appendEntries.length - 1].data as any).mode).toBe("plan");
   });
 });
 describe("EnterPlanMode tool", () => {

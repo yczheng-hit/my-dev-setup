@@ -1,4 +1,7 @@
 {
+  "planMode": {
+    "agentCanEnter": false
+  },
   "autoMode": {
     "provider": {
       "apiKey": "${ANTHROPIC_AUTH_TOKEN}",

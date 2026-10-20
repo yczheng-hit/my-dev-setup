@@ -86,3 +86,20 @@ literal (`${new Date()…}`).
 **Not changed.** Two other raw writes remain, both on error paths only:
 - `index.ts` `console.warn` for auto-mode config issues;
 - `index.ts` `console.error` when `persistState` cannot append.
+
+## Plan mode: user-only entry (2026-10-20)
+
+**Why.** The model-callable `EnterPlanMode` tool let the agent switch into plan mode by itself
+(after a confirm dialog). The user wants plan mode entered only by hand.
+
+**Change.** New config `planMode.agentCanEnter` in the permission-modes `config.json`:
+- `false`: `EnterPlanMode` is not registered, so the model can neither see nor call it.
+  `/plan`, `/mode plan` and Shift+Tab still switch modes. `ExitPlanMode` and its approval flow
+  are unchanged, so a manually entered plan still ends with the approval dialog.
+- Missing, invalid or `true`: upstream behavior (tool registered).
+- Read once at extension load; edit the file, then `/reload`.
+
+**Tests.** `index.test.ts` → `planMode.agentCanEnter (local patch)`: default keeps the tool; `false`
+removes it while keeping `ExitPlanMode` and `/plan`. Full suite in an isolated copy with Pi 1.2.0
+host dependencies: 532 passed, 6 skipped, and the same 4 pre-existing failures as before the change
+(baseline 530 passed / same 4).
