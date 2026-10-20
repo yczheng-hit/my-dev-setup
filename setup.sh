@@ -243,6 +243,23 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------- version floors
+# Unpatched npm plugins with a known-bad old version: warn, never auto-update.
+# pi-hashline-edit-pro < 6.5.0 can stall the pi main thread for minutes when a
+# long session nearly exhausts its anchor pool (fixed upstream in 6.5.0).
+step "npm version floors"
+hl_pkg="$PI_DIR/npm/node_modules/pi-hashline-edit-pro/package.json"
+if [ -f "$hl_pkg" ]; then
+  hl_ver="$(sed -n 's/.*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$hl_pkg" | head -n 1)"
+  if [ "$(printf '%s\n%s\n' 6.5.0 "$hl_ver" | sort -V | head -n 1)" = 6.5.0 ]; then
+    log "ok  pi-hashline-edit-pro $hl_ver (>= 6.5.0)"
+  else
+    warn "pi-hashline-edit-pro $hl_ver < 6.5.0 (anchor-pool stall); run: pi update --extension npm:pi-hashline-edit-pro"
+  fi
+else
+  log "pi-hashline-edit-pro not installed yet; pi installs the latest on next start."
+fi
+
 # ---------------------------------------------------------------- done
 step "Done"
 if [ "$DRY_RUN" = 0 ] && [ -d "$BACKUP_DIR" ]; then

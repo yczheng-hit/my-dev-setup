@@ -124,7 +124,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 
 ```text
 pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-review (8.0.1)
-pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (6.4.6)  pi-repl-py (0.9.0)
+pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (≥6.5.0) pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
 @jl1990/pi-scheduler (0.5.1)    # 定时 prompt / shell 检查；Pi 运行中触发
 @narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
@@ -132,6 +132,15 @@ pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，�
 ```
 
 pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件），没有本地改动。
+
+**pi-hashline-edit-pro 必须 ≥ 6.5.0：** 6.4.x 在长会话把锚点池用到接近耗尽后，每分配一个新锚点都要同步探测数千次，读一个大文件会让 pi 主线程卡几分钟，而且 Esc 无法取消。上游 6.5.0 的提交 [`44e05ee`](https://github.com/YuGiMob/pi-hashline-edit-pro/commit/44e05ee) 修好了这个问题：池满后跳过注定失败的新锚点探测，回收后游标前移；同时超限文件在分配前就被拒绝。因此不另打本地补丁。2026-10-20 实测，在剩余 441 个新锚点的会话里读取：
+
+| 读取 | 6.4.7 | 6.5.0 |
+|---|---|---|
+| 204,135 行 | 321.6 s | 4.8 s |
+| 50,000 行 | 77.5 s | 0.9 s |
+
+两版锚点都唯一，归属也一致；上游 6.5.0 全量测试 1917/1922 通过，失败的 5 个是 macOS `/private/var` 临时路径断言，与锚点无关。`./setup.sh` 只检查这个版本下限并给出警告，不会自动升级；需要升级时运行 `pi update --extension npm:pi-hashline-edit-pro`，再在运行中的 pi 里 `/reload`。不要用清空 `~/.config/pi-hashline-edit-pro` 或批量 kill node 进程的方式“修复”卡顿，那会丢掉锚点与撤销记录。
 
 当前 `claude-dark` 主题由 `pi/themes/claude-dark.json` 部署，不需要借助 `pi-cc-extensions` 的 `cc-dark`。Pi 还设置 `hideThinkingBlock: true`（隐藏思考块）。
 
