@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { isDisplayEnabled } from "./config.ts";
 import { fmtCost, fmtDuration, fmtPercent, fmtTokenRate, fmtTokens, fmtTurnDuration, isSubscriptionModel, shortModel } from "./format.ts";
 import { getI18n } from "./i18n.ts";
+import { sessionNameText } from "./session-name.ts"; // local patch
 import { collectStats, TOOL_ORDER } from "./stats.ts";
 import type { ColorName, HudConfig, HudLanguage, HudStats } from "./types.ts";
 
@@ -13,6 +14,7 @@ type FooterData = Parameters<FooterFactory>[2];
 
 export interface HudEditorState {
 	getGitBranch?: () => string | null | undefined;
+	requestRender?: () => void; // local patch: redraw after session renames
 }
 
 export interface HudBorderSegments {
@@ -226,7 +228,12 @@ export function renderHudTopBorderSegments(
 	], theme.fg("dim", " | "));
 	const location = locationText(ctx, branch, config, theme);
 
-	return { left: joinParts([model, runMetrics || undefined]) || undefined, right: location };
+	const session = isDisplayEnabled(config, "sessionName") // local patch
+		? sessionNameText(pi.getSessionName(), theme, i18n.language)
+		: undefined;
+	const right = joinWithSeparator([session, location], theme.fg("dim", " · ")) || undefined;
+
+	return { left: joinParts([model, runMetrics || undefined]) || undefined, right };
 }
 
 export function renderHudBottomBorderSegments(
@@ -342,7 +349,10 @@ function renderClassicFooterLines(
 		? theme.fg("muted", `${i18n.labels.cost} ${fmtCost(stats.cost, config, isSubscriptionModel(ctx))}`)
 		: undefined;
 
-	const line1Body = joinWithSeparator([joinParts([topLeft, contextSegment]) || undefined, git, state], theme.fg("dim", " | "));
+	const session = isDisplayEnabled(config, "sessionName") // local patch
+		? sessionNameText(pi.getSessionName(), theme, i18n.language)
+		: undefined;
+	const line1Body = joinWithSeparator([joinParts([topLeft, contextSegment]) || undefined, session, git, state], theme.fg("dim", " | "));
 	const line2Body = joinWithSeparator([tokenSummary, tokenRate, cacheRate, elapsedText, costText], theme.fg("dim", " | "));
 	const lines = [line1Body, line2Body]
 		.filter(Boolean)
@@ -362,7 +372,10 @@ export function createHudFooter(
 	editorState?: HudEditorState,
 ): FooterFactory {
 	return (tui, theme, footerData) => {
-		if (editorState) editorState.getGitBranch = () => footerData.getGitBranch();
+		if (editorState) {
+			editorState.getGitBranch = () => footerData.getGitBranch();
+			editorState.requestRender = () => tui.requestRender(); // local patch
+		}
 		const disposeBranch = footerData.onBranchChange(() => tui.requestRender());
 
 		return {

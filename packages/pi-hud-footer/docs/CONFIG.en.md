@@ -128,6 +128,9 @@ Supports the `all`, `classic`, and `border` groups. Precedence: `display.all` < 
 | `state` | running / ready state |
 | `turnDuration` | Per-turn duration notification, disabled by default to avoid conflicts with other extensions |
 | `extensionStatus` | Status line set by other extensions (`ctx.ui.setStatus`) |
+| `sessionName` | Local patch: current session name, omitted when unnamed |
+
+The session name comes from Pi's native session info. After `/rename` or Pi's built-in `/name`, the HUD refreshes immediately; long names are truncated only in the HUD, and the full stored name is unchanged.
 
 `turnDuration` is disabled by default. Set it to `true` under `display.all` or the relevant style to enable per-turn duration notifications.
 

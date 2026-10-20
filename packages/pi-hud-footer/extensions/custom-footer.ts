@@ -4,6 +4,7 @@ import { createHudEditorFactory } from "./hud-footer/editor.ts";
 import { fmtTurnDuration } from "./hud-footer/format.ts";
 import { getI18n, normalizeLanguageSetting } from "./hud-footer/i18n.ts";
 import { createHudFooter, type HudEditorState } from "./hud-footer/render.ts";
+import { registerRenameCommand } from "./hud-footer/session-name.ts"; // local patch
 import { HUD_CURRENCIES, type HudConfig, type HudCurrency, type HudLanguageSetting, type HudStyle } from "./hud-footer/types.ts";
 
 const ACTIVE_EXTENSION_KEY = Symbol.for("pi-hud-footer.active");
@@ -268,6 +269,9 @@ export default function (pi: ExtensionAPI) {
 		applyHud(ctx);
 	});
 
+	// local patch: `/name`, `/rename`, and other extensions all use Pi's native name event.
+	pi.on("session_info_changed", () => editorState.requestRender?.());
+
 	pi.on("agent_start", (_event, ctx) => {
 		running = true;
 		uiPromptActive = false;
@@ -411,4 +415,7 @@ export default function (pi: ExtensionAPI) {
 		description: commandI18n.commands.currencyDescription,
 		handler: handleCurrencyCommand,
 	});
+
+	// local patch: /rename stores the name through Pi; session_info_changed redraws the HUD.
+	registerRenameCommand(pi, () => currentI18n().language, commandI18n.language);
 }

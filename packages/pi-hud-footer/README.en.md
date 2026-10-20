@@ -77,6 +77,7 @@ pi install /path/to/pi-hud-footer
 | `/hud-footer-theme` | Open a TUI selector, switch the HUD style, and save it. |
 | `/hud-footer-language` | Open a TUI selector, switch the UI language, and save it. |
 | `/hud-footer-currency` | Open a TUI selector, switch the cost display currency, and save it. The exchange rate stays a config-file setting. |
+| `/rename [name]` | Local patch: rename the current session; without a name, open an input dialog. The name is stored in the session and shown in `/resume`. |
 
 ## Configuration
 

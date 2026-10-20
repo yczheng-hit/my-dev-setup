@@ -104,7 +104,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 | `packages/pi-subagent-hud` | 自己的小插件 | — | — |
 | `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
 
-两个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；picc 目录里额外的测试和 `LOCAL-PATCH.md` 是本地补充。
+两个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
 
 **picc-permission-modes**：基于 [Ladbaby/picc-permission-modes](https://github.com/Ladbaby/picc-permission-modes) 的 npm `@ladbabynpm/picc-permission-modes@0.1.3`，详细记录在它的 `LOCAL-PATCH.md`：
 
@@ -115,7 +115,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 5. **权限模式标签不再加粗**：RGB 颜色只设置前景色，不再发送 ANSI 粗体指令，避免底栏粗体样式泄漏到后续文字。
 6. **plan mode 只能手动进入**：`config.json` 设置 `"planMode": { "agentCanEnter": false }` 后，不注册模型可以调用的 `EnterPlanMode` 工具，Pi 不会主动切换到 plan mode，也不会弹窗询问。手动入口 `/plan`、`/mode plan`、`Shift+Tab` 照常可用。plan mode 里的 `ExitPlanMode` 计划批准流程不变。本仓库配置已经设为 `false`；删除该字段或改为 `true` 即恢复原版行为。修改后执行 `/reload` 生效。
 
-**pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 1 处本地改动：去掉 HUD 两行和工具行左侧的一个空格缩进。改动见 `patches/pi-hud-footer/0.8.0-local.patch`；已验证“npm 原版 + 这个 patch”与 `packages/pi-hud-footer` 完全一致。
+**pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 本地补丁：去掉 HUD 左侧缩进；两种 HUD 样式显示当前会话名称；新增 `/rename 新名称`（不带参数时弹出输入框）。名称通过 Pi 原生会话 API 保存，恢复会话后仍显示，Pi 自带 `/name` 也会同步刷新 HUD。未命名时不占位置，长名称只在 HUD 中截断；可用 `display.all.sessionName: false` 隐藏。改动见 `patches/pi-hud-footer/0.8.0-local.patch`，详细验证及测试命令见 `packages/pi-hud-footer/LOCAL-PATCH.md`。
 
 **pi-subagent-hud 0.1.2**：在本仓库维护的小插件。在 HUD 状态行末尾显示正在运行的 pi-subagents 子 agent（模型、任务、耗时、token）。依赖 `pi/extensions/subagent/config.json` 里的 `inlineToolDisplay: "summary"`、`asyncWidget: false`、`fleetView: false`。说明见它的 README。live 测试通过 `PI_HOST_DIR` 指定 Pi 安装目录，不再依赖某台机器的绝对路径。
 
@@ -176,9 +176,13 @@ git push
 
 ```bash
 # 以 pi-hud-footer 为例；picc 换成 @ladbabynpm/picc-permission-modes@0.1.3
-tmp=$(mktemp -d) && (cd "$tmp" && npm pack pi-hud-footer@0.8.0 --silent && tar xzf *.tgz)
-diff -ru --strip-trailing-cr "$tmp/package" packages/pi-hud-footer \
-  | grep -v '^Only in' > patches/pi-hud-footer/0.8.0-local.patch
+tmp=$(mktemp -d)
+(cd "$tmp" && npm pack pi-hud-footer@0.8.0 --silent && tar xzf *.tgz)
+# 临时 Git 工作树保证新文件也进入 patch，并使用 a/、b/ 路径；只覆盖运行代码。
+(cd "$tmp/package" && git init -q && git add extensions)
+cp -R packages/pi-hud-footer/extensions/. "$tmp/package/extensions/"
+(cd "$tmp/package" && git add -N extensions && git diff -- extensions) \
+  > patches/pi-hud-footer/0.8.0-local.patch
 ```
 
 ### 升级第三方包

@@ -128,6 +128,9 @@ TUI 中可用 `/hud-footer-currency` 打开选择器切换并保存 `currency`�
 | `state` | running / ready 状态 |
 | `turnDuration` | 每轮对话用时通知，默认关闭以避免与其他插件重复 |
 | `extensionStatus` | 其他扩展设置的状态行（`ctx.ui.setStatus`） |
+| `sessionName` | 本地补丁：当前会话名称，未命名时不显示 |
+
+会话名称来自 Pi 原生会话信息。使用 `/rename` 或 Pi 自带 `/name` 改名后，HUD 会立即刷新；名称过长时只在 HUD 中截断，保存的完整名称不变。
 
 `turnDuration` 默认关闭。如需启用每轮用时通知，请在 `display.all` 或对应样式中设置为 `true`。
 

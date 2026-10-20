@@ -26,6 +26,7 @@ export const HUD_DISPLAY_KEYS = [
 	"state",
 	"turnDuration",
 	"extensionStatus",
+	"sessionName", // local patch
 ] as const;
 export type HudDisplayKey = (typeof HUD_DISPLAY_KEYS)[number];
 export type HudDisplayScope = (typeof HUD_DISPLAY_SCOPES)[number];

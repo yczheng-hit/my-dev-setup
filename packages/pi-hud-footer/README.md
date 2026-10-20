@@ -77,6 +77,7 @@ pi install /path/to/pi-hud-footer
 | `/hud-footer-theme` | 打开 TUI 选择器，切换并保存 HUD 样式。 |
 | `/hud-footer-language` | 打开 TUI 选择器，切换并保存界面语言。 |
 | `/hud-footer-currency` | 打开 TUI 选择器，切换并保存费用显示货币（汇率仍在配置文件中设置）。 |
+| `/rename [名称]` | 本地补丁：重命名当前会话；不带参数时打开输入框。名称保存在会话里，也会显示在 `/resume` 列表中。 |
 
 ## 配置
 
