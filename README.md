@@ -102,6 +102,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 | `packages/picc-permission-modes` | 第三方 + 补丁 | npm `@ladbabynpm/picc-permission-modes@0.1.3` | `patches/picc-permission-modes/0.1.3-local.patch` |
 | `packages/pi-hud-footer` | 第三方 + 补丁 | npm `pi-hud-footer@0.8.0` | `patches/pi-hud-footer/0.8.0-local.patch` |
 | `packages/pi-subagent-hud` | 自己的小插件 | — | — |
+| `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
 
 两个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；picc 目录里额外的测试和 `LOCAL-PATCH.md` 是本地补充。
 
@@ -117,6 +118,8 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 1 处本地改动：去掉 HUD 两行和工具行左侧的一个空格缩进。改动见 `patches/pi-hud-footer/0.8.0-local.patch`；已验证“npm 原版 + 这个 patch”与 `packages/pi-hud-footer` 完全一致。
 
 **pi-subagent-hud 0.1.2**：在本仓库维护的小插件。在 HUD 状态行末尾显示正在运行的 pi-subagents 子 agent（模型、任务、耗时、token）。依赖 `pi/extensions/subagent/config.json` 里的 `inlineToolDisplay: "summary"`、`asyncWidget: false`、`fleetView: false`。说明见它的 README。live 测试通过 `PI_HOST_DIR` 指定 Pi 安装目录，不再依赖某台机器的绝对路径。
+
+**pi-agent-summary-time 0.1.0**：把 `pi-cc-extensions` 回合末尾的 `Ran 3 commands · 36s` 显示为 `Ran 3 commands · 36s · 14:23:45 (UTC+8)`。时间取该摘要会话条目的保存时间，因此重新打开历史会话也不会变成当前时间；强制使用 `Asia/Shanghai`，与本机时区无关。它只覆盖 `agent-summary` 的渲染，不改变原插件统计或保存的数据。Pi 对同一类型采用第一个注册的 renderer，所以它必须排在 `npm:pi-cc-extensions` 前面；如上游改变了摘要条目格式，需要一起更新本地 formatter。`npm test --prefix packages/pi-agent-summary-time` 可运行格式测试。
 
 ### npm 插件
 

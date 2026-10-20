@@ -12,6 +12,7 @@
     "openai-codex/gpt-6.1-sol"
   ],
   "packages": [
+    "repo:packages/pi-agent-summary-time",
     "npm:pi-cc-extensions",
     "repo:packages/picc-permission-modes",
     "npm:pi-subagents",
