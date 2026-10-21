@@ -35,7 +35,7 @@ try {
   const dir = path.join(D, 'sessions');
   await fs.mkdir(dir);
   const source = SessionManager.create(D, dir);
-  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const zero = { input: 25, output: 5, cacheRead: 3, cacheWrite: 2, totalTokens: 35, cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1, total: 4 } };
   for (const n of [1, 2]) {
     source.appendMessage({ role: 'user', content: `seed question ${n}`, timestamp: Date.now() });
     source.appendMessage({ role: 'assistant', content: [{ type: 'text', text: `seed answer ${n}` }], api: 'openai-responses', provider: 'btw-live-fake', model: 'fixture', usage: zero, stopReason: 'stop', timestamp: Date.now() });
@@ -60,6 +60,12 @@ try {
   assert.ok(id, screen);
   const savedFile = SessionManager.findById(D, id, dir);
   assert.ok(savedFile);
+  for (const e of SessionManager.open(savedFile).getEntries()) {
+    if (e.type === 'message' && e.message.role === 'assistant') {
+      assert.equal(e.message.usage.input, 0);
+      assert.equal(e.message.usage.cost.total, 0);
+    }
+  }
   assert.equal(await fs.readFile(source.getSessionFile(), 'utf8'), before);
   assert.equal(SessionManager.open(savedFile).getSessionName(), 'Live saved fork');
   const savedBefore = await fs.readFile(savedFile, 'utf8');

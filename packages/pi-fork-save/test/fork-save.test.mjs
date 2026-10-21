@@ -168,6 +168,43 @@ test('command rejects streaming, handles cancel and clipboard failure, saves cur
 }));
 
 
+test('saved fork resets all inherited token and cost accounting, but retains conversation context', () => withSession((session, dir) => {
+  const billed = (n) => ({
+    input: n, output: n + 1, cacheRead: n + 2, cacheWrite: n + 3,
+    cacheWrite1h: n + 4, reasoning: n + 5, totalTokens: n * 4 + 6,
+    cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+  });
+  session.appendMessage({ ...assistant('priced answer'), usage: billed(9) });
+  session.appendMessage({ role: 'toolResult', toolCallId: 't', toolName: 'bash', content: [{ type: 'text', text: 'tool output' }], isError: false, usage: billed(8), timestamp: Date.now() });
+  session.appendUsage('cache_warm', 'fixture', 'fixture', billed(7));
+  session.appendCompaction('prior context', session.getBranch()[0].id, 1000, undefined, false, billed(6));
+  session.branchWithSummary(session.getLeafId(), 'other branch summary', undefined, false, billed(5));
+  session.appendMessage(user('unbilled continuation'));
+  const before = readFileSync(session.getSessionFile(), 'utf8');
+  const sourceContext = session.buildSessionContext();
+  const saved = saveFork(session.getSessionFile(), dir, session.getLeafId(), 'Unbilled');
+  assert.equal(readFileSync(session.getSessionFile(), 'utf8'), before);
+  const fork = SessionManager.open(saved.file);
+  assert.deepEqual(texts(fork), texts(session));
+  assert.equal(fork.getBranch().length, session.getBranch().length + 1); // new name
+  const billedEntries = fork.getEntries().filter(e => e.type === 'usage' || (e.type === 'message' && ['assistant', 'toolResult'].includes(e.message.role)) || ['compaction', 'branch_summary'].includes(e.type));
+  assert.ok(billedEntries.length >= 5);
+  for (const entry of billedEntries) {
+    const usage = entry.type === 'message' ? entry.message.usage : entry.usage;
+    if (!usage) continue;
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'cacheWrite1h', 'reasoning', 'totalTokens']) {
+      if (key in usage) assert.equal(usage[key], 0, `${entry.type}.${key}`);
+    }
+    assert.ok(Object.values(usage.cost).every(v => v === 0));
+  }
+  // The copied content, compaction summary and model settings remain available.
+  assert.deepEqual(fork.buildSessionContext().messages.map(m => [m.role, m.content]), sourceContext.messages.map(m => [m.role, m.content]));
+  fork.appendMessage({ ...assistant('new bill'), usage: billed(3) });
+  const newUsage = fork.getEntries().at(-1).message.usage;
+  assert.equal(newUsage.input, 3);
+  assert.equal(newUsage.cost.total, 10);
+}));
+
 test('image-only user messages still mark round boundaries', () => {
   const branch = [
     { id: 'u1', type: 'message', message: user('before image') },

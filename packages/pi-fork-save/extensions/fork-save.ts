@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -72,6 +72,34 @@ export function defaultForkName(sessionName: string | undefined, cwd: string, no
 }
 
 
+// Historical messages remain; reset their usage accounting only in the saved copy.
+function zeroUsage(usage: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...usage,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    ...(usage.cacheWrite1h !== undefined ? { cacheWrite1h: 0 } : {}),
+    ...(usage.reasoning !== undefined ? { reasoning: 0 } : {}),
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+/** Reset inherited accounting in the fork only, preserving the transcript and entry tree. */
+export function resetInheritedBilling(file: string): void {
+  const entries = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  for (const entry of entries) {
+    if (entry.type === "message" && (entry.message?.role === "assistant" || entry.message?.role === "toolResult") && entry.message.usage) {
+      entry.message.usage = zeroUsage(entry.message.usage);
+    } else if ((entry.type === "usage" || entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+      entry.usage = zeroUsage(entry.usage);
+    }
+  }
+  writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+}
+
 /**
  * Copy root..leafId of the saved session file into a new session file in the
  * same session directory. The running session is not touched: a separate
@@ -88,5 +116,6 @@ export function saveFork(sourceFile: string, sessionDir: string, leafId: string,
   if (!file) throw new Error("无法创建分叉会话文件");
   if (name) manager.appendSessionInfo(name);
   if (!existsSync(file)) throw new Error("分叉点之前还没有对话内容，无法保存");
+  resetInheritedBilling(file);
   return { id: manager.getSessionId(), file, name };
 }
