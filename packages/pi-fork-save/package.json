@@ -1,0 +1,16 @@
+{
+  "name": "pi-fork-save",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Save a fork of the current pi session without switching to it",
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

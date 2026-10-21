@@ -103,6 +103,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 | `packages/pi-hud-footer` | 第三方 + 补丁 | npm `pi-hud-footer@0.8.0` | `patches/pi-hud-footer/0.8.0-local.patch` |
 | `packages/pi-subagent-hud` | 自己的小插件 | — | — |
 | `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
+| `packages/pi-fork-save` | 自己的小插件 | — | `/fork-save` 保存分叉但不切换前台，稍后用 `pi --session` 加载 |
 
 两个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
 
@@ -120,6 +121,8 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 **pi-subagent-hud 0.1.2**：在本仓库维护的小插件。在 HUD 状态行末尾显示正在运行的 pi-subagents 子 agent（模型、任务、耗时、token）。依赖 `pi/extensions/subagent/config.json` 里的 `inlineToolDisplay: "summary"`、`asyncWidget: false`、`fleetView: false`。说明见它的 README。live 测试通过 `PI_HOST_DIR` 指定 Pi 安装目录，不再依赖某台机器的绝对路径。
 
 **pi-agent-summary-time 0.1.0**：把 `pi-cc-extensions` 回合末尾的 `Ran 3 commands · 36s` 显示为 `Ran 3 commands · 36s · 14:23:45 (UTC+8)`。时间取该摘要会话条目的保存时间，因此重新打开历史会话也不会变成当前时间；强制使用 `Asia/Shanghai`，与本机时区无关。它只覆盖 `agent-summary` 的渲染，不改变原插件统计或保存的数据。Pi 对同一类型采用第一个注册的 renderer，所以它必须排在 `npm:pi-cc-extensions` 前面；如上游改变了摘要条目格式，需要一起更新本地 formatter。`npm test --prefix packages/pi-agent-summary-time` 可运行格式测试。
+
+**pi-fork-save 0.1.0**：`/fork-save [副本名称]` 只保存一份当前分支的快照，不切换当前会话、不启动新 Pi 或后台 agent。菜单默认「当前位置」（完整复制当前分支），也可选到某个较早回合为止；之后的内容和其他分支不会复制。不指定名称时自动生成 `原名 · fork 月-日 时:分`。保存后显示新会话 ID，并复制 `pi --session '/完整路径.jsonl'` 恢复命令；副本也会出现在 `/resume` 中。原生 `/fork`、`/clone` 不变。它复用 Pi 的 `SessionManager.createBranchedSession()`，保留历史、压缩摘要和标签；两边后续对话不会同步，工作目录和磁盘文件仍共享。详见 `packages/pi-fork-save/README.md`。
 
 ### npm 插件
 

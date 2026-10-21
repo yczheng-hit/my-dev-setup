@@ -13,6 +13,7 @@
   ],
   "packages": [
     "repo:packages/pi-agent-summary-time",
+    "repo:packages/pi-fork-save",
     "npm:pi-cc-extensions",
     "repo:packages/picc-permission-modes",
     "npm:pi-subagents",
