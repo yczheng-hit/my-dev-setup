@@ -2,6 +2,30 @@
 
 个人 herdr + pi 开发环境配置。普通 Git 仓库 + Bash 脚本，不需要 chezmoi、Stow 等配置管理工具。
 
+## 更新日志
+
+按日期倒序记录影响使用或部署的变更；每次改配置、插件或部署行为时同步更新。
+
+### 2026-10-21
+
+- 全局 `pi/AGENTS.md` 只保留一条规则：搜索优先使用 ripgrep（`grep` 工具或 bash 中的 `rg`）。
+- 新增 `/fork-save`：保存当前会话的分叉副本，但前台仍停留在原会话。保存后只把新会话 ID 复制到剪贴板，副本中的历史 token 和 cost 统计从零开始。
+
+### 2026-10-20
+
+- HUD 显示会话名称，并新增 `/rename`。
+- Pi 回合摘要显示 UTC+8 完成时间。
+- 新增 `@jl1990/pi-scheduler` 和 `@narumitw/pi-goal`。
+- plan mode 改为只能由用户手动进入。
+- 要求 `pi-hashline-edit-pro >= 6.5.0`，修复长会话中读取大文件时卡住的问题。
+- 修复 herdr 插件通过符号链接注册时被误判为有变化的问题。
+
+### 2026-10-16
+
+- 初始化 herdr 和 pi 配置。
+- 同步 Pi 主题和插件。
+- 改用本机 Herdr 快捷键和 Tokyo Night 主题。
+
 ## 使用
 
 机器上需要已经安装 **git、herdr、pi、Node.js / npm**；使用 herdr-monitor 还需要 **Python 3.11+**（缺少时只跳过 monitor）。工具本身的安装不在本仓库脚本中自动执行。
