@@ -71,10 +71,6 @@ export function defaultForkName(sessionName: string | undefined, cwd: string, no
   return `${sessionName || basename(cwd) || "session"} · fork ${stamp}`;
 }
 
-/** Use the full path so resuming works even with a custom --session-dir. */
-export function resumeCommand(file: string): string {
-  return `pi --session '${file.replace(/'/g, "'\\''")}'`;
-}
 
 /**
  * Copy root..leafId of the saved session file into a new session file in the

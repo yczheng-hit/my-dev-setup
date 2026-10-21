@@ -12,7 +12,7 @@ const host = process.env.PI_HOST_DIR;
 if (!host) throw new Error('Set PI_HOST_DIR to the installed pi-coding-agent directory');
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { SessionManager } = await import(pathToFileURL(path.join(host, 'dist/index.js')));
-const D = await fs.mkdtemp(path.join(os.tmpdir(), 'fork-save-live-'));
+const D = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'fork-save-live-')));
 const socket = path.join(D, 'tmux.sock');
 const tmux = (...args) => execFileSync('tmux', ['-S', socket, ...args], { encoding: 'utf8' });
 const quote = s => `'${s.replace(/'/g, "'\\''")}'`;
@@ -45,7 +45,7 @@ try {
   await fs.writeFile(adapter, `import { registerForkSave } from ${JSON.stringify(path.join(root, 'extensions/index.ts'))};\nexport default pi => registerForkSave(pi, async () => {});\n`);
   const fake = path.join(root, '../pi-subagent-hud/test/fixtures/fake-provider.ts');
   const args = [process.execPath, path.join(host, 'dist/bundle/cli.js'), '--offline', '--no-mcp', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-context-files', '-e', adapter, '-e', fake, '--model', 'btw-live-fake/fixture', '--session-dir', dir];
-  const command = file => `env PI_SKIP_VERSION_CHECK=1 PI_CODING_AGENT_DIR=${quote(path.join(D, 'agent'))} HOME=${quote(D)} ${[...args, '--session', file].map(quote).join(' ')}`;
+  const command = (file, options = []) => `env PI_SKIP_VERSION_CHECK=1 PI_CODING_AGENT_DIR=${quote(path.join(D, 'agent'))} HOME=${quote(D)} ${[...args, ...options, '--session', file].map(quote).join(' ')}`;
   tmux('new-session', '-d', '-s', 'main', '-x', '150', '-y', '45', '-c', D, command(source.getSessionFile()));
   await until(() => capture('main').includes('seed answer 2'), 'main restored');
   await sleep(1000);
@@ -67,8 +67,8 @@ try {
   await until(async () => (await fs.readFile(source.getSessionFile(), 'utf8')).includes('FAKE_REPLY_'), 'main continuation stayed in original file');
   assert.equal(await fs.readFile(savedFile, 'utf8'), savedBefore);
 
-  // Open the fork later with exactly --session <file>, then continue it.
-  tmux('new-session', '-d', '-s', 'fork', '-x', '150', '-y', '45', '-c', D, command(savedFile));
+  // Open the fork later with --session <ID> and the custom session directory, then continue it.
+  tmux('new-session', '-d', '-s', 'fork', '-x', '150', '-y', '45', '-c', D, command(id, ['--session-dir', dir]));
   await until(() => capture('fork').includes('seed answer 2'), '--session restores saved context');
   assert.ok(!capture('fork').includes('main continuation'));
   await submit('fork', 'fork continuation');
@@ -77,6 +77,7 @@ try {
   console.log('LIVE_FORK_SAVE_OK: foreground unchanged, snapshot saved, --session restore and independent continuation');
 } catch (error) {
   try { console.error(capture('main')); } catch {}
+  try { console.error('FORK PANE:', capture('fork')); } catch {}
   throw error;
 } finally {
   try { tmux('kill-server'); } catch {}

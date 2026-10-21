@@ -11,7 +11,7 @@ const { createJiti } = await import(pathToFileURL(path.join(host, 'node_modules/
 const piEntry = path.join(host, 'dist/index.js');
 const jiti = createJiti(import.meta.url, { alias: { '@earendil-works/pi-coding-agent': piEntry } });
 const { SessionManager } = await import(pathToFileURL(piEntry));
-const { forkPoints, saveFork, defaultForkName, normalizeName, resumeCommand } = await jiti.import('../extensions/fork-save.ts');
+const { forkPoints, saveFork, defaultForkName, normalizeName } = await jiti.import('../extensions/fork-save.ts');
 const { default: extension, registerForkSave } = await jiti.import('../extensions/index.ts');
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -100,9 +100,10 @@ test('/fork-save command: picker choice, notification, foreground unchanged', as
   assert.equal(session.getLeafId(), leaf);
   assert.equal(notes.at(-1).level, 'info');
   const id = notes.at(-1).text.match(/会话 ID：([\w.-]+)/)[1];
-  assert.match(notes.at(-1).text, /恢复命令已复制到剪贴板/);
+  assert.match(notes.at(-1).text, /仅会话 ID 已复制到剪贴板/);
   const fork = SessionManager.open(SessionManager.findById(dir, id, dir));
-  assert.deepEqual(copied, [resumeCommand(fork.getSessionFile())]);
+  assert.deepEqual(copied, [id]);
+  assert.match(notes.at(-1).text, new RegExp(`pi --session ${id}`));
   assert.equal(fork.getSessionName(), 'named fork');
   assert.deepEqual(texts(fork), ['first question', 'first answer']);
 
@@ -166,10 +167,6 @@ test('command rejects streaming, handles cancel and clipboard failure, saves cur
   assert.match(fork.getSessionName(), /fork \d{2}-\d{2} \d{2}:\d{2}/);
 }));
 
-test('resume command quotes spaces, apostrophes and shell metacharacters', () => {
-  assert.equal(resumeCommand('/tmp/a b/fork.jsonl'), "pi --session '/tmp/a b/fork.jsonl'");
-  assert.equal(resumeCommand("/tmp/it's $HOME/fork.jsonl"), "pi --session '/tmp/it'\\''s $HOME/fork.jsonl'");
-});
 
 test('image-only user messages still mark round boundaries', () => {
   const branch = [

@@ -15,13 +15,13 @@
 
 不指定名称时，自动命名为 `原会话名称 · fork 月-日 时:分`；原会话未命名则使用工作目录名。名称保存在 Pi 原生会话元数据中。
 
-成功后显示新会话 ID，并把完整恢复命令复制到剪贴板：
+成功后显示新会话 ID，并**仅把 ID** 复制到剪贴板；屏幕同时显示简短的恢复命令：
 
 ```sh
-pi --session '/完整路径/时间戳_新会话ID.jsonl'
+pi --session 新会话ID
 ```
 
-默认会话目录中的副本也可以用 `pi --session 新会话ID` 打开，或者从 `/resume` 按名称查找。复制的完整路径命令不依赖当前目录或 `--session-dir`。Linux/macOS 的命令使用 POSIX shell 引号。
+在当前工作目录的默认会话目录下，直接运行该命令即可；Pi 也会跨项目查找 ID。或者从 `/resume` 按名称打开。使用自定义 `--session-dir` 时，在恢复命令中同样传入该目录。
 
 - 当前会话不切换；不改变编辑器内容、名称或历史。
 - 不启动新 Pi 进程、模型请求、后台任务或终端面板。
@@ -54,4 +54,4 @@ npm test --prefix packages/pi-fork-save
 PI_FORK_SAVE_LIVE_TEST=1 node packages/pi-fork-save/test/live-fork-save.mjs
 ```
 
-验证：创建副本不改写源文件；原窗口继续写入源会话；之后 `--session` 恢复完整副本上下文；副本与原会话能分别继续。
+验证：创建副本不改写源文件；原窗口继续写入源会话；之后 `--session ID` 恢复完整副本上下文；副本与原会话能分别继续。

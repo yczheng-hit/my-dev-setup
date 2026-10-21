@@ -1,5 +1,5 @@
 import { copyToClipboard, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { defaultForkName, forkPoints, normalizeName, resumeCommand, saveFork } from "./fork-save.ts";
+import { defaultForkName, forkPoints, normalizeName, saveFork } from "./fork-save.ts";
 
 export default function (pi: ExtensionAPI) {
   registerForkSave(pi);
@@ -45,16 +45,16 @@ export function registerForkSave(pi: Pick<ExtensionAPI, "registerCommand">, copy
       const name = normalizeName(args) || defaultForkName(ctx.sessionManager.getSessionName(), ctx.cwd);
       try {
         const saved = saveFork(sessionFile, ctx.sessionManager.getSessionDir(), point.leafId, name);
-        const command = resumeCommand(saved.file);
+        const command = `pi --session ${saved.id}`;
         let copied = false;
         try {
-          await copy(command);
+          await copy(saved.id);
           copied = true;
         } catch {
           // The command stays visible in the notification.
         }
         ctx.ui.notify(
-          `已保存分叉「${saved.name}」，当前会话未切换。\n会话 ID：${saved.id}\n${command}${copied ? "\n（恢复命令已复制到剪贴板）" : ""}\n也可在 /resume 中按名称打开。`,
+          `已保存分叉「${saved.name}」，当前会话未切换。\n会话 ID：${saved.id}\n${command}${copied ? "\n（仅会话 ID 已复制到剪贴板）" : ""}\n也可在 /resume 中按名称打开。`,
           "info",
         );
       } catch (error) {
