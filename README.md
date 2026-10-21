@@ -54,6 +54,7 @@ my-dev-setup/
 ├── herdr/
 │   └── config.toml                         # 本机 Herdr 快捷键、tokyo-night 主题、blocked reason 侧栏
 ├── pi/
+│   ├── AGENTS.md                           # 全局指令：搜索优先 ripgrep
 │   ├── settings.json                       # 插件清单、claude-dark 主题、UI、模型偏好
 │   ├── themes/claude-dark.json              # 自定义主题
 │   ├── keybindings.json                    # Ctrl+E / Alt+T 切换 thinking，End 到行尾

@@ -141,7 +141,7 @@ node -e '
 ' "$REPO" "$REPO/pi/settings.json" "$PI_DIR/settings.json" "$settings_tmp"
 install_file "$settings_tmp" "$PI_DIR/settings.json"
 
-for f in keybindings.json pi-cc-extensions.json WATCHDOG.yml; do
+for f in AGENTS.md keybindings.json pi-cc-extensions.json WATCHDOG.yml; do
   install_file "$REPO/pi/$f" "$PI_DIR/$f"
 done
 for theme in "$REPO"/pi/themes/*.json; do
