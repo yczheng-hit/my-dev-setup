@@ -8,6 +8,7 @@
 
 ### 2026-10-22
 
+- `/btw` 升级到 pi-btw-split `0.7.1-split.9`：BTW 输入框里的 ↑/↓ 改成和主会话一样翻输入历史（输入框为空或光标在行首时 ↑ 调出之前的 BTW 问题，↓ 回到正在写的草稿），不再逐行滚动对话记录；滚动改用 PgUp/PgDn 或鼠标滚轮。历史包含本会话所有 BTW 问题，`/btw:new` 和重载之后仍在。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
 - herdr-monitor 的 Agents 表新增 **WORKSPACE**（herdr 工作区名）和 **SESSION**（会话名）两列，原来的 NAME 列去掉。pi 的会话名就是 `/rename` 或 `/name` 设置的名称，改名后下一次刷新（默认 2 秒）就会显示，未命名时显示 `—`；Claude、Codex 显示它们自己的对话标题。过滤框也能按工作区名和会话名搜索。窗口较窄时依次隐藏 TYPE、LAST WORK、WORKSPACE。herdr-monitor 同时改为本仓库的 git submodule（`tools/herdr-monitor`，当前 `2852106`），在本仓库里就能看到它的代码和改动。其他机器在本仓库执行 `git pull && ./setup.sh`（会更新 monitor 并重装），然后重启 monitor。
 - 定时任务插件改为本地补丁版 `packages/pi-scheduler`，**提示词大幅精简**：工具定义约 1470 → 750 token；唤醒模型时只发一个紧凑块（如 `⏰ 定时任务 task_x「CI」 运行完成 · 11:30`，下接命令、`退出码 1 · 用时 2.3s`、非空输出、`下一步：…`），不再列内部字段和空 stderr，输出上限 18000 → 4000 字符。创建、提醒、`/schedules`、取消和没有唤醒模型的 shell 结果只显示在界面上，不再进入模型上下文；唤醒后也不再重复发一条 “finished”。小部件、列表和结果改为中文本地时间。旧任务文件和旧参数照常可用。其他机器执行 `./setup.sh`（安装依赖并改用本地包），然后重启 Pi。
 - picc 去掉 Windows 专用的路径检查（只用 macOS/Linux）。原来 default 等模式下，`grep`/`read` 的路径如果是 `.`、`src/.`、以 `.` 或空格结尾、含 `~1`、`//host/...`，会被当成可疑 Windows 路径而弹窗确认，现在直接按普通路径规则处理；`.git/`、`.bashrc`、`.claude/` 等危险路径检查不变。原来依赖环境的 4 个测试也改为自带测试环境，全套 541 通过、0 失败。
