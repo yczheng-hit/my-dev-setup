@@ -1,0 +1,73 @@
+{
+  "name": "@jl1990/pi-scheduler",
+  "version": "0.5.1",
+  "description": "Give Pi coding agents a clock: schedule reminders, shell commands, and self-waking prompts for CI polling and autonomous follow-ups.",
+  "author": "jl1990",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jl1990/pi-scheduler.git"
+  },
+  "homepage": "https://github.com/jl1990/pi-scheduler#readme",
+  "bugs": {
+    "url": "https://github.com/jl1990/pi-scheduler/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "coding-agent",
+    "ai-agents",
+    "scheduler",
+    "automation",
+    "reminders",
+    "ci-cd",
+    "developer-tools",
+    "typescript"
+  ],
+  "files": [
+    "extensions/**/*",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/scheduler/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "croner": "10.0.1",
+    "proper-lockfile": "4.1.2"
+  },
+  "bundleDependencies": [
+    "croner",
+    "proper-lockfile"
+  ]
+}

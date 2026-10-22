@@ -8,6 +8,7 @@
 
 ### 2026-10-22
 
+- 定时任务插件改为本地补丁版 `packages/pi-scheduler`，**提示词大幅精简**：工具定义约 1470 → 750 token；唤醒模型时只发一个紧凑块（如 `⏰ 定时任务 task_x「CI」 运行完成 · 11:30`，下接命令、`退出码 1 · 用时 2.3s`、非空输出、`下一步：…`），不再列内部字段和空 stderr，输出上限 18000 → 4000 字符。创建、提醒、`/schedules`、取消和没有唤醒模型的 shell 结果只显示在界面上，不再进入模型上下文；唤醒后也不再重复发一条 “finished”。小部件、列表和结果改为中文本地时间。旧任务文件和旧参数照常可用。其他机器执行 `./setup.sh`（安装依赖并改用本地包），然后重启 Pi。
 - picc 去掉 Windows 专用的路径检查（只用 macOS/Linux）。原来 default 等模式下，`grep`/`read` 的路径如果是 `.`、`src/.`、以 `.` 或空格结尾、含 `~1`、`//host/...`，会被当成可疑 Windows 路径而弹窗确认，现在直接按普通路径规则处理；`.git/`、`.bashrc`、`.claude/` 等危险路径检查不变。原来依赖环境的 4 个测试也改为自带测试环境，全套 541 通过、0 失败。
 - Pi 升级到 **1.4.0**（`pi update --self`）。26 个扩展全部加载无错误；本仓库插件测试在 1.4.0 下通过：pi-btw-split 34/34、pi-agent-summary-time 4/4、pi-fork-save 10/10、pi-hud-footer 14/14、pi-subagent-hud 15/15；picc 全套测试同样通过。其他机器同样执行 `pi update --self`，然后重启 Pi。
 - Pi 启动时默认进入 **bypass permissions** 模式：所有工具调用自动放行，只保留危险路径检查（`.git/`、`.bashrc`、`.claude/` 等）。由 `pi/extensions/picc-permission-modes/config.json` 中的 `permissions.defaultMode` 控制，删掉该字段或改为 `"default"` 即恢复每次询问。恢复或分叉的会话仍沿用该会话上次的模式，`--permission-mode` 参数优先级更高。子 agent 同样继承这个模式。修改后执行 `/reload` 生效。
@@ -104,10 +105,12 @@ my-dev-setup/
 ├── packages/                               # 本地补丁版 / 本地插件（vendored）
 │   ├── picc-permission-modes/
 │   ├── pi-hud-footer/
+│   ├── pi-scheduler/
 │   └── pi-subagent-hud/
 └── patches/                                # 第三方包相对 npm 原版的改动
     ├── picc-permission-modes/0.1.3-local.patch
-    └── pi-hud-footer/0.8.0-local.patch
+    ├── pi-hud-footer/0.8.0-local.patch
+    └── pi-scheduler/0.5.1-local.patch
 ```
 
 ## 插件来源与版本
@@ -133,11 +136,12 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 |---|---|---|---|
 | `packages/picc-permission-modes` | 第三方 + 补丁 | npm `@ladbabynpm/picc-permission-modes@0.1.3` | `patches/picc-permission-modes/0.1.3-local.patch` |
 | `packages/pi-hud-footer` | 第三方 + 补丁 | npm `pi-hud-footer@0.8.0` | `patches/pi-hud-footer/0.8.0-local.patch` |
+| `packages/pi-scheduler` | 第三方 + 补丁 | npm `@jl1990/pi-scheduler@0.5.1` | `patches/pi-scheduler/0.5.1-local.patch` |
 | `packages/pi-subagent-hud` | 自己的小插件 | — | — |
 | `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
 | `packages/pi-fork-save` | 自己的小插件 | — | `/fork-save` 保存分叉但不切换前台，稍后用 `pi --session` 加载 |
 
-两个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
+三个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
 
 **picc-permission-modes**：基于 [Ladbaby/picc-permission-modes](https://github.com/Ladbaby/picc-permission-modes) 的 npm `@ladbabynpm/picc-permission-modes@0.1.3`，详细记录在它的 `LOCAL-PATCH.md`：
 
@@ -151,6 +155,8 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 8. **去掉 Windows 专用逻辑**：只在 macOS/Linux 使用。删除可疑 Windows 路径检查（它在 macOS 上也会误判 `.`、`notes.` 这类路径并弹窗），以及上游代码里只在 Windows 生效的 UNC 路径、盘符、`~\` 分支；测试改用 POSIX 路径并自带配置，全套 541 通过、0 失败。
 
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 本地补丁：去掉 HUD 左侧缩进；两种 HUD 样式显示当前会话名称；新增 `/rename 新名称`（不带参数时弹出输入框）。名称通过 Pi 原生会话 API 保存，恢复会话后仍显示，Pi 自带 `/name` 也会同步刷新 HUD。未命名时不占位置，长名称只在 HUD 中截断；可用 `display.all.sessionName: false` 隐藏。改动见 `patches/pi-hud-footer/0.8.0-local.patch`，详细验证及测试命令见 `packages/pi-hud-footer/LOCAL-PATCH.md`。
+
+**pi-scheduler**：npm `@jl1990/pi-scheduler@0.5.1` + 本地补丁，只改提示词和显示，调度逻辑不变。工具定义从每次请求约 1470 token 减到约 750 token；别名参数不再写进 schema，但仍然接受。唤醒模型时只发一个紧凑块（标题、命令、退出码和用时、非空输出、下一步），输出上限从 18000 字符降到 4000（stderr 2000）。创建、提醒、列表、取消和未唤醒的 shell 结果只在界面显示，并保存在会话里，不再进入模型上下文；已唤醒时不再重复发 “finished” 消息。界面文字改为中文本地时间（如 `⏰ CI · 命令 · 5 分钟后（11:30）`）。详见 `packages/pi-scheduler/LOCAL-PATCH.md`。
 
 **pi-subagent-hud 0.1.2**：在本仓库维护的小插件。在 HUD 状态行末尾显示正在运行的 pi-subagents 子 agent（模型、任务、耗时、token）。依赖 `pi/extensions/subagent/config.json` 里的 `inlineToolDisplay: "summary"`、`asyncWidget: false`、`fleetView: false`。说明见它的 README。live 测试通过 `PI_HOST_DIR` 指定 Pi 安装目录，不再依赖某台机器的绝对路径。
 
@@ -166,7 +172,6 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-review (8.0.1)
 pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (≥6.5.0) pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
-@jl1990/pi-scheduler (0.5.1)    # 定时 prompt / shell 检查；Pi 运行中触发
 @narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
 pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
 ```
@@ -186,7 +191,7 @@ pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件）�
 
 **pi-cc-steer 的行为提示：** `git:github.com/panbergco/pi-cc-steer` 从公开上游 `main` 安装；除了对话中途插入消息，它默认还会替换 Pi 的 `bash` 工具，提供后台命令和 `bg_list` / `bg_output` / `bg_stop`，超时 120 秒的命令会转后台而非直接终止，原有 shell 路径/前缀设置可能被忽略。只要 steering、不想替换 bash 时，启动 Pi 前设置 `PI_CC_STEER_BACKGROUND=0`。`/reload` 会丢掉尚未交给模型的内存消息；详见插件自己的 README。
 
-**定时与后台唤醒：** [`@jl1990/pi-scheduler`](https://github.com/jl1990/pi-scheduler) 支持 `/schedule prompt once 10m :: 检查任务进度`、`/schedule shell once 5m :: npm test`（该命令默认只执行并记录结果，不自动唤醒；需由模型用 `schedule_task` 设置 `wakeOn`）、`/schedules` 和 `/schedule-cancel <id>`；模型也可以通过 `schedule_task` 设置 `scope: "session"`、`maxRuns` 与 shell 的 `wakeOn: "success" | "failure" | "always" | "change"`。定时 shell 由 scheduler 自己执行并按策略唤醒；立即启动的后台 `bash` 则由**已经安装**的 pi-cc-steer 在完成后自动通知、空闲时唤醒，不需要重复安装。两者都要求 Pi 运行才能按时触发。scheduler 把任务保存在本机 `~/.pi/agent/state/scheduler/tasks.json`，关闭期间不触发但重开同一会话后可能补跑逾期任务；要让任务彻底失效，请 `/schedule-cancel <id>`，不要把本机任务状态提交到仓库。`scope: "session"` 要求持久 Pi 会话，关闭后并不自动删除任务。默认一次性任务或为重复任务设置 `maxRuns`，避免无界自动调用模型。安装/升级由 Pi 按 `pi/settings.json` 的包清单在启动时完成，当前会话执行 `/reload` 后生效。
+**定时与后台唤醒：** [`@jl1990/pi-scheduler`](https://github.com/jl1990/pi-scheduler)（本地补丁版 `packages/pi-scheduler`）支持 `/schedule prompt once 10m :: 检查任务进度`、`/schedule shell once 5m :: npm test`（该命令默认只执行并记录结果，不自动唤醒；需由模型用 `schedule_task` 设置 `wakeOn`）、`/schedules` 和 `/schedule-cancel <id>`；模型也可以通过 `schedule_task` 设置 `scope: "session"`、`maxRuns` 与 shell 的 `wakeOn: "success" | "failure" | "always" | "change"`。定时 shell 由 scheduler 自己执行并按策略唤醒；立即启动的后台 `bash` 则由**已经安装**的 pi-cc-steer 在完成后自动通知、空闲时唤醒，不需要重复安装。两者都要求 Pi 运行才能按时触发。scheduler 把任务保存在本机 `~/.pi/agent/state/scheduler/tasks.json`，关闭期间不触发但重开同一会话后可能补跑逾期任务；要让任务彻底失效，请 `/schedule-cancel <id>`，不要把本机任务状态提交到仓库。`scope: "session"` 要求持久 Pi 会话，关闭后并不自动删除任务。默认一次性任务或为重复任务设置 `maxRuns`，避免无界自动调用模型。它的依赖（croner、proper-lockfile）由 `./setup.sh` 安装到 `packages/pi-scheduler/node_modules`，当前会话执行 `/reload` 后生效。
 
 ## 兼容性
 

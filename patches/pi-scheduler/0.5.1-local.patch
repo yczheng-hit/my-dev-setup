@@ -1,0 +1,620 @@
+diff --git a/extensions/scheduler/index.ts b/extensions/scheduler/index.ts
+index 0485891..7f8438a 100644
+--- a/extensions/scheduler/index.ts
++++ b/extensions/scheduler/index.ts
+@@ -24,8 +24,13 @@ const STATE_FILE = process.env.PI_SCHEDULER_STATE_FILE || join(homedir(), ".pi",
+ const MAX_TIMER_DELAY_MS = 2_147_483_647; // setTimeout's practical max (~24.8 days)
+ const STATE_REFRESH_INTERVAL_MS = 5_000;
+ const DEFAULT_SHELL_TIMEOUT_MS = 5 * 60 * 1000;
+-const MAX_STORED_OUTPUT_CHARS = 12_000;
+-const MAX_PROMPT_OUTPUT_CHARS = 18_000;
++// local patch: smaller outputs; a wake shows the head and tail of long logs.
++const MAX_STORED_OUTPUT_CHARS = 4_000;
++const MAX_PROMPT_STDOUT_CHARS = 4_000;
++const MAX_PROMPT_STDERR_CHARS = 2_000;
++// local patch: display-only log entries (shown in the chat, never sent to the model).
++const LOG_ENTRY_TYPE = "scheduled-task-log";
++const ACTION_LABELS: Record<string, string> = { notify: "提醒", prompt: "唤醒", shell: "命令", message: "消息" };
+ 
+ type ScheduledTask = Record<string, any>;
+ type TimerHandle =
+@@ -36,8 +41,8 @@ function truncateMiddle(text: string | undefined, maxChars: number): string {
+ 	const value = text ?? "";
+ 	if (value.length <= maxChars) return value;
+ 	const head = Math.floor(maxChars * 0.35);
+-	const tail = maxChars - head - 80;
+-	return `${value.slice(0, head)}\n\n[... truncated ${value.length - maxChars} characters ...]\n\n${value.slice(-tail)}`;
++	const tail = maxChars - head;
++	return `${value.slice(0, head)}\n[…省略 ${value.length - maxChars} 字符…]\n${value.slice(-tail)}`;
+ }
+ 
+ function currentSessionFile(ctx: ExtensionContext): string | undefined {
+@@ -68,48 +73,49 @@ function sendAgentPrompt(pi: ExtensionAPI, ctx: ExtensionContext, prompt: string
+ 	}
+ }
+ 
+-function scheduledPromptHeader(task: ScheduledTask): string {
+-	return [
+-		`[Scheduled task ${task.id} fired]`,
+-		`Name: ${task.name ?? task.title ?? "(unnamed)"}`,
+-		`Action: ${task.action}`,
+-		`Type: ${task.type}`,
+-		`Schedule: ${task.schedule}`,
+-		`Scheduled for: ${task.nextRun ?? task.dueAt ?? "unknown"}`,
+-		"",
+-	].join("\n");
++// local patch: compact Chinese wake/log text instead of the upstream field dump.
++function taskTitle(task: ScheduledTask): string {
++	const name = task.name || task.title;
++	return name ? `${task.id}「${name}」` : task.id;
++}
++
++function scheduledPromptHeader(task: ScheduledTask, event = "到点"): string {
++	return `⏰ 定时任务 ${taskTitle(task)} ${event} · ${core.formatClock(new Date())}`;
+ }
+ 
+ function taskCreatedText(task: ScheduledTask): string {
+-	const label = task.name ? ` "${task.name}"` : "";
+-	const next = task.nextRun ? ` next run ${new Date(task.nextRun).toLocaleString()}` : "";
+-	return `Scheduled ${task.action}/${task.type} task${label} ${task.id}${next}: ${core.taskSummary(task)}`;
++	return `已安排 ${taskTitle(task)}：${core.describeTask(task)}`;
++}
++
++function formatDuration(ms: unknown): string {
++	const value = Number(ms);
++	if (!Number.isFinite(value) || value < 0) return "";
++	return value < 10_000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value / 1000)}s`;
++}
++
++function shellOutcome(result: Record<string, any>): string {
++	const parts = [result.killed ? "超时被终止" : `退出码 ${result.code}`];
++	const duration = formatDuration(result.durationMs);
++	if (duration) parts.push(`用时 ${duration}`);
++	return parts.join(" · ");
+ }
+ 
+-function shellResultPrompt(task: ScheduledTask, result: Record<string, any>, instruction: string): string {
+-	const stdout = truncateMiddle(result.stdout ?? "", MAX_PROMPT_OUTPUT_CHARS);
+-	const stderr = truncateMiddle(result.stderr ?? "", MAX_PROMPT_OUTPUT_CHARS);
++function fenced(label: string, text: string): string[] {
++	const body = text.replace(/\s+$/, "");
++	return body ? [`${label}：`, "```", body, "```"] : [];
++}
++
++function shellResultPrompt(task: ScheduledTask, result: Record<string, any>, instruction: string, sessionCwd?: string): string {
++	const stdout = truncateMiddle(result.stdout ?? "", MAX_PROMPT_STDOUT_CHARS);
++	const stderr = truncateMiddle(result.stderr ?? "", MAX_PROMPT_STDERR_CHARS);
++	const output = [...fenced("输出", stdout), ...fenced("错误输出", stderr)];
+ 	return [
+-		scheduledPromptHeader(task).trimEnd(),
+-		"A scheduled shell command completed.",
+-		"",
+-		`Command: ${task.command}`,
+-		`CWD: ${result.cwd}`,
+-		`Exit code: ${result.code}`,
+-		`Timed out/killed: ${Boolean(result.killed)}`,
+-		"",
+-		"STDOUT:",
+-		"```",
+-		stdout,
+-		"```",
+-		"",
+-		"STDERR:",
+-		"```",
+-		stderr,
+-		"```",
+-		"",
+-		"Follow-up instruction:",
+-		instruction,
++		scheduledPromptHeader(task, "运行完成"),
++		`$ ${task.command}`,
++		...(result.cwd && result.cwd !== sessionCwd ? [`目录：${result.cwd}`] : []),
++		shellOutcome(result),
++		...(output.length ? output : ["（无输出）"]),
++		`下一步：${instruction}`,
+ 	].join("\n");
+ }
+ 
+@@ -117,6 +123,9 @@ function taskLabel(task: ScheduledTask): string {
+ 	return task.name || task.title || task.id;
+ }
+ 
++// local patch: display-only chat line; old sessions without a renderer simply skip it.
++type LogEntryData = { text: string; level?: "info" | "notice" | "warning" | "error"; detail?: string };
++
+ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	let tasks: ScheduledTask[] = [];
+ 	let handles = new Map<string, TimerHandle>();
+@@ -219,13 +228,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			return;
+ 		}
+ 
+-		const lines = ["⏰ Scheduled Actions"];
++		// local patch: one compact Chinese line per task, local wall-clock time.
++		const lines: string[] = [];
+ 		for (const task of upcoming) {
+-			const relative = task.nextRun ? core.formatRelativeTime(task.nextRun) : "no next run";
+-			const absolute = task.nextRun ? core.formatAbsoluteTime(task.nextRun) : "";
+-			const when = absolute ? `${relative} (${absolute})` : relative;
+-			const last = task.lastStatus ? ` last=${task.lastStatus}` : "";
+-			lines.push(`  ✓ ${taskLabel(task)} ${task.action}/${task.type} ${when} runs=${task.runCount ?? 0}${last}`);
++			const when = task.nextRun ? `${core.formatRelativeZh(task.nextRun)}（${core.formatClock(task.nextRun)}）` : "无下次运行";
++			const runs = task.runCount ? ` · 已运行 ${task.runCount} 次` : "";
++			const last = task.lastStatus === "error" ? " · 上次失败" : "";
++			lines.push(`⏰ ${taskLabel(task)} · ${ACTION_LABELS[task.action] ?? task.action} · ${when}${runs}${last}`);
+ 		}
+ 		ctx.ui.setWidget("scheduler", lines, { placement: "belowEditor" });
+ 	}
+@@ -233,7 +242,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	function updateStatus(ctx = activeCtx): void {
+ 		if (!ctx?.hasUI) return;
+ 		const count = core.pendingTasks(visibleTasks(ctx)).length;
+-		ctx.ui.setStatus("scheduler", count ? `⏰ ${count} scheduled` : undefined);
++		ctx.ui.setStatus("scheduler", count ? `⏰ ${count} 个定时任务` : undefined); // local patch
+ 		updateWidget(ctx);
+ 	}
+ 
+@@ -356,6 +365,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 		}
+ 	}
+ 
++	// Kept for the `message` action only: that content is meant for the model.
+ 	function recordMessage(content: string, details?: Record<string, any>, triggerTurn = false): void {
+ 		pi.sendMessage(
+ 			{
+@@ -368,6 +378,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 		);
+ 	}
+ 
++	// local patch: user-facing scheduler output is a session entry that never enters model context.
++	function logEntry(text: string, level: LogEntryData["level"] = "info", detail?: string): void {
++		pi.appendEntry<LogEntryData>(LOG_ENTRY_TYPE, detail ? { text, level, detail } : { text, level });
++	}
++
+ 	async function executeTask(
+ 		task: ScheduledTask,
+ 		ctx: ExtensionContext,
+@@ -375,13 +390,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	): Promise<Record<string, any>> {
+ 		if (task.action === "notify") {
+ 			const message = task.message ?? "Scheduled reminder";
+-			if (ctx.hasUI) ctx.ui.notify(message, "info");
+-			recordMessage(`🔔 ${message}`, { task }, false);
++			// local patch: the persisted log entry below replaces the transient ctx.ui.notify line.
++			logEntry(`🔔 ${taskTitle(task)}：${message}`, "notice"); // local patch
+ 			return { ok: true, delivered: "notify", wakeReason: "notify", wakeDisposition: "not-requested" };
+ 		}
+ 
+ 		if (task.action === "prompt") {
+-			const prompt = `${scheduledPromptHeader(task)}${task.prompt}`;
++			const prompt = `${scheduledPromptHeader(task)}\n${task.prompt}`; // local patch
+ 			sendAgentPrompt(pi, ctx, prompt);
+ 			return { ok: true, delivered: "prompt", wakeReason: "prompt", wakeDisposition: "delivered" };
+ 		}
+@@ -395,9 +410,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 		if (task.action === "shell") {
+ 			const cwd = task.cwd || ctx.cwd;
+ 			const timeout = task.timeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS;
+-			if (ctx.hasUI) ctx.ui.notify(`Running scheduled command: ${task.command}`, "info");
+-
++			// local patch: no "Running scheduled command" toast; time the run for the wake/log line.
++			const startedAt = Date.now();
+ 			const result = await pi.exec("bash", ["-lc", task.command], { cwd, timeout });
++			const durationMs = Date.now() - startedAt;
+ 			const wakeOnChangeFingerprint = core.shellResultFingerprint({
+ 				stdout: result.stdout ?? "",
+ 				stderr: result.stderr ?? "",
+@@ -411,6 +427,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 				timeoutMs: timeout,
+ 				code: result.code,
+ 				killed: result.killed,
++				durationMs, // local patch
+ 				wakeOnChangeFingerprint,
+ 				stdout: truncateMiddle(result.stdout ?? "", MAX_STORED_OUTPUT_CHARS),
+ 				stderr: truncateMiddle(result.stderr ?? "", MAX_STORED_OUTPUT_CHARS),
+@@ -418,12 +435,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 
+ 			if (!isActive()) return { ...shellResult, outputSuppressed: true, wakeReason: task.wakeOn ?? "never", wakeDisposition: "session-suppressed" };
+ 
+-			recordMessage(
+-				`🖥️ Scheduled command ${task.id} finished with exit code ${result.code}: ${task.command}`,
+-				{ task, result: shellResult },
+-				false,
+-			);
+-
++			// local patch: the "finished" line is logged by fireTask only when the agent is not woken.
+ 			shellResult.wakeReason = task.wakeOn ?? "never";
+ 			shellResult.wakeDisposition = "suppressed";
+ 
+@@ -526,7 +538,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 					result.wakeDisposition = "no-followup";
+ 					if (instruction) {
+ 						try {
+-							sendAgentPrompt(pi, ctx, shellResultPrompt(wakeTask, result, instruction));
++							sendAgentPrompt(pi, ctx, shellResultPrompt(wakeTask, result, instruction, fallbackCwd));
+ 							result.wakeDisposition = "delivered";
+ 						} catch (error: any) {
+ 							result.wakeDisposition = "failed";
+@@ -547,6 +559,16 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 					}
+ 				});
+ 			}
++			// local patch: when the agent was not woken, leave one display-only line in the chat.
++			if (task.action === "shell" && !result.outputSuppressed && result.wakeDisposition !== "delivered"
++				&& isSessionActive(ctx, generation)) {
++				const output = [result.stdout, result.stderr].map((text) => text?.trimEnd()).filter(Boolean).join("\n");
++				logEntry(
++					`🖥️ ${taskTitle(task)} 运行完成 · ${shellOutcome(result)}`,
++					result.ok === false ? "warning" : "info",
++					[`$ ${task.command}`, truncateMiddle(output.trimEnd(), 1_500)].filter(Boolean).join("\n"),
++				);
++			}
+ 		} catch (error: any) {
+ 			// If even failure persistence fails, the background boundary will
+ 			// request a retry on the next refresh rather than rearm at delay zero.
+@@ -563,9 +585,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			});
+ 			rescheduleImmediately = true;
+ 			if (failedTask && isSessionActive(ctx, generation)) {
+-				const message = `Scheduled task ${taskId} failed: ${error?.message ?? String(error)}`;
+-				if (ctx.hasUI) ctx.ui.notify(message, "error");
+-				recordMessage(`⚠️ ${message}`, { task: failedTask, error: error?.message ?? String(error) }, false);
++				const message = `定时任务 ${failedTask ? taskTitle(failedTask) : taskId} 运行失败：${error?.message ?? String(error)}`; // local patch
++				logEntry(`⚠️ ${message}`, "error");
+ 			}
+ 		} finally {
+ 			firing.delete(taskId);
+@@ -644,6 +665,16 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 		return new Text(text, 0, 0);
+ 	});
+ 
++	// local patch: renderer for display-only log entries (collapsed: one line; expanded: detail).
++	pi.registerEntryRenderer<LogEntryData>(LOG_ENTRY_TYPE, (entry, options, theme) => {
++		const data = entry.data;
++		if (!data?.text) return undefined;
++		const color = data.level === "error" ? "error" : data.level === "warning" ? "warning" : data.level === "notice" ? "accent" : "muted";
++		let text = theme.fg(color, data.text);
++		if (data.detail) text += options.expanded ? `\n${theme.fg("dim", data.detail)}` : theme.fg("dim", "  (展开查看输出)");
++		return new Text(text, 1, 0);
++	});
++
+ 	pi.on("session_start", async (_event, ctx) => {
+ 		activeCtx = ctx;
+ 		const generation = ++sessionGeneration;
+@@ -686,8 +717,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			}
+ 			try {
+ 				const task = await createAndSchedule(parseCommandTask(args, ctx), ctx);
+-				ctx.ui.notify(taskCreatedText(task), "info");
+-				recordMessage(taskCreatedText(task), { task }, false);
++				logEntry(`⏰ ${taskCreatedText(task)}`); // local patch
+ 			} catch (error: any) {
+ 				ctx.ui.notify(error?.message ?? String(error), "error");
+ 			}
+@@ -707,8 +737,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 					{ action: "notify", type: parsed.type, schedule: parsed.schedule, message: parsed.payload, cwd: ctx.cwd },
+ 					ctx,
+ 				);
+-				ctx.ui.notify(taskCreatedText(task), "info");
+-				recordMessage(taskCreatedText(task), { task }, false);
++				logEntry(`⏰ ${taskCreatedText(task)}`); // local patch
+ 			} catch (error: any) {
+ 				ctx.ui.notify(error?.message ?? String(error), "error");
+ 			}
+@@ -723,7 +752,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			const includeAll = view === "all" || view === "history";
+ 			const includeHistory = view === "history";
+ 			const visible = visibleTasks(ctx);
+-			recordMessage(core.formatTaskList(visible, new Date(), { includeAll, includeHistory }), { includeAll, includeHistory, tasks: visible }, false);
++			logEntry(core.formatTaskList(visible, new Date(), { includeAll, includeHistory })); // local patch
+ 			updateStatus(ctx);
+ 		},
+ 	});
+@@ -738,8 +767,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			}
+ 			try {
+ 				const task = await mutateVisibleTask(ctx, id, (visible) => core.cancelScheduledTask(visible, id, new Date()));
+-				ctx.ui.notify(`Cancelled scheduled task ${task.id}`, "info");
+-				recordMessage(`Cancelled scheduled task ${task.id}`, { task }, false);
++				logEntry(`已取消定时任务 ${taskTitle(task)}`); // local patch
+ 			} catch (error: any) {
+ 				ctx.ui.notify(error?.message ?? String(error), "error");
+ 			}
+@@ -816,57 +844,33 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	pi.registerTool({
+ 		name: "schedule_task",
+ 		label: "Schedule Task",
+-		description:
+-			"Schedule a future or recurring action in this Pi session: notify the user, wake the agent with a prompt, run a shell command, or send a custom message.",
+-		promptSnippet: "Schedule future/recurring notify, prompt, shell, or message actions in the current Pi session",
++		// local patch: slim model-facing metadata. Aliases and rarely used fields (when, payload, title,
++		// description, enabled, triggerTurn, successPrompt, failurePrompt) are no longer advertised but are
++		// still accepted: TypeBox objects allow extra properties and the core reads them as before.
++		description: "Do something later or repeatedly while Pi is open: notify the user, wake yourself with a prompt, or run a shell command and get woken with its output.",
++		promptSnippet: "Schedule reminders, self-wakeups, or shell polling (CI, deploys) for later",
+ 		promptGuidelines: [
+-			"Use schedule_task when the user asks to do something later, when waiting on external systems such as CI/CD pipelines, or when the agent needs to wake itself up to continue work.",
+-			"Use schedule_task type='once' for one-shot work, type='interval' for repeated polling, and type='cron' for calendar-style schedules.",
+-			"Prefer schedule_task action='shell' with followUpPrompt/failurePrompt when a fixed command should run later and its output should be reviewed by the agent.",
+-			"For bounded polling workflows, set maxRuns so interval tasks do not run forever.",
++			"For polling with schedule_task, use action='shell' type='interval' with followUpPrompt (and wakeOn/stopOn), and bound it with maxRuns or expiresIn.",
+ 		],
+ 		parameters: Type.Object({
+-			action: StringEnum(ACTIONS, {
+-				description: "What to do at the scheduled time. Use prompt to wake the agent.",
+-				default: "prompt",
+-			}),
+-			type: Type.Optional(
+-				StringEnum(TYPES, { description: "Schedule type: once (default), interval, or cron.", default: "once" }),
+-			),
+-			when: Type.Optional(
+-				Type.String({
+-					description: "Backward-compatible alias for schedule, e.g. '5m', 'in 10 minutes', 'tomorrow at 9am'.",
+-				}),
+-			),
+-			schedule: Type.Optional(
+-				Type.String({ description: "Schedule string. once: '5m'/'tomorrow at 9am'; interval: '5m'; cron: '0 */5 * * * *'." }),
+-			),
+-			name: Type.Optional(Type.String({ description: "Optional human-readable task name." })),
+-			description: Type.Optional(Type.String({ description: "Optional task description." })),
+-			scope: Type.Optional(StringEnum(SCOPES, { description: "Task scope. Default session.", default: "session" })),
+-			enabled: Type.Optional(Type.Boolean({ description: "Whether the task starts enabled. Default true." })),
+-			maxRuns: Type.Optional(Type.Number({ description: "Disable after this many runs. Useful for bounded polling.", minimum: 1 })),
+-			backoff: Type.Optional(Type.Object({ factor: Type.Number({ description: "Multiplicative interval factor greater than 1." }), maxInterval: Type.String({ description: "Maximum interval, e.g. '15m'." }) })),
+-			expiresIn: Type.Optional(Type.String({ description: "Optional positive duration after which this task expires (for example, '2h')." })),
+-			message: Type.Optional(Type.String({ description: "Message for notify/message actions." })),
+-			prompt: Type.Optional(Type.String({ description: "User prompt to inject for prompt actions." })),
+-			command: Type.Optional(Type.String({ description: "Shell command to run for shell actions." })),
+-			payload: Type.Optional(Type.String({ description: "Generic payload fallback for any action." })),
+-			cwd: Type.Optional(Type.String({ description: "Working directory for shell actions; defaults to current cwd." })),
+-			timeoutMs: Type.Optional(Type.Number({ description: "Shell timeout in milliseconds.", minimum: 1000 })),
+-			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "For shell actions: when to wake the agent. 'change' wakes after the first run only when stdout, stderr, exit status, or killed state changes. Default always if a prompt is configured, otherwise never." })),
+-			stopOn: Type.Optional(StringEnum(STOP_ON, { description: "For shell actions: disable a recurring task after a matching result. Default never." })),
+-			followUpPrompt: Type.Optional(
+-				Type.String({ description: "For shell actions: generic follow-up instruction sent with stdout/stderr." }),
+-			),
+-			successPrompt: Type.Optional(Type.String({ description: "For shell actions: follow-up instruction used on exit code 0." })),
+-			failurePrompt: Type.Optional(Type.String({ description: "For shell actions: follow-up instruction used on non-zero/timeout." })),
+-			title: Type.Optional(Type.String({ description: "Backward-compatible human-readable title alias." })),
+-			triggerTurn: Type.Optional(
+-				Type.Boolean({ description: "For message actions: whether the message should trigger an agent turn. Default true." }),
+-			),
++			action: StringEnum(ACTIONS, { description: "notify: show message; prompt: wake you with prompt; shell: run command" }),
++			type: Type.Optional(StringEnum(TYPES, { description: "default once" })),
++			schedule: Type.Optional(Type.String({ description: "once: '10m', '14:30', 'tomorrow 9am', ISO time; interval: '5m'; cron: '0 9 * * 1-5'" })),
++			name: Type.Optional(Type.String()),
++			message: Type.Optional(Type.String({ description: "notify text" })),
++			prompt: Type.Optional(Type.String()),
++			command: Type.Optional(Type.String()),
++			cwd: Type.Optional(Type.String()),
++			timeoutMs: Type.Optional(Type.Number({ minimum: 1000, description: "default 300000" })),
++			followUpPrompt: Type.Optional(Type.String({ description: "shell: what to do with the output when woken" })),
++			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed" })),
++			stopOn: Type.Optional(StringEnum(STOP_ON, { description: "shell: stop recurring after this result" })),
++			maxRuns: Type.Optional(Type.Number({ minimum: 1 })),
++			expiresIn: Type.Optional(Type.String({ description: "e.g. '2h'" })),
++			backoff: Type.Optional(Type.Object({ factor: Type.Number(), maxInterval: Type.String() }, { description: "interval only, e.g. {factor:2,maxInterval:'30m'}" })),
++			scope: Type.Optional(StringEnum(SCOPES, { description: "default session" })),
+ 		}),
+-		prepareArguments(args) {
++		prepareArguments(args): any { // local patch: typed as any (upstream TS2322)
+ 			if (!args || typeof args !== "object") return args;
+ 			const input = args as Record<string, any>;
+ 			if (input.schedule === undefined && input.when === undefined && typeof input.whenText === "string") {
+@@ -883,7 +887,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 		},
+ 		renderCall(args, theme) {
+ 			return new Text(
+-				`${theme.fg("toolTitle", theme.bold("schedule_task"))} ${theme.fg("muted", args.action ?? "prompt")}/${theme.fg("muted", args.type ?? "once")} ${theme.fg("accent", args.schedule ?? args.when ?? "")}`,
++				`${theme.fg("toolTitle", theme.bold("schedule_task"))} ${theme.fg("muted", args.action ?? "prompt")}/${theme.fg("muted", args.type ?? "once")} ${theme.fg("accent", args.schedule ?? (args as any).when ?? "")}`,
+ 				0,
+ 				0,
+ 			);
+@@ -897,12 +901,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	pi.registerTool({
+ 		name: "list_scheduled_tasks",
+ 		label: "List Scheduled Tasks",
+-		description: "List pending or all scheduled tasks visible to the current Pi session.",
+-		promptSnippet: "List pending/all scheduled future or recurring actions visible to the current Pi session",
++		description: "List scheduled tasks (pending by default).",
+ 		parameters: Type.Object({
+-			includeAll: Type.Optional(Type.Boolean({ description: "Include disabled, fired, cancelled, and failed tasks. Default false." })),
+-			includeHistory: Type.Optional(Type.Boolean({ description: "Include compact per-run history. Default false." })),
+-			id: Type.Optional(Type.String({ description: "Show history for one task id or prefix." })),
++			includeAll: Type.Optional(Type.Boolean({ description: "also finished/disabled" })),
++			includeHistory: Type.Optional(Type.Boolean()),
++			id: Type.Optional(Type.String({ description: "one task (id or prefix), with history" })),
+ 		}),
+ 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+ 			await loadTasks();
+@@ -921,15 +924,14 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	pi.registerTool({
+ 		name: "cancel_scheduled_task",
+ 		label: "Cancel Scheduled Task",
+-		description: "Cancel a scheduled task by id or id prefix. Alias for disabling with cancelled status.",
+-		promptSnippet: "Cancel a scheduled task by id or prefix",
++		description: "Cancel a scheduled task.",
+ 		parameters: Type.Object({
+-			id: Type.String({ description: "Task id or unique id prefix." }),
++			id: Type.String({ description: "id or unique prefix" }),
+ 		}),
+ 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+ 			const task = await mutateVisibleTask(ctx, params.id, (visible) => core.cancelScheduledTask(visible, params.id, new Date()));
+ 			return {
+-				content: [{ type: "text", text: `Cancelled scheduled task ${task.id}` }],
++				content: [{ type: "text", text: `已取消 ${taskTitle(task)}` }], // local patch
+ 				details: { task, pending: core.pendingTasks(tasks) },
+ 			};
+ 		},
+@@ -938,35 +940,23 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	pi.registerTool({
+ 		name: "manage_scheduled_task",
+ 		label: "Manage Scheduled Task",
+-		description: "Enable, disable, remove, update, or cleanup scheduled tasks visible to this Pi session.",
+-		promptSnippet: "Manage scheduled tasks: enable, disable, remove, update, or cleanup",
++		// local patch: update still accepts every schedule_task field (extra properties pass validation and
++		// the core validates them); only fields needing null or schema checks are listed.
++		description: "Enable, disable, remove, or update a scheduled task; cleanup removes finished ones. update accepts any schedule_task field (command, followUpPrompt, maxRuns, ...); null clears backoff/expiresIn.",
+ 		parameters: Type.Object({
+-			action: StringEnum(MANAGE_ACTIONS, { description: "Management action to perform." }),
+-			id: Type.Optional(Type.String({ description: "Task id or unique id prefix. Required except for cleanup." })),
+-			name: Type.Optional(Type.String()),
+-			description: Type.Optional(Type.String()),
+-			type: Type.Optional(StringEnum(TYPES)),
++			action: StringEnum(MANAGE_ACTIONS),
++			id: Type.Optional(Type.String({ description: "id or unique prefix; not needed for cleanup" })),
+ 			schedule: Type.Optional(Type.String()),
+-			scope: Type.Optional(StringEnum(SCOPES)),
+-			enabled: Type.Optional(Type.Boolean()),
+-			maxRuns: Type.Optional(Type.Number({ minimum: 1 })),
++			wakeOn: Type.Optional(StringEnum(WAKE_ON)),
++			timeoutMs: Type.Optional(Type.Number({ minimum: 1000 })),
+ 			backoff: Type.Optional(Type.Union([Type.Object({ factor: Type.Number(), maxInterval: Type.String() }), Type.Null()])),
+ 			expiresIn: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+-			prompt: Type.Optional(Type.String()),
+-			message: Type.Optional(Type.String()),
+-			command: Type.Optional(Type.String()),
+-			timeoutMs: Type.Optional(Type.Number({ minimum: 1000 })),
+-			wakeOn: Type.Optional(StringEnum(WAKE_ON)),
+-			stopOn: Type.Optional(StringEnum(STOP_ON)),
+-			followUpPrompt: Type.Optional(Type.String()),
+-			successPrompt: Type.Optional(Type.String()),
+-			failurePrompt: Type.Optional(Type.String()),
+ 		}),
+ 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+ 			if (params.action === "cleanup") {
+ 				const removed = await transactTasks((current) => cleanupVisibleTasks(current, ctx));
+ 				rescheduleAll();
+-				return { content: [{ type: "text", text: `Cleaned up ${removed.length} scheduled task(s).` }], details: { removed } };
++				return { content: [{ type: "text", text: `已清理 ${removed.length} 个定时任务` }], details: { removed } }; // local patch
+ 			}
+ 
+ 			if (!params.id) throw new Error("id is required for this management action");
+@@ -997,7 +987,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 			if (params.action === "remove") clearHandle(task.id);
+ 			rescheduleAll();
+ 			return {
+-				content: [{ type: "text", text: `${params.action} scheduled task ${task.id}` }],
++				// local patch: short Chinese result with the task's new state.
++				content: [{ type: "text", text: params.action === "remove" ? `已删除 ${taskTitle(task)}` : `已${{ enable: "启用", disable: "停用", update: "更新" }[params.action as string] ?? params.action} ${taskTitle(task)}：${core.describeTask(task)}` }],
+ 				details: { task, pending: core.pendingTasks(tasks) },
+ 			};
+ 		},
+diff --git a/extensions/scheduler/scheduler-core.cjs b/extensions/scheduler/scheduler-core.cjs
+index 887dbb0..42d317e 100644
+--- a/extensions/scheduler/scheduler-core.cjs
++++ b/extensions/scheduler/scheduler-core.cjs
+@@ -1053,28 +1053,94 @@ function formatSchedule(task) {
+ 	return task.schedule ?? task.whenText ?? task.dueAt;
+ }
+ 
++// local patch: Chinese, local-time task list/summary (start)
++const ACTION_ZH = { notify: "提醒", prompt: "唤醒", shell: "命令", message: "消息" };
++const STATUS_ZH = { pending: "待运行", running: "运行中", fired: "已完成", cancelled: "已取消", failed: "失败", expired: "已过期" };
++const LAST_ZH = { success: "成功", error: "失败", running: "运行中", interrupted: "中断", cancelled: "已取消" };
++const WAKE_ZH = { delivered: "已唤醒", suppressed: "未唤醒", "no-followup": "无后续指令", "session-suppressed": "会话已切换", failed: "唤醒失败", pending: "唤醒中" };
++const pad2 = (n) => String(n).padStart(2, "0");
++
++/** Local wall-clock time: "11:30", "明天 11:30" or "10-25 11:30". */
++function formatClock(value, nowValue = new Date()) {
++	const date = new Date(value);
++	if (!Number.isFinite(date.getTime())) return "未知";
++	const now = asDate(nowValue);
++	const hm = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
++	const tomorrow = new Date(now);
++	tomorrow.setDate(tomorrow.getDate() + 1);
++	if (date.toDateString() === now.toDateString()) return hm;
++	if (date.toDateString() === tomorrow.toDateString()) return `明天 ${hm}`;
++	const md = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
++	return date.getFullYear() === now.getFullYear() ? `${md} ${hm}` : `${date.getFullYear()}-${md} ${hm}`;
++}
++
++/** "5 分钟后", "1 小时 20 分钟后", "即将". */
++function formatRelativeZh(value, nowValue = new Date()) {
++	let diff = Date.parse(value) - asDate(nowValue).getTime();
++	if (!Number.isFinite(diff) || diff < SECOND) return "即将";
++	const units = [["天", DAY], ["小时", HOUR], ["分钟", MINUTE], ["秒", SECOND]];
++	const parts = [];
++	for (const [label, size] of units) {
++		const n = Math.floor(diff / size);
++		if (n > 0) {
++			parts.push(`${n} ${label}`);
++			diff -= n * size;
++		}
++		if (parts.length >= 2 || (parts.length && size <= MINUTE)) break;
++	}
++	return `${parts.join(" ")}后`;
++}
++
++function formatNextRun(task, nowValue = new Date()) {
++	if (!task.nextRun) return "";
++	return `${formatClock(task.nextRun, nowValue)}（${formatRelativeZh(task.nextRun, nowValue)}）`;
++}
++
++function formatScheduleZh(task) {
++	if (task.type === "interval") return `每 ${task.schedule}`;
++	if (task.type === "cron") return `cron ${task.schedule}`;
++	return `一次 ${task.schedule ?? task.whenText ?? ""}`.trim();
++}
++
++/** One-line description used by the created-task text and the list. */
++function describeTask(task, nowValue = new Date()) {
++	const parts = [ACTION_ZH[task.action] ?? task.action, formatScheduleZh(task)];
++	const next = formatNextRun(task, nowValue);
++	if (next && task.enabled !== false && !isTerminal(task)) parts.push(`下次 ${next}`);
++	if (task.maxRuns) parts.push(`最多 ${task.maxRuns} 次`);
++	if (task.backoff) parts.push(`退避 ×${task.backoff.factor}`);
++	if (task.expiresAt) parts.push(`${formatClock(task.expiresAt, nowValue)} 过期`);
++	if (task.scope && task.scope !== "session") parts.push(`范围 ${task.scope}`);
++	const summary = taskSummary(task);
++	return `${parts.join(" · ")}${summary ? ` :: ${summary}` : ""}`;
++}
++
+ function formatTaskLine(task, nowValue = new Date()) {
+-	const label = task.name || task.title || task.id;
+-	const next = task.nextRun ? `${formatRelativeTime(task.nextRun, nowValue)} (${new Date(task.nextRun).toLocaleString()})` : "no next run";
+-	const enabled = task.enabled === false ? "disabled" : "enabled";
+-	const last = task.lastStatus ? ` last=${task.lastStatus}` : "";
+-	const expiry = task.expiresAt ? ` expiresAt=${task.expiresAt}` : "";
+-	return `- ${task.id} ${label} next=${next} [${task.action}/${task.type}] ${enabled} status=${task.status} runs=${task.runCount ?? 0}${last}${expiry} schedule=${formatSchedule(task)} :: ${taskSummary(task)}`;
++	const label = task.name || task.title;
++	const state = task.enabled === false ? "已停用" : STATUS_ZH[task.status] ?? task.status;
++	const runs = `已运行 ${task.runCount ?? 0} 次${task.lastStatus ? `，上次${LAST_ZH[task.lastStatus] ?? task.lastStatus}` : ""}`;
++	return `- ${task.id}${label ? `「${label}」` : ""} [${state}] ${runs} · ${describeTask(task, nowValue)}`;
+ }
+ 
+ function formatTaskList(tasks, nowValue = new Date(), options = {}) {
+ 	const list = options.includeAll ? tasks.slice().sort(sortByNextRun) : pendingTasks(tasks);
+-	if (list.length === 0) return options.includeAll ? "No scheduled tasks." : "No active scheduled tasks.";
+-	const title = options.includeAll ? "Scheduled tasks:" : "Active scheduled tasks:";
+-	const lines = [title];
++	if (list.length === 0) return options.includeAll ? "没有定时任务。" : "没有待运行的定时任务。";
++	const lines = [options.includeAll ? "全部定时任务：" : "待运行的定时任务："];
+ 	for (const task of list) {
+ 		lines.push(formatTaskLine(task, nowValue));
+ 		if (options.includeHistory && task.history?.length) {
+-			for (const run of task.history) lines.push(`  · ${run.attemptId} ${run.outcome?.status ?? "unknown"} ${run.completedAt} (${run.durationMs}ms)${run.wakeDisposition ? ` wake=${run.wakeDisposition}` : ""}`);
++			for (const run of task.history) {
++				const outcome = run.outcome?.killed ? "超时" : LAST_ZH[run.outcome?.status] ?? run.outcome?.status ?? "未知";
++				const code = run.outcome?.exitCode !== undefined && run.outcome?.exitCode !== 0 ? ` 退出码 ${run.outcome.exitCode}` : "";
++				const wake = run.wakeDisposition && WAKE_ZH[run.wakeDisposition] ? ` · ${WAKE_ZH[run.wakeDisposition]}` : "";
++				const error = run.outcome?.error ? ` · ${String(run.outcome.error).slice(0, 120)}` : "";
++				lines.push(`  · ${formatClock(run.completedAt, nowValue)} ${outcome}${code} ${(run.durationMs / 1000).toFixed(1)}s${wake}${error}`);
++			}
+ 		}
+ 	}
+ 	return lines.join("\n");
+ }
++// local patch: Chinese, local-time task list/summary (end)
+ 
+ module.exports = {
+ 	VALID_ACTIONS,
+@@ -1125,5 +1191,8 @@ module.exports = {
+ 	formatRelativeTime,
+ 	formatTaskLine,
+ 	formatTaskList,
++	formatClock, // local patch
++	formatRelativeZh, // local patch
++	describeTask, // local patch
+ 	taskSummary,
+ };
