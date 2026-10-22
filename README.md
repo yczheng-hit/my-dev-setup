@@ -8,6 +8,7 @@
 
 ### 2026-10-22
 
+- Pi 升级到 **1.4.0**（`pi update --self`）。26 个扩展全部加载无错误；本仓库插件测试在 1.4.0 下通过：pi-btw-split 34/34、pi-agent-summary-time 4/4、pi-fork-save 10/10、pi-hud-footer 14/14、pi-subagent-hud 15/15；picc 全套 533 通过，另有 4 个依赖 Windows 或特定环境的既有失败，与升级前相同。其他机器同样执行 `pi update --self`，然后重启 Pi。
 - Pi 启动时默认进入 **bypass permissions** 模式：所有工具调用自动放行，只保留危险路径检查（`.git/`、`.bashrc`、`.claude/` 等）。由 `pi/extensions/picc-permission-modes/config.json` 中的 `permissions.defaultMode` 控制，删掉该字段或改为 `"default"` 即恢复每次询问。恢复或分叉的会话仍沿用该会话上次的模式，`--permission-mode` 参数优先级更高。子 agent 同样继承这个模式。修改后执行 `/reload` 生效。
 
 ### 2026-10-21
@@ -187,7 +188,7 @@ pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件）�
 
 ## 兼容性
 
-参考环境：herdr **0.9.3**、pi **1.2.0**、Node.js **24.x**。
+参考环境：herdr **0.9.3**、pi **1.4.0**、Node.js **24.x**。
 
 herdr 模板配置使用 `/bin/zsh`；`setup.sh` 会在它不可用时自动生成使用 `/bin/bash` 的本机配置，不修改仓库里的模板。如果两个路径都不可用，会警告并跳过 herdr 配置。
 
