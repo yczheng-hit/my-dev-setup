@@ -67,11 +67,18 @@ log "herdr dir  ${HERDR_DIR/#$HOME/~}"
 # ---------------------------------------------------------------- tool repos
 # Own tools live in their own GitHub repos (tools.tsv) and are cloned into
 # ./tools/<name>, tracking the listed branch. Local edits are never overwritten.
+# herdr-monitor is also a git submodule (so its code is browsable from this repo);
+# an uninitialised submodule is an empty directory and is cloned the same way.
 step "Tool repositories"
 while IFS=$'\t' read -r name url branch; do
   case "$name" in ''|'#'*) continue ;; esac
   dir="$REPO/tools/$name"
-  if [ ! -d "$dir/.git" ]; then
+  # A submodule checkout has a .git file and a detached HEAD: move it onto the branch.
+  if [ -f "$dir/.git" ] && [ -z "$(git -C "$dir" status --porcelain)" ] \
+     && ! git -C "$dir" symbolic-ref -q HEAD >/dev/null; then
+    run git -C "$dir" checkout --quiet "$branch"
+  fi
+  if [ ! -e "$dir/.git" ]; then
     if [ "$DRY_RUN" = 1 ]; then
       log "[dry-run] git clone $url"
     else

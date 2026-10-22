@@ -8,7 +8,7 @@
 
 ### 2026-10-22
 
-- herdr-monitor 的 Agents 表新增 **WORKSPACE**（herdr 工作区名）和 **SESSION**（会话名）两列，原来的 NAME 列去掉。pi 的会话名就是 `/rename` 或 `/name` 设置的名称，改名后下一次刷新（默认 2 秒）就会显示，未命名时显示 `—`；Claude、Codex 显示它们自己的对话标题。过滤框也能按工作区名和会话名搜索。窗口较窄时依次隐藏 TYPE、LAST WORK、WORKSPACE。其他机器在 `~/tools/herdr-monitor` 执行 `git pull`，再运行 `./setup.sh` 重装，然后重启 monitor。
+- herdr-monitor 的 Agents 表新增 **WORKSPACE**（herdr 工作区名）和 **SESSION**（会话名）两列，原来的 NAME 列去掉。pi 的会话名就是 `/rename` 或 `/name` 设置的名称，改名后下一次刷新（默认 2 秒）就会显示，未命名时显示 `—`；Claude、Codex 显示它们自己的对话标题。过滤框也能按工作区名和会话名搜索。窗口较窄时依次隐藏 TYPE、LAST WORK、WORKSPACE。herdr-monitor 同时改为本仓库的 git submodule（`tools/herdr-monitor`，当前 `2852106`），在本仓库里就能看到它的代码和改动。其他机器在本仓库执行 `git pull && ./setup.sh`（会更新 monitor 并重装），然后重启 monitor。
 - 定时任务插件改为本地补丁版 `packages/pi-scheduler`，**提示词大幅精简**：工具定义约 1470 → 750 token；唤醒模型时只发一个紧凑块（如 `⏰ 定时任务 task_x「CI」 运行完成 · 11:30`，下接命令、`退出码 1 · 用时 2.3s`、非空输出、`下一步：…`），不再列内部字段和空 stderr，输出上限 18000 → 4000 字符。创建、提醒、`/schedules`、取消和没有唤醒模型的 shell 结果只显示在界面上，不再进入模型上下文；唤醒后也不再重复发一条 “finished”。小部件、列表和结果改为中文本地时间。旧任务文件和旧参数照常可用。其他机器执行 `./setup.sh`（安装依赖并改用本地包），然后重启 Pi。
 - picc 去掉 Windows 专用的路径检查（只用 macOS/Linux）。原来 default 等模式下，`grep`/`read` 的路径如果是 `.`、`src/.`、以 `.` 或空格结尾、含 `~1`、`//host/...`，会被当成可疑 Windows 路径而弹窗确认，现在直接按普通路径规则处理；`.git/`、`.bashrc`、`.claude/` 等危险路径检查不变。原来依赖环境的 4 个测试也改为自带测试环境，全套 541 通过、0 失败。
 - Pi 升级到 **1.4.0**（`pi update --self`）。26 个扩展全部加载无错误；本仓库插件测试在 1.4.0 下通过：pi-btw-split 34/34、pi-agent-summary-time 4/4、pi-fork-save 10/10、pi-hud-footer 14/14、pi-subagent-hud 15/15；picc 全套测试同样通过。其他机器同样执行 `pi update --self`，然后重启 Pi。
@@ -61,7 +61,7 @@ git pull --ff-only
 - 文件内容相同则跳过；改变前备份到 `~/.my-dev-setup-backups/<时间>/`。
 - `pi/settings.json` 与本机现有文件合并：仓库中的同名顶层字段优先，本机独有字段（如 `deviceId`）保留。`packages` 是整份清单替换，不是追加。
 - `repo:...` 是本脚本的路径占位符，部署时转成此 checkout 的绝对路径；不能把源 `settings.json` 直接复制给 pi。
-- `tools.tsv` 列出的自有工具仓库会 clone 到 `tools/<name>`（已 gitignore），之后每次 `git pull --ff-only`；有本地改动或不在指定分支时只警告、不更新。
+- `tools.tsv` 列出的自有工具仓库会 clone 到 `tools/<name>`，之后每次 `git pull --ff-only`；有本地改动或不在指定分支时只警告、不更新。pi-btw-split 已 gitignore；herdr-monitor 同时是本仓库的 **git submodule**，在 GitHub 上点 `tools/herdr-monitor` 就能看到它的代码和固定的提交。submodule 未初始化时（空目录）`setup.sh` 照样 clone；已初始化但处于 detached HEAD 时，先切回 `main` 再更新。
 - herdr-monitor 在 `tools/herdr-monitor/.venv` 里用 Python 3.11+ 安装，commit 变化后才重装；脚本只安装，不启动它。
 - 其他白名单文件直接复制，不清空整个目标目录。
 - 本地插件仅安装必要的 runtime dependencies，不安装宿主 pi 的另一份副本。
@@ -81,7 +81,7 @@ my-dev-setup/
 ├── setup.sh
 ├── monitor.sh                              # 启动 herdr-monitor（在 herdr pane 里运行）
 ├── tools.tsv                               # 自有工具仓库清单
-├── tools/                                  # setup.sh clone 的仓库，不提交
+├── tools/                                  # setup.sh clone 的仓库；herdr-monitor 是 submodule
 │   ├── pi-btw-split/
 │   └── herdr-monitor/
 ├── herdr/
@@ -123,7 +123,7 @@ my-dev-setup/
 | pi-btw-split | [yczheng-hit/pi-btw-split](https://github.com/yczheng-hit/pi-btw-split) | pi `/btw` 侧边对话；同时作为 pi 包和 herdr 插件 `local.pi-btw-light` |
 | herdr-monitor | [yczheng-hit/herdr-monitor](https://github.com/yczheng-hit/herdr-monitor) | 前台 herdr agent 监控 TUI，可选的受保护权限确认 |
 
-两者都跟随 `main`。以后想固定版本，可在 `tools.tsv` 把分支改成 tag。
+两者都跟随 `main`。以后想固定版本，可在 `tools.tsv` 把分支改成 tag。herdr-monitor 是 submodule，本仓库记录它的提交：在 herdr-monitor 提交并推送后，回到本仓库执行 `git add tools/herdr-monitor` 并提交，这样本仓库就能看到新版本。
 
 herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的权限菜单发送 Enter；这是界面识别，不是命令安全审查。详见它的 README。
 

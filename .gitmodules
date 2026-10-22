@@ -1,0 +1,3 @@
+[submodule "tools/herdr-monitor"]
+	path = tools/herdr-monitor
+	url = https://github.com/yczheng-hit/herdr-monitor.git

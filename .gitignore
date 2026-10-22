@@ -1,4 +1,5 @@
 node_modules/
-/tools/
+/tools/*
+!/tools/herdr-monitor
 *.log
 .DS_Store
