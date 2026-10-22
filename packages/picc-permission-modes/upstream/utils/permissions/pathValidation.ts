@@ -1,7 +1,6 @@
 import { homedir } from "os";
 import { isAbsolute, resolve } from "path";
 import { lstatSync, realpathSync } from "fs";
-import { containsVulnerableUncPath } from "../shell/readOnlyCommandValidation.ts";
 import { containsPathTraversal } from "./bashPathHelpers.ts";
 import type { isPathAllowedAdaptor } from "../../../permissionContext.ts";
 const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
@@ -15,30 +14,21 @@ export type PathCheckResult = {
 export type ResolvedPathCheckResult = PathCheckResult & {
   resolvedPath: string;
 };
-const getPlatform = (): "macos" | "windows" | "wsl" | "linux" | "unknown" => {
-  if (process.platform === "darwin") return "macos";
-  if (process.platform === "win32") return "windows";
-  if (process.platform === "linux") return "linux";
-  return "unknown";
-};
+// local patch: removed Windows-only branches (getPlatform, UNC paths, ~\\) (macOS/Linux only).
 export function getGlobBaseDirectory(path: string): string {
   const globMatch = path.match(GLOB_PATTERN_REGEX);
   if (!globMatch || globMatch.index === undefined) {
     return path;
   }
   const beforeGlob = path.substring(0, globMatch.index);
-  const lastSepIndex =
-    getPlatform() === "windows"
-      ? Math.max(beforeGlob.lastIndexOf("/"), beforeGlob.lastIndexOf("\\"))
-      : beforeGlob.lastIndexOf("/");
+  const lastSepIndex = beforeGlob.lastIndexOf("/");
   if (lastSepIndex === -1) return ".";
   return beforeGlob.substring(0, lastSepIndex) || "/";
 }
 export function expandTilde(path: string): string {
   if (
     path === "~" ||
-    path.startsWith("~/") ||
-    (process.platform === "win32" && path.startsWith("~\\"))
+    path.startsWith("~/")
   ) {
     return homedir() + path.slice(1);
   }
@@ -118,16 +108,6 @@ export function validatePath(
   isPathAllowed: typeof isPathAllowedAdaptor,
 ): ResolvedPathCheckResult {
   const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ""));
-  if (containsVulnerableUncPath(cleanPath)) {
-    return {
-      allowed: false,
-      resolvedPath: cleanPath,
-      decisionReason: {
-        type: "other",
-        reason: "UNC network paths require manual approval",
-      },
-    };
-  }
   if (cleanPath.startsWith("~")) {
     return {
       allowed: false,

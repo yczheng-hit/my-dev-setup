@@ -38,8 +38,7 @@ export function getDirectoryForPath(
   }
   return dirname(absolutePath);
 }
-const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
-const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
+// local patch: removed Windows drive-letter checks (macOS/Linux only).
 export function isDangerousRemovalPath(resolvedPath: string): boolean {
   const forwardSlashed = resolvedPath.replace(/[\\/]+/g, "/");
   if (forwardSlashed === "*" || forwardSlashed.endsWith("/*")) {
@@ -50,18 +49,12 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
   if (normalizedPath === "/") {
     return true;
   }
-  if (WINDOWS_DRIVE_ROOT_REGEX.test(normalizedPath)) {
-    return true;
-  }
   const normalizedHome = homedir().replace(/[\\/]+/g, "/");
   if (normalizedPath === normalizedHome) {
     return true;
   }
   const parentDir = dirname(normalizedPath);
   if (parentDir === "/") {
-    return true;
-  }
-  if (WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)) {
     return true;
   }
   return false;

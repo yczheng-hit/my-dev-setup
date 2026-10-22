@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdtempSync } from "node:fs";
-import { join, sep, dirname } from "node:path";
+import { join, sep, dirname, relative } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
 import permissionModesExtension, { loadAgentCanEnterPlanModeConfig, loadDefaultModeConfig, loadSubagentModeConfig, setInteractiveModeForTests, CLASSIFIER_NOTE_MARKER } from "./index.ts";
@@ -708,7 +708,8 @@ describe("permission-modes extension: tool_call gate", () => {
       await switchMode("plan");
       const planPath = getPlanFilePath("test-session");
       const home = homedir();
-      const tildePath = `~${planPath.slice(home.length)}`;
+      // local patch: works even when the agent dir is outside $HOME (e.g. a temp dir).
+      const tildePath = `~/${relative(home, planPath)}`;
       const result = await pi.simulateToolCall("write", {
         file_path: tildePath,
         content: "plan",
@@ -720,12 +721,12 @@ describe("permission-modes extension: tool_call gate", () => {
       const result = await pi.simulateToolCall("read", { path: "src/foo.ts" });
       expect(result).toBeUndefined();
     });
-    it("auto-allows a pathless grep without a Windows-path prompt", async () => {
+    it("auto-allows a pathless grep", async () => {
       await switchMode("plan");
       const result = await pi.simulateToolCall("grep", { pattern: "foo" });
       expect(result).toBeUndefined();
     });
-    it("auto-allows a pathless read without a Windows-path prompt", async () => {
+    it("auto-allows a pathless read", async () => {
       await switchMode("plan");
       const result = await pi.simulateToolCall("read", {});
       expect(result).toBeUndefined();
@@ -902,7 +903,7 @@ describe("user-configured permissions", () => {
     pi.flags["permission-mode"] = "acceptEdits";
     await pi.simulateSessionStart(cwd);
     const result = await pi.simulateToolCall("read", {
-      path: "C:\\Users\\Test\\AppData\\Roaming\\some\\file.ts",
+      path: "/opt/elsewhere/some/file.ts",
     });
     expect(result).toBeUndefined();
   });
@@ -923,7 +924,7 @@ describe("user-configured permissions", () => {
     pi.flags["permission-mode"] = "acceptEdits";
     await pi.simulateSessionStart(cwd);
     const read = await pi.simulateToolCall("read", {
-      path: "C:\\some\\other\\place.txt",
+      path: "/opt/some/other/place.txt",
     });
     expect(read).toBeUndefined();
   });
@@ -934,7 +935,7 @@ describe("user-configured permissions", () => {
     pi.flags["permission-mode"] = "acceptEdits";
     await pi.simulateSessionStart(cwd);
     const read = await pi.simulateToolCall("read", {
-      path: "C:\\Users\\Test\\AppData\\Roaming\\some\\file.ts",
+      path: "/opt/elsewhere/some/file.ts",
     });
     expect(read).toBeUndefined();
   });
@@ -1986,12 +1987,12 @@ describe("matchingRuleForInput: path patterns", () => {
     ).toBeNull();
   });
   it("matches absolute-path rule '/etc/**' against paths under /etc", () => {
-    const ctx = buildCtxWithAllow(["Edit(C:/Windows/System32/drivers/etc/hosts)"]);
+    const ctx = buildCtxWithAllow(["Edit(//etc/**)"]);
     expect(
-      matchingRuleForInput("Edit", "C:/Windows/System32/drivers/etc/hosts", "edit", "allow", ctx),
+      matchingRuleForInput("Edit", "/etc/hosts", "edit", "allow", ctx),
     ).not.toBeNull();
     expect(
-      matchingRuleForInput("Edit", "C:/Windows/System32/drivers/etc/passwd", "edit", "allow", ctx),
+      matchingRuleForInput("Edit", "/usr/etc/hosts", "edit", "allow", ctx),
     ).toBeNull();
   });
   it("tool-name mismatch returns null", () => {
@@ -2038,11 +2039,12 @@ describe("isDangerousFilePath", () => {
   ])("does NOT flag benign %s as dangerous", (p) => {
     expect(isDangerousFilePath(p)).toBe(false);
   });
-  it("flags suspicious Windows paths", () => {
-    expect(isDangerousFilePath("C:\\foo.txt:hidden")).toBe(true);
-    expect(isDangerousFilePath("C:\\foo~1.txt")).toBe(true);
-    expect(isDangerousFilePath("C:\\foo.txt.")).toBe(true);
-  });
+  it.each([".", "src/.", "notes.", "backup~1/a.ts", "//server/share"])(
+    "does NOT flag %s (Windows-only checks removed; local patch)",
+    (p) => {
+      expect(isDangerousFilePath(p)).toBe(false);
+    },
+  );
 });
 describe("generateSuggestions", () => {
   it("emits './**' + setMode acceptEdits for in-cwd edits", () => {

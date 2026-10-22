@@ -1,9 +1,4 @@
-const getPlatform = (): 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown' => {
-  if (process.platform === 'darwin') return 'macos'
-  if (process.platform === 'win32') return 'windows'
-  if (process.platform === 'linux') return 'linux'
-  return 'unknown'
-}
+// local patch: removed Windows-only getPlatform/containsVulnerableUncPath (macOS/Linux only).
 export type FlagArgType =
   | 'none'
   | 'number'
@@ -1241,47 +1236,6 @@ export const EXTERNAL_READONLY_COMMANDS: readonly string[] = [
   'docker ps',
   'docker images',
 ] as const
-export function containsVulnerableUncPath(pathOrCommand: string): boolean {
-  if (getPlatform() !== 'windows') {
-    return false
-  }
-  const backslashUncPattern = /\\\\[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i
-  if (backslashUncPattern.test(pathOrCommand)) {
-    return true
-  }
-  const forwardSlashUncPattern =
-    /(?<!:)\/\/[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i
-  if (forwardSlashUncPattern.test(pathOrCommand)) {
-    return true
-  }
-  const mixedSlashUncPattern = /\/\\{2,}[^\s\\/]/
-  if (mixedSlashUncPattern.test(pathOrCommand)) {
-    return true
-  }
-  const reverseMixedSlashUncPattern = /\\{2,}\/[^\s\\/]/
-  if (reverseMixedSlashUncPattern.test(pathOrCommand)) {
-    return true
-  }
-  if (/@SSL@\d+/i.test(pathOrCommand) || /@\d+@SSL/i.test(pathOrCommand)) {
-    return true
-  }
-  if (/DavWWWRoot/i.test(pathOrCommand)) {
-    return true
-  }
-  if (
-    /^\\\\(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand) ||
-    /^\/\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand)
-  ) {
-    return true
-  }
-  if (
-    /^\\\\(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand) ||
-    /^\/\/(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand)
-  ) {
-    return true
-  }
-  return false
-}
 export const FLAG_PATTERN = /^-[a-zA-Z0-9_-]/
 export function validateFlagArgument(
   value: string,

@@ -7,7 +7,7 @@ import {
 describe("Bash command classification - bug fix verification", () => {
   describe("bug repro: xargs in pipeline", () => {
     it("correctly identifies find | xargs grep | head as read-only", () => {
-      const cmd = `find "C:/Users/UserName/AppData/Roaming/npm/node_modules/@earendil-works/" -name "*.js" >2/dev/null | xargs grep -l "abort" 2>/dev/null | head -5`;
+      const cmd = `find "/Users/UserName/.npm-global/lib/node_modules/@earendil-works/" -name "*.js" >2/dev/null | xargs grep -l "abort" 2>/dev/null | head -5`;
       expect(isReadOnlyCommand(cmd)).toBe(true);
     });
     it("correctly identifies simple find | xargs grep | head as read-only", () => {
@@ -23,7 +23,7 @@ describe("Bash command classification - bug fix verification", () => {
       expect(sub).toEqual(["cd /tmp", "echo hello", "head -5"]);
     });
     it("cd && npx 2>&1 | head splits correctly (npx not on allowlist is OK)", () => {
-      const cmd = `cd "C:/Users/UserName/.pi/agent" && npx --yes tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --esModuleInterop --skipLibCheck extensions/pi-tasks.ts 2>&1 | head -40`;
+      const cmd = `cd "/Users/UserName/.pi/agent" && npx --yes tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --esModuleInterop --skipLibCheck extensions/pi-tasks.ts 2>&1 | head -40`;
       const sub = splitBashSubcommands(cmd);
       expect(sub).toHaveLength(3);
       expect(sub[0]).toMatch(/^cd /);

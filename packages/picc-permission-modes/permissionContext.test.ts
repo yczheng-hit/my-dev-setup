@@ -154,11 +154,8 @@ describe("shared read rule space (CC parity: path-scoped Read covers Grep/Glob)"
     }
   });
   it("Read(//**) allow covers read/grep/glob on any path", () => {
-    const isWin = process.platform === "win32";
-    const target = isWin
-      ? "C:/Users/UserName/Downloads/notes.png"
-      : "/elsewhere/notes/file.txt";
-    const cwd = isWin ? "C:/proj" : "/proj";
+    const target = "/elsewhere/notes/file.txt";
+    const cwd = "/proj";
     for (const tool of ["read", "grep", "glob"]) {
       const r = checkReadPermissionForTool(
         tool,
@@ -170,11 +167,8 @@ describe("shared read rule space (CC parity: path-scoped Read covers Grep/Glob)"
     }
   });
   it("Read(*) does NOT match a nested path (single * matches no /)", () => {
-    const isWin = process.platform === "win32";
-    const target = isWin
-      ? "C:/Users/UserName/Downloads/notes.png"
-      : "/elsewhere/notes/file.txt";
-    const cwd = isWin ? "C:/proj" : "/proj";
+    const target = "/elsewhere/notes/file.txt";
+    const cwd = "/proj";
     for (const tool of ["read", "grep", "glob"]) {
       const r = checkReadPermissionForTool(
         tool,

@@ -4,7 +4,6 @@ import {
 } from '../../utils/bash/commands.ts'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.ts'
 import {
-  containsVulnerableUncPath,
   DOCKER_READ_ONLY_COMMANDS,
   EXTERNAL_READONLY_COMMANDS,
   type FlagArgType,
@@ -1202,9 +1201,6 @@ function isCommandReadOnly(command: string): boolean {
   if (testCommand.endsWith(' 2>&1')) {
     testCommand = testCommand.slice(0, -5).trim()
   }
-  if (containsVulnerableUncPath(testCommand)) {
-    return false
-  }
   if (containsUnquotedExpansion(testCommand)) {
     return false
   }
@@ -1307,13 +1303,6 @@ export function checkReadOnlyConstraints(
     return {
       behavior: 'passthrough',
       message: 'Command is not read-only, requires further permission checks',
-    }
-  }
-  if (containsVulnerableUncPath(command)) {
-    return {
-      behavior: 'ask',
-      message:
-        'Command contains Windows UNC path that could be vulnerable to WebDAV attacks',
     }
   }
   const hasGitCommand = commandHasAnyGit(command)

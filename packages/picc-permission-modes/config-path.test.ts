@@ -16,8 +16,8 @@ describe("permission modes config path", () => {
   });
 
   it("uses the user extension directory by default", () => {
-    expect(resolvePermissionModesConfigPath("C:\\home\\test\\.pi\\agent", {})).toBe(
-      "C:\\home\\test\\.pi\\agent\\extensions\\picc-permission-modes\\config.json",
+    expect(resolvePermissionModesConfigPath("/home/test/.pi/agent", {})).toBe(
+      "/home/test/.pi/agent/extensions/picc-permission-modes/config.json",
     );
   });
 

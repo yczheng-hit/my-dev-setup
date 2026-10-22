@@ -38,32 +38,9 @@ export const DANGEROUS_DIRECTORIES = [
   ".idea",
   ".claude",
 ] as const;
-export function hasSuspiciousWindowsPathPattern(pathStr: string): boolean {
-  if (!pathStr) return false;
-  const isWin = process.platform === "win32";
-  const isWsl = !!process.env.WSL_DISTRO_NAME;
-  if (isWin || isWsl) {
-    const colonIndex = pathStr.indexOf(":", 2);
-    if (colonIndex !== -1) return true;
-  }
-  if (/~\d/.test(pathStr)) return true;
-  if (
-    pathStr.startsWith("\\\\?\\") ||
-    pathStr.startsWith("\\\\.\\") ||
-    pathStr.startsWith("//?/") ||
-    pathStr.startsWith("//./")
-  ) {
-    return true;
-  }
-  if (/[.\s]+$/.test(pathStr)) return true;
-  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(pathStr)) return true;
-  if (/(^|\/|\\)\.{3,}(\/|\\|$)/.test(pathStr)) return true;
-  if (/^\\\\[^\\]/.test(pathStr) || /^\/\/[^/]/.test(pathStr)) return true;
-  return false;
-}
 export function isDangerousFilePath(pathStr: string): boolean {
   if (!pathStr) return false;
-  if (hasSuspiciousWindowsPathPattern(pathStr)) return true;
+  // local patch: removed the Windows-only suspicious-path check (macOS/Linux only).
   const expanded = path.resolve(
     pathStr.startsWith("~")
       ? pathStr.replace(/^~/, homedir())
@@ -843,16 +820,7 @@ export function checkReadPermissionForTool(
       decisionReason: { type: "other", reason: "no explicit path; defaults to cwd" },
     };
   }
-  if (hasSuspiciousWindowsPathPattern(targetPath)) {
-    return {
-      behavior: "ask",
-      message: `Pi requested permissions to read from ${targetPath}, which contains a suspicious Windows path pattern that requires manual approval.`,
-      decisionReason: {
-        type: "other",
-        reason: "suspicious path",
-      },
-    } satisfies PermissionAskDecision;
-  }
+  // local patch: removed the Windows-only suspicious-path prompt (macOS/Linux only).
   const deny = matchingRuleForInput(tool, targetPath, "read", "deny", context);
   if (deny) {
     return {

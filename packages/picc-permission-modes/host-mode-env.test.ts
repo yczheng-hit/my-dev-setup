@@ -1,4 +1,7 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import permissionModesExtension from "./index.ts";
 
 /**
@@ -18,6 +21,11 @@ import permissionModesExtension from "./index.ts";
  * `permissionModesExtension(...)`, NO `session_start` fired, then a headless
  * `tool_call`.
  */
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
 type Handler = (event: unknown, ctx: unknown) => unknown | Promise<unknown>;
 
 function makeFakePi() {
@@ -74,13 +82,31 @@ async function runToolCall(toolName: string, input: Record<string, unknown>, cwd
 describe("host permission mode via PICC_PERMISSION_MODE (headless, no session_start)", () => {
   const cwd = process.cwd();
   const prev = process.env.PICC_PERMISSION_MODE;
+  // local patch: own the deny rule instead of depending on the user's
+  // ~/.claude/settings.json (and never read the user's real picc config).
+  const prevConfig = process.env.PICC_PERMISSION_MODES_CONFIG_PATH;
+  const prevClaude = process.env.CLAUDE_CONFIG_DIR;
+  let configDir = "";
 
+  beforeAll(() => {
+    configDir = mkdtempSync(join(tmpdir(), "picc-host-mode-"));
+    writeFileSync(
+      join(configDir, "config.json"),
+      JSON.stringify({ permissions: { deny: ["Bash(rm -rf:*)"] } }),
+    );
+    process.env.PICC_PERMISSION_MODES_CONFIG_PATH = join(configDir, "config.json");
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+  });
+  afterAll(() => {
+    restoreEnv("PICC_PERMISSION_MODES_CONFIG_PATH", prevConfig);
+    restoreEnv("CLAUDE_CONFIG_DIR", prevClaude);
+    rmSync(configDir, { recursive: true, force: true });
+  });
   beforeEach(() => {
     delete process.env.PICC_PERMISSION_MODE;
   });
   afterEach(() => {
-    if (prev === undefined) delete process.env.PICC_PERMISSION_MODE;
-    else process.env.PICC_PERMISSION_MODE = prev;
+    restoreEnv("PICC_PERMISSION_MODE", prev);
   });
 
   it("with no env set, default mode auto-rejects a non-allow bash call (the original bug)", async () => {

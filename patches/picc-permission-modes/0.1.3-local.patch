@@ -518,6 +518,60 @@
 -  });
  }
 \ No newline at end of file
+--- a/permissionContext.ts
++++ b/permissionContext.ts
+@@ -38,32 +38,9 @@
+   ".idea",
+   ".claude",
+ ] as const;
+-export function hasSuspiciousWindowsPathPattern(pathStr: string): boolean {
+-  if (!pathStr) return false;
+-  const isWin = process.platform === "win32";
+-  const isWsl = !!process.env.WSL_DISTRO_NAME;
+-  if (isWin || isWsl) {
+-    const colonIndex = pathStr.indexOf(":", 2);
+-    if (colonIndex !== -1) return true;
+-  }
+-  if (/~\d/.test(pathStr)) return true;
+-  if (
+-    pathStr.startsWith("\\\\?\\") ||
+-    pathStr.startsWith("\\\\.\\") ||
+-    pathStr.startsWith("//?/") ||
+-    pathStr.startsWith("//./")
+-  ) {
+-    return true;
+-  }
+-  if (/[.\s]+$/.test(pathStr)) return true;
+-  if (/\.(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(pathStr)) return true;
+-  if (/(^|\/|\\)\.{3,}(\/|\\|$)/.test(pathStr)) return true;
+-  if (/^\\\\[^\\]/.test(pathStr) || /^\/\/[^/]/.test(pathStr)) return true;
+-  return false;
+-}
+ export function isDangerousFilePath(pathStr: string): boolean {
+   if (!pathStr) return false;
+-  if (hasSuspiciousWindowsPathPattern(pathStr)) return true;
++  // local patch: removed the Windows-only suspicious-path check (macOS/Linux only).
+   const expanded = path.resolve(
+     pathStr.startsWith("~")
+       ? pathStr.replace(/^~/, homedir())
+@@ -843,16 +820,7 @@
+       decisionReason: { type: "other", reason: "no explicit path; defaults to cwd" },
+     };
+   }
+-  if (hasSuspiciousWindowsPathPattern(targetPath)) {
+-    return {
+-      behavior: "ask",
+-      message: `Pi requested permissions to read from ${targetPath}, which contains a suspicious Windows path pattern that requires manual approval.`,
+-      decisionReason: {
+-        type: "other",
+-        reason: "suspicious path",
+-      },
+-    } satisfies PermissionAskDecision;
+-  }
++  // local patch: removed the Windows-only suspicious-path prompt (macOS/Linux only).
+   const deny = matchingRuleForInput(tool, targetPath, "read", "deny", context);
+   if (deny) {
+     return {
 --- a/upstream/_compat/stubs.ts
 +++ b/upstream/_compat/stubs.ts
 @@ -1,10 +1,18 @@
@@ -544,3 +598,191 @@
    } catch {
    }
  }
+--- a/upstream/tools/BashTool/readOnlyValidation.ts
++++ b/upstream/tools/BashTool/readOnlyValidation.ts
+@@ -4,7 +4,6 @@
+ } from '../../utils/bash/commands.ts'
+ import { tryParseShellCommand } from '../../utils/bash/shellQuote.ts'
+ import {
+-  containsVulnerableUncPath,
+   DOCKER_READ_ONLY_COMMANDS,
+   EXTERNAL_READONLY_COMMANDS,
+   type FlagArgType,
+@@ -1202,9 +1201,6 @@
+   if (testCommand.endsWith(' 2>&1')) {
+     testCommand = testCommand.slice(0, -5).trim()
+   }
+-  if (containsVulnerableUncPath(testCommand)) {
+-    return false
+-  }
+   if (containsUnquotedExpansion(testCommand)) {
+     return false
+   }
+@@ -1309,13 +1305,6 @@
+       message: 'Command is not read-only, requires further permission checks',
+     }
+   }
+-  if (containsVulnerableUncPath(command)) {
+-    return {
+-      behavior: 'ask',
+-      message:
+-        'Command contains Windows UNC path that could be vulnerable to WebDAV attacks',
+-    }
+-  }
+   const hasGitCommand = commandHasAnyGit(command)
+   if (compoundCommandHasCd && hasGitCommand) {
+     return {
+--- a/upstream/utils/permissions/bashPathHelpers.ts
++++ b/upstream/utils/permissions/bashPathHelpers.ts
+@@ -38,8 +38,7 @@
+   }
+   return dirname(absolutePath);
+ }
+-const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
+-const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
++// local patch: removed Windows drive-letter checks (macOS/Linux only).
+ export function isDangerousRemovalPath(resolvedPath: string): boolean {
+   const forwardSlashed = resolvedPath.replace(/[\\/]+/g, "/");
+   if (forwardSlashed === "*" || forwardSlashed.endsWith("/*")) {
+@@ -50,9 +49,6 @@
+   if (normalizedPath === "/") {
+     return true;
+   }
+-  if (WINDOWS_DRIVE_ROOT_REGEX.test(normalizedPath)) {
+-    return true;
+-  }
+   const normalizedHome = homedir().replace(/[\\/]+/g, "/");
+   if (normalizedPath === normalizedHome) {
+     return true;
+@@ -61,9 +57,6 @@
+   if (parentDir === "/") {
+     return true;
+   }
+-  if (WINDOWS_DRIVE_CHILD_REGEX.test(normalizedPath)) {
+-    return true;
+-  }
+   return false;
+ }
+ export function checkDangerousRemovalPaths(
+--- a/upstream/utils/permissions/pathValidation.ts
++++ b/upstream/utils/permissions/pathValidation.ts
+@@ -1,7 +1,6 @@
+ import { homedir } from "os";
+ import { isAbsolute, resolve } from "path";
+ import { lstatSync, realpathSync } from "fs";
+-import { containsVulnerableUncPath } from "../shell/readOnlyCommandValidation.ts";
+ import { containsPathTraversal } from "./bashPathHelpers.ts";
+ import type { isPathAllowedAdaptor } from "../../../permissionContext.ts";
+ const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
+@@ -15,30 +14,21 @@
+ export type ResolvedPathCheckResult = PathCheckResult & {
+   resolvedPath: string;
+ };
+-const getPlatform = (): "macos" | "windows" | "wsl" | "linux" | "unknown" => {
+-  if (process.platform === "darwin") return "macos";
+-  if (process.platform === "win32") return "windows";
+-  if (process.platform === "linux") return "linux";
+-  return "unknown";
+-};
++// local patch: removed Windows-only branches (getPlatform, UNC paths, ~\\) (macOS/Linux only).
+ export function getGlobBaseDirectory(path: string): string {
+   const globMatch = path.match(GLOB_PATTERN_REGEX);
+   if (!globMatch || globMatch.index === undefined) {
+     return path;
+   }
+   const beforeGlob = path.substring(0, globMatch.index);
+-  const lastSepIndex =
+-    getPlatform() === "windows"
+-      ? Math.max(beforeGlob.lastIndexOf("/"), beforeGlob.lastIndexOf("\\"))
+-      : beforeGlob.lastIndexOf("/");
++  const lastSepIndex = beforeGlob.lastIndexOf("/");
+   if (lastSepIndex === -1) return ".";
+   return beforeGlob.substring(0, lastSepIndex) || "/";
+ }
+ export function expandTilde(path: string): string {
+   if (
+     path === "~" ||
+-    path.startsWith("~/") ||
+-    (process.platform === "win32" && path.startsWith("~\\"))
++    path.startsWith("~/")
+   ) {
+     return homedir() + path.slice(1);
+   }
+@@ -118,16 +108,6 @@
+   isPathAllowed: typeof isPathAllowedAdaptor,
+ ): ResolvedPathCheckResult {
+   const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ""));
+-  if (containsVulnerableUncPath(cleanPath)) {
+-    return {
+-      allowed: false,
+-      resolvedPath: cleanPath,
+-      decisionReason: {
+-        type: "other",
+-        reason: "UNC network paths require manual approval",
+-      },
+-    };
+-  }
+   if (cleanPath.startsWith("~")) {
+     return {
+       allowed: false,
+--- a/upstream/utils/shell/readOnlyCommandValidation.ts
++++ b/upstream/utils/shell/readOnlyCommandValidation.ts
+@@ -1,9 +1,4 @@
+-const getPlatform = (): 'macos' | 'windows' | 'wsl' | 'linux' | 'unknown' => {
+-  if (process.platform === 'darwin') return 'macos'
+-  if (process.platform === 'win32') return 'windows'
+-  if (process.platform === 'linux') return 'linux'
+-  return 'unknown'
+-}
++// local patch: removed Windows-only getPlatform/containsVulnerableUncPath (macOS/Linux only).
+ export type FlagArgType =
+   | 'none'
+   | 'number'
+@@ -1241,47 +1236,6 @@
+   'docker ps',
+   'docker images',
+ ] as const
+-export function containsVulnerableUncPath(pathOrCommand: string): boolean {
+-  if (getPlatform() !== 'windows') {
+-    return false
+-  }
+-  const backslashUncPattern = /\\\\[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i
+-  if (backslashUncPattern.test(pathOrCommand)) {
+-    return true
+-  }
+-  const forwardSlashUncPattern =
+-    /(?<!:)\/\/[^\s\\/]+(?:@(?:\d+|ssl))?(?:[\\/]|$|\s)/i
+-  if (forwardSlashUncPattern.test(pathOrCommand)) {
+-    return true
+-  }
+-  const mixedSlashUncPattern = /\/\\{2,}[^\s\\/]/
+-  if (mixedSlashUncPattern.test(pathOrCommand)) {
+-    return true
+-  }
+-  const reverseMixedSlashUncPattern = /\\{2,}\/[^\s\\/]/
+-  if (reverseMixedSlashUncPattern.test(pathOrCommand)) {
+-    return true
+-  }
+-  if (/@SSL@\d+/i.test(pathOrCommand) || /@\d+@SSL/i.test(pathOrCommand)) {
+-    return true
+-  }
+-  if (/DavWWWRoot/i.test(pathOrCommand)) {
+-    return true
+-  }
+-  if (
+-    /^\\\\(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand) ||
+-    /^\/\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[\\/]/.test(pathOrCommand)
+-  ) {
+-    return true
+-  }
+-  if (
+-    /^\\\\(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand) ||
+-    /^\/\/(\[[\da-fA-F:]+\])[\\/]/.test(pathOrCommand)
+-  ) {
+-    return true
+-  }
+-  return false
+-}
+ export const FLAG_PATTERN = /^-[a-zA-Z0-9_-]/
+ export function validateFlagArgument(
+   value: string,

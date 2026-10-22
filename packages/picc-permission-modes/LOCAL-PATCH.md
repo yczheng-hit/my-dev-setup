@@ -131,3 +131,34 @@ saved `acceptEdits`. The subagent assertion fails without the `publishMode` fix.
 isolated copy with Pi 1.2.0 host dependencies: 533 passed, 6 skipped, and the same 4 pre-existing
 failures as before the change (baseline 532 passed / same 4). The patch was regenerated and checked:
 npm original (CRLF stripped) + patch equals this directory's runtime files.
+
+## macOS/Linux only: Windows path logic removed (2026-10-22)
+
+**Why.** This setup never runs on Windows. `hasSuspiciousWindowsPathPattern` also ran on macOS and
+asked for approval on ordinary paths: `grep`/`read` with path `.`, `src/.`, `notes.`, `file `,
+`backup~1/a.ts`, `a/.../b`, `//server/share`, `x.CON`.
+
+**Change** (marked `// local patch`):
+- `permissionContext.ts`: removed `hasSuspiciousWindowsPathPattern` and its two uses
+  (`isDangerousFilePath`, the read-permission prompt). The dangerous-file and dangerous-directory
+  checks (`.git/`, `.bashrc`, `.claude/`, …) are unchanged.
+- `upstream/utils/shell/readOnlyCommandValidation.ts`: removed `getPlatform` and
+  `containsVulnerableUncPath` (returned `false` on non-Windows anyway); removed its calls in
+  `upstream/tools/BashTool/readOnlyValidation.ts` and `upstream/utils/permissions/pathValidation.ts`.
+- `pathValidation.ts`: glob base uses `/` only; `expandTilde` drops the `~\\` branch.
+- `bashPathHelpers.ts`: removed the `C:` / `C:/x` drive-letter checks from `isDangerousRemovalPath`.
+
+**Tests.** The 4 previously environment-dependent failures are fixed:
+- `config-path.test.ts`: POSIX agent dir instead of `C:\\...`.
+- `index.test.ts` Windows-path test: replaced by "does NOT flag `.`, `src/.`, `notes.`, `backup~1/a.ts`,
+  `//server/share`".
+- `host-mode-env.test.ts`: writes its own temp config with `Bash(rm -rf:*)` deny and sets
+  `PICC_PERMISSION_MODES_CONFIG_PATH` / `CLAUDE_CONFIG_DIR`, so it no longer depends on the user's
+  `~/.claude/settings.json` (or reads the real picc config).
+- `index.test.ts` tilde plan path: builds `~/` + `relative(home, planPath)`, so it also works when
+  the agent dir is outside `$HOME`.
+- Other tests: `C:/Users/...` and `C:\\...` sample paths changed to POSIX paths.
+
+Full suite in an isolated copy with Pi 1.4.0 host dependencies: **541 passed, 6 skipped, 0 failed**.
+Patch regenerated and verified: npm original (CRLF stripped) + patch equals this directory's runtime
+files. Pi 1.4.0 loads all 26 extensions with no errors.
