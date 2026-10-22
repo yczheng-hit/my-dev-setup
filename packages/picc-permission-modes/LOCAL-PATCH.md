@@ -103,3 +103,31 @@ literal (`${new Date()…}`).
 removes it while keeping `ExitPlanMode` and `/plan`. Full suite in an isolated copy with Pi 1.2.0
 host dependencies: 532 passed, 6 skipped, and the same 4 pre-existing failures as before the change
 (baseline 530 passed / same 4).
+
+## Startup mode: `permissions.defaultMode` (2026-10-22)
+
+**Why.** The user wants every new Pi session to start in bypass permissions, without typing
+`--permission-mode` each time.
+
+**Change.**
+- New config `permissions.defaultMode` in the permission-modes `config.json`, the same key as Claude
+  Code's `settings.json`. Accepts the mode names and aliases of `/mode` (`bypass`,
+  `bypass-permissions`, any case). Missing or invalid means `default` (upstream behavior).
+  Read once at extension load; edit the file, then `/reload`.
+- It only replaces the initial value of `currentMode`. Precedence, highest first:
+  1. `PICC_PERMISSION_MODE` (headless hosts);
+  2. `--permission-mode`;
+  3. the mode saved in a resumed, forked or reloaded session;
+  4. `permissions.defaultMode`.
+- Fix: `refreshSessionContext` now calls `publishMode` for UI sessions. Before, a new session that
+  started in a non-default mode (from the flag or this setting) never published it, so subagents
+  fell back to `default` until the user switched mode by hand.
+- This repo's config sets `"defaultMode": "bypassPermissions"`.
+
+**Tests.** `index.test.ts` → `planMode.agentCanEnter (local patch)` → `permissions.defaultMode …`:
+aliases and invalid values; a new session starts in bypass and lets `npm test` run; a headless
+(subagent) session inherits it; `--permission-mode default` overrides it; a resumed session keeps its
+saved `acceptEdits`. The subagent assertion fails without the `publishMode` fix. Full suite in an
+isolated copy with Pi 1.2.0 host dependencies: 533 passed, 6 skipped, and the same 4 pre-existing
+failures as before the change (baseline 532 passed / same 4). The patch was regenerated and checked:
+npm original (CRLF stripped) + patch equals this directory's runtime files.

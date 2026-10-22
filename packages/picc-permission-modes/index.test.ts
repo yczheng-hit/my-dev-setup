@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { join, sep, dirname } from "node:path";
 import * as path from "node:path";
 import { tmpdir, homedir } from "node:os";
-import permissionModesExtension, { loadAgentCanEnterPlanModeConfig, loadSubagentModeConfig, setInteractiveModeForTests, CLASSIFIER_NOTE_MARKER } from "./index.ts";
+import permissionModesExtension, { loadAgentCanEnterPlanModeConfig, loadDefaultModeConfig, loadSubagentModeConfig, setInteractiveModeForTests, CLASSIFIER_NOTE_MARKER } from "./index.ts";
 import {
   buildContext,
   generateSuggestions,
@@ -1608,6 +1608,36 @@ describe("planMode.agentCanEnter (local patch)", () => {
     await pi.simulateSessionStart(cwd);
     await pi.simulateCommand("plan", "");
     expect((pi.appendEntries[pi.appendEntries.length - 1].data as any).mode).toBe("plan");
+  });
+  it("permissions.defaultMode sets the startup mode; flag and saved session mode still win", async () => {
+    expect(loadDefaultModeConfig(join(dir, "missing.json"))).toBe("default");
+    for (const value of ["bypassPermissions", "bypass", "bypass-permissions", "BYPASSPERMISSIONS"]) {
+      writeFileSync(join(dir, "mode.json"), JSON.stringify({ permissions: { defaultMode: value } }));
+      expect(loadDefaultModeConfig(join(dir, "mode.json"))).toBe("bypassPermissions");
+    }
+    writeFileSync(join(dir, "mode.json"), JSON.stringify({ permissions: { defaultMode: "nope" } }));
+    expect(loadDefaultModeConfig(join(dir, "mode.json"))).toBe("default");
+
+    const pi = loadWith({ permissions: { defaultMode: "bypassPermissions" } });
+    await pi.simulateSessionStart(cwd, undefined, "startup");
+    expect((pi.appendEntries[pi.appendEntries.length - 1].data as any).mode).toBe("bypassPermissions");
+    const result = await pi.simulateToolCall("bash", { command: "npm test" }, pi.fakeCtxFor({ cwd, hasUI: true }));
+    expect(result).toBeUndefined();
+    // Subagents (headless sessions) inherit the configured startup mode.
+    await pi.simulateSessionStart(cwd, undefined, undefined, undefined, { hasUI: false });
+    expect(await pi.simulateToolCall("bash", { command: "npm test" }, pi.fakeCtxFor({ cwd, hasUI: false }))).toBeUndefined();
+
+    const flagged = createFakePi();
+    flagged.flags["permission-mode"] = "default";
+    process.env.PICC_PERMISSION_MODES_CONFIG_PATH = join(dir, "config.json");
+    permissionModesExtension(makeFakePiForExtension(flagged));
+    await flagged.simulateSessionStart(cwd);
+    expect((flagged.appendEntries[flagged.appendEntries.length - 1].data as any).mode).toBe("default");
+
+    const resumed = loadWith({ permissions: { defaultMode: "bypassPermissions" } });
+    resumed.appendEntries.push({ type: "modes", data: { mode: "acceptEdits" } });
+    await resumed.simulateSessionStart(cwd, undefined, "resume");
+    expect((resumed.appendEntries[resumed.appendEntries.length - 1].data as any).mode).toBe("acceptEdits");
   });
 });
 describe("EnterPlanMode tool", () => {

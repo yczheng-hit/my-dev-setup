@@ -6,6 +6,10 @@
 
 按日期倒序记录影响使用或部署的变更；每次改配置、插件或部署行为时同步更新。
 
+### 2026-10-22
+
+- Pi 启动时默认进入 **bypass permissions** 模式：所有工具调用自动放行，只保留危险路径检查（`.git/`、`.bashrc`、`.claude/` 等）。由 `pi/extensions/picc-permission-modes/config.json` 中的 `permissions.defaultMode` 控制，删掉该字段或改为 `"default"` 即恢复每次询问。恢复或分叉的会话仍沿用该会话上次的模式，`--permission-mode` 参数优先级更高。子 agent 同样继承这个模式。修改后执行 `/reload` 生效。
+
 ### 2026-10-21
 
 - 全局 `pi/AGENTS.md` 只保留一条规则：搜索优先使用 ripgrep（`grep` 工具或 bash 中的 `rg`）。
@@ -64,7 +68,7 @@ git pull --ff-only
 
 > **配置的实际内容包含默认模型和权限规则。** 默认模型仅保存 ID，不保存 key；在没有这些模型的机器上，可以删除 `defaultProvider`、`defaultModel`、`enabledModels` 这几个字段，沿用本机选择。权限规则包含 SSH/SCP 的 allowlist，见 `pi/permissions.json` 与 `pi/extensions/picc-permission-modes/config.json`；不需要时应先删除对应项。
 >
-> `picc-permission-modes` 的本地补丁让计划批准菜单默认选项为 **bypass permissions**，不是更保守的 acceptEdits；详情在它的 `LOCAL-PATCH.md`。这是个人偏好，不是通用安全默认。
+> `picc-permission-modes` 的本地补丁让 Pi **启动即为 bypass permissions**（`permissions.defaultMode`），计划批准菜单的默认选项也是 bypass permissions，不是更保守的 default / acceptEdits；详情在它的 `LOCAL-PATCH.md`。这是个人偏好，不是通用安全默认；在别人的机器上部署前请先删掉 `defaultMode`。
 
 ## 结构
 
@@ -141,6 +145,7 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 4. **shell 解析错误不再打到屏幕上**：带 JS 模板字符串的 heredoc 会让 shell-quote 报 `Bad substitution`，原来被 `console.error` 直接画在编辑器和 HUD 上。现在默认静默；需要诊断时设置 `PICC_DEBUG=/绝对路径` 写入文件。权限判断不变。
 5. **权限模式标签不再加粗**：RGB 颜色只设置前景色，不再发送 ANSI 粗体指令，避免底栏粗体样式泄漏到后续文字。
 6. **plan mode 只能手动进入**：`config.json` 设置 `"planMode": { "agentCanEnter": false }` 后，不注册模型可以调用的 `EnterPlanMode` 工具，Pi 不会主动切换到 plan mode，也不会弹窗询问。手动入口 `/plan`、`/mode plan`、`Shift+Tab` 照常可用。plan mode 里的 `ExitPlanMode` 计划批准流程不变。本仓库配置已经设为 `false`；删除该字段或改为 `true` 即恢复原版行为。修改后执行 `/reload` 生效。
+7. **启动模式可配置**：`config.json` 的 `permissions.defaultMode`（与 Claude Code `settings.json` 同名）决定新会话的初始模式，可填 `default`、`acceptEdits`、`plan`、`bypassPermissions`（或 `bypass`）、`auto`。本仓库设为 `bypassPermissions`。恢复或分叉的会话、`--permission-mode` 参数和 `PICC_PERMISSION_MODE` 环境变量优先。同时修复：有界面的新会话不会把启动模式告诉子 agent，子 agent 原来退回 default。
 
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 本地补丁：去掉 HUD 左侧缩进；两种 HUD 样式显示当前会话名称；新增 `/rename 新名称`（不带参数时弹出输入框）。名称通过 Pi 原生会话 API 保存，恢复会话后仍显示，Pi 自带 `/name` 也会同步刷新 HUD。未命名时不占位置，长名称只在 HUD 中截断；可用 `display.all.sessionName: false` 隐藏。改动见 `patches/pi-hud-footer/0.8.0-local.patch`，详细验证及测试命令见 `packages/pi-hud-footer/LOCAL-PATCH.md`。
 

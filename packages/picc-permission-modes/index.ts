@@ -265,6 +265,32 @@ function cycleFromMode(
 function resolveAutoModeConfigPath(): string {
   return resolvePermissionModesConfigPath();
 }
+/** Local patch: `permissions.defaultMode` (same key as Claude Code's settings.json)
+ *  sets the mode a session starts in. A mode saved in a resumed/forked session, the
+ *  `--permission-mode` flag and `PICC_PERMISSION_MODE` still win. Accepts the mode
+ *  names and aliases of `/mode`; "default" (upstream behavior) when the file, block
+ *  or field is missing or invalid. */
+export function loadDefaultModeConfig(configPath: string): PermissionMode {
+  if (!existsSync(configPath)) return "default";
+  try {
+    const raw = JSON.parse(stripJsonCommentsForConfig(readFileSync(configPath, "utf-8")));
+    const value = (raw as any)?.permissions?.defaultMode;
+    if (typeof value !== "string") return "default";
+    const modes: Record<string, PermissionMode> = {
+      default: "default",
+      acceptedits: "acceptEdits",
+      "accept-edits": "acceptEdits",
+      plan: "plan",
+      bypasspermissions: "bypassPermissions",
+      "bypass-permissions": "bypassPermissions",
+      bypass: "bypassPermissions",
+      auto: "auto",
+    };
+    return modes[value.trim().toLowerCase()] ?? "default";
+  } catch {
+    return "default";
+  }
+}
 /** Local patch: `planMode.agentCanEnter: false` keeps plan mode user-only. The
  *  model-callable `EnterPlanMode` tool is not registered, so the agent cannot even
  *  ask to switch; `/plan`, `/mode plan` and Shift+Tab still work. Default true
@@ -406,6 +432,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     : ensurePermissionModesConfig(resolvedConfigPath);
   const subagentModeOverride = loadSubagentModeConfig(permissionModesConfigPath);
   const agentCanEnterPlanMode = loadAgentCanEnterPlanModeConfig(permissionModesConfigPath);
+  // local patch: startup mode from `permissions.defaultMode`.
+  const defaultMode = loadDefaultModeConfig(permissionModesConfigPath);
   const state = emptyState();
   const userPermissions = loadUserPermissions();
   function applyUserPermissions(
@@ -436,7 +464,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       state.ctx.alwaysAskRules.localSettings = [...repoPerms.ask];
     }
   }
-  let currentMode: PermissionMode = "default";
+  let currentMode: PermissionMode = defaultMode; // local patch: was "default"
+  state.ctx = { ...state.ctx, mode: defaultMode }; // local patch
   // Headless / SDK hosts (e.g. picc-claude-shim driven by T3) build their pi
   // session via `createAgentSession` directly and never call `bindExtensions`,
   // so pi never fires `session_start` for them. That means `applyFlagOverride`
@@ -1526,6 +1555,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     }
     ensurePlansDir();
     if (ctx.hasUI) {
+      publishMode(ctx); // local patch: subagents inherit the startup mode on new sessions too
       installFooter(ctx);
       updateStatus(ctx);
     }
