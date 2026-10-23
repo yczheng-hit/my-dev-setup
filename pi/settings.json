@@ -24,6 +24,7 @@
     "npm:pi-context",
     "repo:packages/pi-scheduler",
     "npm:@narumitw/pi-goal",
+    "npm:@nijaru/pi-fast-mode",
     "repo:tools/pi-btw-split",
     "npm:pi-web-access",
     "npm:pi-sticky-last-prompt",

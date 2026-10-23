@@ -6,6 +6,10 @@
 
 按日期倒序记录影响使用或部署的变更；每次改配置、插件或部署行为时同步更新。
 
+### 2026-10-23
+
+- 新增 `@nijaru/pi-fast-mode`：`/fast`（`on` / `off` / `status`）切换 Codex Fast 模式，请求带 `service_tier: "priority"`，额度消耗约 2.5×，开启时底部显示 `⚡ FAST`。只对 Pi 自带的 `openai-codex` 提供方生效（需先 `/login` 用 ChatGPT 账号登录），走 `local`（OmniRoute）的模型不受影响。默认关闭；开关状态记在每个会话里，并写入 `~/.pi/agent/extensions/pi-fast-mode.json` 作为新会话默认值。其他机器执行 `./setup.sh` 或 `pi install npm:@nijaru/pi-fast-mode`，然后重启 Pi。
+
 ### 2026-10-22
 
 - `/btw` 升级到 pi-btw-split `0.7.1-split.9`：BTW 输入框里的 ↑/↓ 改成和主会话一样翻输入历史（输入框为空或光标在行首时 ↑ 调出之前的 BTW 问题，↓ 回到正在写的草稿），不再逐行滚动对话记录；滚动改用 PgUp/PgDn 或鼠标滚轮。历史包含本会话所有 BTW 问题，`/btw:new` 和重载之后仍在。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
@@ -175,6 +179,7 @@ pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-revi
 pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (≥6.5.0) pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
 @narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
+@nijaru/pi-fast-mode (0.0.5)    # /fast：openai-codex 的 Fast 模式（service_tier=priority，约 2.5× 额度）
 pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
 ```
 
