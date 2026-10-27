@@ -8,6 +8,8 @@
 
 ### 2026-10-23
 
+- herdr 左侧 Agents 列表在工具名后显示 pane ID，例如 `pi · w1:p3`。由新的 herdr 插件 `packages/herdr-pane-id`（`local.pane-id`）把 ID 写成 `$pane_id` token：herdr 启动、新建 pane、pane 跨工作区移动、检测到 agent 时自动更新；`herdr/config.toml` 第二行改为 `["agent", { token = "$pane_id", dim = true }]`。其他机器执行 `./setup.sh`（复制 config 并 link 插件），再执行 `herdr plugin action invoke local.pane-id.sync` 立即补上已有 pane，或重启 herdr。
+
 - 新增 `@nijaru/pi-fast-mode`：`/fast`（`on` / `off` / `status`）切换 Codex Fast 模式，请求带 `service_tier: "priority"`，额度消耗约 2.5×，开启时底部显示 `⚡ FAST`。只对 Pi 自带的 `openai-codex` 提供方生效（需先 `/login` 用 ChatGPT 账号登录），走 `local`（OmniRoute）的模型不受影响。默认关闭；开关状态记在每个会话里，并写入 `~/.pi/agent/extensions/pi-fast-mode.json` 作为新会话默认值。其他机器执行 `./setup.sh` 或 `pi install npm:@nijaru/pi-fast-mode`，然后重启 Pi。
 
 ### 2026-10-22
@@ -90,7 +92,7 @@ my-dev-setup/
 │   ├── pi-btw-split/
 │   └── herdr-monitor/
 ├── herdr/
-│   └── config.toml                         # 本机 Herdr 快捷键、tokyo-night 主题、blocked reason 侧栏
+│   └── config.toml                         # 本机 Herdr 快捷键、tokyo-night 主题、blocked reason 和 pane ID 侧栏
 ├── pi/
 │   ├── AGENTS.md                           # 全局指令：搜索优先 ripgrep
 │   ├── settings.json                       # 插件清单、claude-dark 主题、UI、模型偏好
@@ -112,7 +114,8 @@ my-dev-setup/
 │   ├── picc-permission-modes/
 │   ├── pi-hud-footer/
 │   ├── pi-scheduler/
-│   └── pi-subagent-hud/
+│   ├── pi-subagent-hud/
+│   └── herdr-pane-id/                      # herdr 插件：Agents 侧栏显示 pane ID
 └── patches/                                # 第三方包相对 npm 原版的改动
     ├── picc-permission-modes/0.1.3-local.patch
     ├── pi-hud-footer/0.8.0-local.patch

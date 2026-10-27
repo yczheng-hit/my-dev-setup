@@ -1,0 +1,27 @@
+id = "local.pane-id"
+name = "Pane ID sidebar token"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Reports each pane's public id as the $pane_id sidebar token (e.g. pi · w1:p3)"
+platforms = ["linux", "macos"]
+
+[[startup]]
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "pane.created"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "pane.moved"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["node", "sync.mjs"]
+
+[[actions]]
+id = "sync"
+title = "Refresh pane id tokens"
+contexts = ["workspace"]
+command = ["node", "sync.mjs"]

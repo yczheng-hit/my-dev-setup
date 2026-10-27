@@ -32,5 +32,6 @@ rows = [
     "workspace",
     "tab",
   ],
-  ["agent"],
+  # $pane_id comes from packages/herdr-pane-id (herdr plugin local.pane-id)
+  ["agent", { token = "$pane_id", dim = true }],
 ]
