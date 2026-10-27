@@ -1,8 +1,8 @@
 id = "local.pane-id"
-name = "Pane ID / workspace number sidebar tokens"
-version = "0.2.0"
+name = "Agent number / pane ID sidebar"
+version = "0.3.0"
 min_herdr_version = "0.9.1"
-description = "Reports $pane_id (w1:p3) and $ws_num (workspace number) sidebar tokens for every pane"
+description = "Numbers agents 1..N (state_text, state-colored) and reports $pane_id (w1:p3) for the sidebar"
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -13,11 +13,27 @@ on = "pane.created"
 command = ["node", "sync.mjs"]
 
 [[events]]
+on = "pane.closed"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "pane.exited"
+command = ["node", "sync.mjs"]
+
+[[events]]
 on = "pane.moved"
 command = ["node", "sync.mjs"]
 
 [[events]]
 on = "pane.agent_detected"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "tab.closed"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "tab.moved"
 command = ["node", "sync.mjs"]
 
 [[events]]
@@ -38,6 +54,6 @@ command = ["node", "sync.mjs"]
 
 [[actions]]
 id = "sync"
-title = "Refresh pane id / workspace number tokens"
+title = "Refresh agent numbers / pane ids"
 contexts = ["workspace"]
 command = ["node", "sync.mjs"]

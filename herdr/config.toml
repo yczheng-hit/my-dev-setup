@@ -23,17 +23,17 @@ auto_switch = false
 [ui.sidebar.agents]
 rows = [
   [
-    "state_icon",
+    # agent number 1..N in the agent's state color (state labels from local.pane-id)
+    { token = "state_text", bold = true },
     { token = "$blocked_reason", rules = [
       { equals = "plan ready", fg = "#7aa2f7" },
       { equals = "approval", fg = "#f7768e" },
     ] },
     "machine",
-    { token = "$ws_num", fg = "#e0af68" },
     "workspace",
     "tab",
   ],
-  # $ws_num / $pane_id come from packages/herdr-pane-id (herdr plugin local.pane-id)
+  # $pane_id comes from packages/herdr-pane-id (herdr plugin local.pane-id)
   ["agent", { token = "$pane_id", dim = true }],
 ]
 

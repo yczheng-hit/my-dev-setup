@@ -4,9 +4,10 @@
 // - State: herdr's managed integration (herdr-agent-state.ts) only listens for
 //   `herdr:blocked` on pi.events; pi emits ui_prompt_start/ui_prompt_end around
 //   every ctx.ui prompt, so we forward those.
-// - Reason: herdr has no blocked sub-states, so we publish display-only pane
-//   metadata: state_labels.blocked (shown by the `state_text` sidebar token) and
-//   token `blocked_reason` (shown by `$blocked_reason`).
+// - Reason: herdr has no blocked sub-states, so we publish the display-only pane
+//   token `blocked_reason` (shown by `$blocked_reason`). State labels are left to
+//   the local.pane-id herdr plugin, which uses `state_text` as the agent number.
+//   --clear-state-labels on clear also wipes labels set by older versions of this file.
 // @ts-nocheck
 
 import { execFile } from "node:child_process";
@@ -33,7 +34,7 @@ export default function (pi) {
   function reportMetadata(label) {
     const args = ["pane", "report-metadata", paneId, "--source", "user:pi-blocked-reason"];
     if (label) {
-      args.push("--state-label", `blocked=${label}`, "--token", `blocked_reason=${label}`);
+      args.push("--token", `blocked_reason=${label}`);
     } else {
       args.push("--clear-state-labels", "--clear-token", "blocked_reason");
     }
