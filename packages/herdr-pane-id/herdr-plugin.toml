@@ -1,8 +1,8 @@
 id = "local.pane-id"
-name = "Pane ID sidebar token"
-version = "0.1.0"
+name = "Pane ID / workspace number sidebar tokens"
+version = "0.2.0"
 min_herdr_version = "0.9.1"
-description = "Reports each pane's public id as the $pane_id sidebar token (e.g. pi · w1:p3)"
+description = "Reports $pane_id (w1:p3) and $ws_num (workspace number) sidebar tokens for every pane"
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -20,8 +20,24 @@ command = ["node", "sync.mjs"]
 on = "pane.agent_detected"
 command = ["node", "sync.mjs"]
 
+[[events]]
+on = "workspace.created"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "workspace.closed"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "workspace.moved"
+command = ["node", "sync.mjs"]
+
+[[events]]
+on = "workspace.reordered"
+command = ["node", "sync.mjs"]
+
 [[actions]]
 id = "sync"
-title = "Refresh pane id tokens"
+title = "Refresh pane id / workspace number tokens"
 contexts = ["workspace"]
 command = ["node", "sync.mjs"]

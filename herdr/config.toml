@@ -29,9 +29,16 @@ rows = [
       { equals = "approval", fg = "#f7768e" },
     ] },
     "machine",
+    { token = "$ws_num", fg = "#e0af68" },
     "workspace",
     "tab",
   ],
-  # $pane_id comes from packages/herdr-pane-id (herdr plugin local.pane-id)
+  # $ws_num / $pane_id come from packages/herdr-pane-id (herdr plugin local.pane-id)
   ["agent", { token = "$pane_id", dim = true }],
+]
+
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", { token = "$ws_num", fg = "#e0af68" }, "workspace"],
+  ["branch", "git_status"],
 ]
