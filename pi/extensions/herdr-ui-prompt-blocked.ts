@@ -4,10 +4,11 @@
 // - State: herdr's managed integration (herdr-agent-state.ts) only listens for
 //   `herdr:blocked` on pi.events; pi emits ui_prompt_start/ui_prompt_end around
 //   every ctx.ui prompt, so we forward those.
-// - Reason: herdr has no blocked sub-states, so we publish the display-only pane
-//   token `blocked_reason` (shown by `$blocked_reason`). State labels are left to
-//   the local.pane-id herdr plugin, which uses `state_text` as the agent number.
-//   --clear-state-labels on clear also wipes labels set by older versions of this file.
+// - Reason: herdr has no blocked sub-states, so we publish a display-only
+//   state label for `blocked`. The local.pane-id herdr plugin labels every agent
+//   row "<n> <workspace> · <tab>" (and blocked "<n> approval"); we keep its agent
+//   number and replace the whole blocked row with "<n> plan ready" etc. Clearing
+//   our source falls back to the plugin's labels.
 // @ts-nocheck
 
 import { execFile } from "node:child_process";
@@ -31,15 +32,30 @@ export default function (pi) {
   pi.events.on("btw:ui-bootstrap", (event) => {
     bootstrapActive = event?.active === true;
   });
-  function reportMetadata(label) {
-    const args = ["pane", "report-metadata", paneId, "--source", "user:pi-blocked-reason"];
-    if (label) {
-      args.push("--token", `blocked_reason=${label}`);
-    } else {
-      args.push("--clear-state-labels", "--clear-token", "blocked_reason");
-    }
+  function report(args) {
     try {
-      execFile(herdrBin, args, { timeout: 2000 }, () => {});
+      execFile(herdrBin, ["pane", "report-metadata", paneId, "--source", "user:pi-blocked-reason", ...args], { timeout: 2000 }, () => {});
+    } catch {}
+  }
+
+  let reportSeq = 0;
+  function reportMetadata(label) {
+    const seq = ++reportSeq;
+    if (!label) {
+      // Also clears the pre-0.4 `blocked_reason` token.
+      report(["--clear-state-labels", "--clear-token", "blocked_reason"]);
+      return;
+    }
+    // Reuse the agent number from the plugin's label ("3 tools · pi-config").
+    try {
+      execFile(herdrBin, ["pane", "get", paneId], { timeout: 2000 }, (error, stdout) => {
+        if (seq !== reportSeq) return; // prompt already ended
+        let num = "";
+        try {
+          if (!error) num = String(JSON.parse(stdout).result?.pane?.state_labels?.idle ?? "").match(/^\d+(?= |$)/)?.[0] ?? "";
+        } catch {}
+        report(["--state-label", `blocked=${num ? `${num} ` : ""}${label}`]);
+      });
     } catch {}
   }
 

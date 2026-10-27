@@ -19,21 +19,19 @@ focus_agent = "prefix+1..9"
 name = "tokyo-night"
 auto_switch = false
 
-# Show why a pi pane is blocked (set by ~/.pi/agent/extensions/herdr-ui-prompt-blocked.ts)
+# Agent state colors: idle green (#9ece6a), working orange (tokyo-night yellow
+# #e0af68 is too close to green), blocked red, done blue (teal #73daca is too).
+[theme.custom]
+yellow = "#ff9e64"
+teal = "#7aa2f7"
+
+# Agent rows: "<n> <workspace> · <tab>" as one state-colored token, so the number
+# replaces the state dot with no " · " after it. Labels come from the herdr plugin
+# local.pane-id (packages/herdr-pane-id); while a pi prompt waits, pi replaces the
+# whole row with "<n> plan ready" / "<n> approval" (herdr-ui-prompt-blocked.ts).
 [ui.sidebar.agents]
 rows = [
-  [
-    # agent number 1..N in the agent's state color (state labels from local.pane-id)
-    { token = "state_text", bold = true },
-    { token = "$blocked_reason", rules = [
-      { equals = "plan ready", fg = "#7aa2f7" },
-      { equals = "approval", fg = "#f7768e" },
-    ] },
-    "machine",
-    "workspace",
-    "tab",
-  ],
-  # $pane_id comes from packages/herdr-pane-id (herdr plugin local.pane-id)
+  [{ token = "state_text", bold = true }, "machine"],
   ["agent", { token = "$pane_id", dim = true }],
 ]
 
