@@ -5,7 +5,6 @@
 //                 A pi pane replaces blocked with "<n> <reason>"
 //                 (pi/extensions/herdr-ui-prompt-blocked.ts).
 //   $pane_id      pane token: public pane id (w1:p3)
-//   $ws_num       workspace token: workspace number (Spaces section)
 // Idempotent; run by herdr on startup and on pane/tab/workspace lifecycle events.
 import { execFileSync } from "node:child_process";
 
@@ -31,9 +30,9 @@ const panes = JSON.parse(run(["pane", "list"])).result?.panes ?? [];
 
 let updated = 0;
 for (const w of workspaces.values()) {
-  const num = String(w.number ?? "");
-  if (num && w.tokens?.ws_num !== num) {
-    updated += report(["workspace", "report-metadata", w.workspace_id, "--source", SOURCE, "--token", `ws_num=${num}`], w.workspace_id);
+  // Spaces keep herdr's own style; drop the pre-0.6 workspace number token.
+  if (w.tokens?.ws_num !== undefined) {
+    updated += report(["workspace", "report-metadata", w.workspace_id, "--source", SOURCE, "--clear-token", "ws_num"], w.workspace_id);
   }
 }
 

@@ -8,6 +8,7 @@
 
 ### 2026-10-23
 
+- herdr Spaces 侧栏恢复原样，工作区名前不再加序号（`packages/herdr-pane-id` 0.6.0 会清掉旧的 `$ws_num`，`herdr/config.toml` 删除 `[ui.sidebar.spaces]`）。
 - herdr Agents 侧栏再整理：第一行为 `1 · tools · pi-config`，只有编号随状态变色，工作区名和 tab 名保持原来的颜色，工作区名不加粗；工作中由黄改橙、完成由青改蓝，和空闲的绿色区分开（`[theme.custom]`）。pi 等待确认时编号处显示 `1 approval` / `1 plan ready`（红），确认后恢复。`packages/herdr-pane-id` 升到 0.5.0，`herdr-ui-prompt-blocked.ts` 改为写带编号的 blocked state label。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync`，已开的 pi 执行 `/reload`。
 - herdr Agents 侧栏改为**用 agent 编号代替状态圆圈**：每个 agent 一行一个唯一编号 `1`、`2`、`3`，颜色仍随状态（空闲绿、工作黄、等待红、完成蓝），顺序与 `prefix+N` 跳转一致；行内不再重复工作区序号（修复同一工作区三个 agent 都显示 `1`）。Spaces 区保留工作区序号。`packages/herdr-pane-id` 升到 0.3.0（用 state label 显示编号，agent 增减、tab 或工作区变化时重排），`herdr-ui-prompt-blocked.ts` 不再写 state label，等待原因只走 `$blocked_reason`。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。
 - herdr 侧栏的工作区名前加上序号，例如 Spaces 显示 `1 · tools`，Agents 显示 `1 · tools · <tab>`。序号与 `prefix+shift+N` 一致，新建、关闭或拖动工作区后自动更新。由 `packages/herdr-pane-id` 插件（0.2.0）写入 `$ws_num` token，`herdr/config.toml` 新增 `[ui.sidebar.spaces]` 行。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。

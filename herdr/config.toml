@@ -33,9 +33,3 @@ rows = [
   [{ token = "state_text", bold = true }, "machine", { token = "workspace", bold = false }, "tab"],
   ["agent", { token = "$pane_id", dim = true }],
 ]
-
-[ui.sidebar.spaces]
-rows = [
-  ["state_icon", { token = "$ws_num", fg = "#e0af68" }, "workspace"],
-  ["branch", "git_status"],
-]
