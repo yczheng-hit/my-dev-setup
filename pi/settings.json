@@ -2,6 +2,7 @@
   "defaultProvider": "anthropic",
   "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "high",
+  "externalEditor": "vi",
   "modelThinkingLevels": {
     "openai-codex/gpt-6.1-sol": "xhigh"
   },
