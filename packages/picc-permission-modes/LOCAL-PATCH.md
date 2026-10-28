@@ -184,3 +184,36 @@ shell commands, and bypass mode skipped its sensitive-path (D4) check.
 read-only `exec_command` allowed, acceptEdits allows in cwd, bypass still asks on `~/.gitconfig`, plan mode
 blocks project edits). Full suite: **550 passed, 6 skipped, 0 failed**. Patch regenerated and verified:
 npm original (CRLF stripped) + patch equals this directory's runtime files.
+
+## Native plan review and explicit cancellation (2026-10-28)
+
+**Symptom/cause.** The old fourth choice spawned an inherited-stdio editor inside the approval
+custom overlay without stopping/restoring Pi's TUI. Returning from `vi :q!` could leave a blank,
+unusable screen. With no EDITOR it could do nothing. “Stay” did not stop the model's next turn.
+
+**Change** (`// local patch`):
+- Keep four choices and bypass-first approval order. Choice 3 is **Stay in plan mode**; choice 4 is
+  **Request changes to the plan…**, not a second ambiguous “No”.
+- Approval closes before `ctx.ui.editor()` opens. Feedback Esc/empty submission and Stay/Esc return
+  `terminate: true`: remain in plan mode, retain the plan, wait for the user's next message.
+- Submitted feedback is returned through the current tool result, with explicit revise/reapprove
+  instructions. It is not an edited plan, not execution approval, and not a queued follow-up message.
+- Ctrl+G in approval closes it, opens Pi's native editor with the saved plan, saves non-empty edits,
+  and reopens approval. Cancelling/blank input preserves the old plan; save failure is notified.
+  Ctrl+G inside the native editor uses Pi's own external-editor terminal handoff.
+- RPC uses its supported selector, not terminal custom UI. Empty/unreadable-plan guards, scrolling,
+  Shift+Tab, approval permissions and allowed prompts remain unchanged.
+
+**Validation.** New regression suite was red on all 12 cases before the fix. Current isolated full
+suite: **562 passed, 6 skipped, 0 failed** (Pi 1.4.0). Also run from the repository root:
+
+```sh
+PI_HOST_DIR=/path/to/pi-coding-agent node packages/picc-permission-modes/test/model-turn.mjs
+PI_HOST_DIR=/path/to/pi-coding-agent python3 packages/picc-permission-modes/test/native-ui.py
+```
+
+The first uses a deterministic offline provider with real Pi orchestration: Stay/cancelled feedback
+produce one model request, explicit approval produces two. The second uses an isolated tmux Pi to
+verify native feedback → Pi-managed vi → cancel → usable input, plus edit/save/reapproval. Neither
+reads real user configuration, saved sessions or the clipboard. Regenerated runtime-only patch:
+normalized npm 0.1.3 + patch equals all local runtime files. Activate with `/reload` when idle.

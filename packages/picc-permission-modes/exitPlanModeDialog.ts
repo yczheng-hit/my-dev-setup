@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import { spawn } from "node:child_process";
+// local patch: close approval before handing editing to Pi's native UI.
 import {
   type Component,
   Markdown,
@@ -11,20 +10,15 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { shortenPath } from "./utils.ts";
-/** Action that the user chose in the dialog. Maps 1:1 to the existing
- *  `ExitPlanModeChoice.action` discriminated union so the tool's switch
- *  statement can dispatch on `result.action` unchanged. */
+/** Review actions; editing is handled by the tool after this overlay closes. */
 export type ExitPlanModeDialogAction =
   | "acceptEdits"
   | "bypassPermissions"
   | "no"
-  | "refine";
+  | "refine"
+  | "edit";
 export interface ExitPlanModeDialogResult {
   action: ExitPlanModeDialogAction;
-  /** Present when the user edited the plan in $EDITOR (Ctrl+G) before
-   *  choosing. Tool echoes this back in the tool_result instead of the
-   *  original `planText` so the agent sees the user's edits. */
-  updatedPlan?: string;
 }
 interface ExitPlanModeDialogOption {
   id: ExitPlanModeDialogAction;
@@ -58,12 +52,12 @@ const OPTIONS_NORMAL: ExitPlanModeDialogOption[] = [
   },
   {
     id: "no",
-    label: "No, stay in plan mode",
+    label: "Stay in plan mode",
     shortcutHint: "esc",
   },
   {
     id: "refine",
-    label: "No, and let me refine the plan",
+    label: "Request changes to the plan…",
   },
 ];
 const OPTIONS_EMPTY: ExitPlanModeDialogOption[] = [
@@ -74,7 +68,7 @@ const OPTIONS_EMPTY: ExitPlanModeDialogOption[] = [
   },
   {
     id: "no",
-    label: "No, stay in plan mode",
+    label: "Stay in plan mode",
     shortcutHint: "esc",
   },
 ];
@@ -151,38 +145,6 @@ export function buildMarkdownTheme(theme: Theme): MarkdownTheme {
     strikethrough: (t) => strikethrough(t),
   };
 }
-export async function launchExternalEditor(
-  planPath: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<string | undefined> {
-  const editor = env.EDITOR ?? env.VISUAL;
-  if (!editor) return undefined;
-  return new Promise((resolve) => {
-    let proc: ReturnType<typeof spawn>;
-    try {
-      proc = spawn(editor, [planPath], {
-        stdio: "inherit",
-        shell: true,
-        env,
-      });
-    } catch {
-      resolve(undefined);
-      return;
-    }
-    proc.on("close", (code) => {
-      if (code !== 0 && code !== null) {
-        resolve(undefined);
-        return;
-      }
-      try {
-        resolve(readFileSync(planPath, "utf-8"));
-      } catch {
-        resolve(undefined);
-      }
-    });
-    proc.on("error", () => resolve(undefined));
-  });
-}
 export class ExitPlanModeDialog implements Component {
   private planText: string;
   private planPath: string;
@@ -191,9 +153,6 @@ export class ExitPlanModeDialog implements Component {
   private readonly dialogTheme: ExitPlanModeDialogTheme;
   private readonly markdownTheme: MarkdownTheme;
   private readonly done: (result: ExitPlanModeDialogResult) => void;
-  private readonly onEditorLaunch: (
-    path: string,
-  ) => Promise<string | undefined>;
   private closed = false;
   private cachedLines: string[] | null = null;
   private cachedWidth = -1;
@@ -210,7 +169,6 @@ export class ExitPlanModeDialog implements Component {
     dialogTheme: ExitPlanModeDialogTheme,
     markdownTheme: MarkdownTheme,
     done: (result: ExitPlanModeDialogResult) => void,
-    onEditorLaunch: (path: string) => Promise<string | undefined>,
     getTerminalRows: () => number = () => 24,
   ) {
     this.planText = planText;
@@ -219,7 +177,6 @@ export class ExitPlanModeDialog implements Component {
     this.dialogTheme = dialogTheme;
     this.markdownTheme = markdownTheme;
     this.done = done;
-    this.onEditorLaunch = onEditorLaunch;
     this.getTerminalRows = getTerminalRows;
     this.selectedIndex = 0;
   }
@@ -233,13 +190,6 @@ export class ExitPlanModeDialog implements Component {
   }
   invalidate(): void {
     this.cachedLines = null;
-  }
-  /** Invalidate both the rendered output cache AND the Markdown plan
-   *  cache. Call this when the plan text changes (e.g., the user edited
-   *  the plan in $EDITOR and we need to re-render the Markdown). */
-  private invalidateAll(): void {
-    this.cachedLines = null;
-    this.cachedMdLines = null;
   }
   private setSelectedIndex(index: number): void {
     const clamped = Math.max(0, Math.min(this.options.length - 1, index));
@@ -315,23 +265,11 @@ export class ExitPlanModeDialog implements Component {
     if (matchesKey(data, "enter")) {
       const opt = this.options[this.selectedIndex];
       if (!opt) return;
-      if (opt.id === "refine") {
-        this.onEditorLaunch(this.planPath).then((updated) => {
-          if (this.closed) return;
-          if (updated === undefined) return;
-          this.finish({ action: "refine", updatedPlan: updated });
-        });
-        return;
-      }
       this.finish({ action: opt.id });
       return;
     }
     if (matchesKey(data, "ctrl+g")) {
-      this.onEditorLaunch(this.planPath).then((updated) => {
-        if (this.closed || updated === undefined) return;
-        this.planText = updated;
-        this.invalidateAll();
-      });
+      this.finish({ action: "edit" });
       return;
     }
     if (data.length === 1 && data >= "1" && data <= "9") {
@@ -417,8 +355,8 @@ export class ExitPlanModeDialog implements Component {
     hints.push(
       this.dialogTheme.hint(
         isEmpty
-          ? "ctrl-g to write a plan in $EDITOR"
-          : "ctrl-g to edit in $EDITOR",
+          ? "ctrl-g to write a plan with Pi"
+          : "ctrl-g to edit with Pi",
       ),
     );
     hints.push(
@@ -467,28 +405,12 @@ export class ExitPlanModeDialog implements Component {
     }
   }
 }
-export interface CreateExitPlanModeDialogFactoryOptions {
-  /** Optional ctx reference so the dialog can use pi's built-in editor when
-   *  $EDITOR is unset. When omitted, Ctrl+G is a no-op if $EDITOR is unset. */
-  ctx?: { ui: { notify: (msg: string, type?: "info" | "warning" | "error") => void } };
-}
 export function createExitPlanModeDialogFactory(
   planText: string,
   planPath: string,
   dialogTheme: ExitPlanModeDialogTheme,
   markdownTheme: MarkdownTheme,
-  options: CreateExitPlanModeDialogFactoryOptions = {},
 ) {
-  const editorLauncher = (path: string): Promise<string | undefined> => {
-    const result = launchExternalEditor(path);
-    if (!process.env.EDITOR && !process.env.VISUAL && options.ctx) {
-      options.ctx.ui.notify(
-        "$EDITOR is not set. Set EDITOR or VISUAL to enable in-place plan editing.",
-        "warning",
-      );
-    }
-    return result;
-  };
   return (
     tui: TUI,
     _theme: Theme,
@@ -512,7 +434,6 @@ export function createExitPlanModeDialogFactory(
       dialogTheme,
       markdownTheme,
       done,
-      editorLauncher,
       getTerminalRows,
     );
     dialog.setBorderColor((s: string): string => dialogTheme.border(s));

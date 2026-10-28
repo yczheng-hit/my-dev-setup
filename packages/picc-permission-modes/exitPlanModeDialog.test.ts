@@ -50,7 +50,6 @@ function makeDialog(
       resolveDone = resolve;
     },
   );
-  const onEditorLaunch = async () => editorPlanContent;
   const dialog = new ExitPlanModeDialog(
     planText,
     "/tmp/plan.md",
@@ -58,7 +57,6 @@ function makeDialog(
     stubDialogTheme,
     stubMarkdownTheme,
     (r) => resolveDone(r),
-    onEditorLaunch,
     () => terminalRows,
   );
   return {
@@ -201,9 +199,9 @@ describe("ExitPlanModeDialog.render", () => {
     expect(out).toContain("Step two");
     expect(out).toContain("Yes, auto-accept edits on plan exit");
     expect(out).toContain("Yes, bypass permissions on plan exit");
-    expect(out).toContain("No, stay in plan mode");
-    expect(out).toContain("No, and let me refine the plan");
-    expect(out).toContain("ctrl-g to edit in $EDITOR");
+    expect(out).toContain("Stay in plan mode");
+    expect(out).toContain("Request changes to the plan…");
+    expect(out).toContain("ctrl-g to edit with Pi");
     expect(out).toContain("Plan saved to:");
     expect(out).toContain("plan.md");
   });
@@ -213,10 +211,10 @@ describe("ExitPlanModeDialog.render", () => {
     expect(out).toContain("Ready to code?");
     expect(out).toContain("The plan is empty");
     expect(out).toContain("Yes, proceed without a plan");
-    expect(out).toContain("No, stay in plan mode");
+    expect(out).toContain("Stay in plan mode");
     expect(out).not.toContain("bypass permissions");
     expect(out).not.toContain("auto-accept edits");
-    expect(out).toContain("ctrl-g to write a plan in $EDITOR");
+    expect(out).toContain("ctrl-g to write a plan with Pi");
   });
   it("marks the first option with the ▶ selected glyph by default", () => {
     const { dialog } = makeDialog("Plan");
@@ -269,16 +267,11 @@ describe("ExitPlanModeDialog.handleInput", () => {
     dialog.handleInput("\r");
     await expect(finishPromise).resolves.toEqual({ action: "no" });
   });
-  it("Enter on the refine option opens the editor and returns { action: 'refine', updatedPlan }", async () => {
-    const { dialog, finishPromise } = makeDialog("Plan", "refined content");
-    dialog.handleInput("\x1b[B");
-    dialog.handleInput("\x1b[B");
-    dialog.handleInput("\x1b[B");
+  it("Enter on refine closes approval and delegates feedback input to the tool", async () => {
+    const { dialog, finishPromise } = makeDialog("Plan");
+    dialog.handleInput("4");
     dialog.handleInput("\r");
-    await expect(finishPromise).resolves.toEqual({
-      action: "refine",
-      updatedPlan: "refined content",
-    });
+    await expect(finishPromise).resolves.toEqual({ action: "refine" });
   });
   it("Up arrow clamps at 0 (does not underflow)", () => {
     const { dialog } = makeDialog("Plan");
@@ -296,7 +289,7 @@ describe("ExitPlanModeDialog.handleInput", () => {
     const out = dialog.render(80).join("\n");
     const refineLine = out
       .split("\n")
-      .find((l) => l.includes("No, and let me refine"));
+      .find((l) => l.includes("Request changes"));
     expect(refineLine!.startsWith("▶ ")).toBe(true);
   });
   it("Number key '2' selects accept edits, and Enter confirms it", async () => {
@@ -310,17 +303,10 @@ describe("ExitPlanModeDialog.handleInput", () => {
     dialog.handleInput("\r");
     await expect(finishPromise).resolves.toEqual({ action: "acceptEdits" });
   });
-  it("Ctrl+G updates planText but does NOT close the dialog", async () => {
-    const { dialog, finishPromise } = makeDialog("Original", "Updated text");
-    let raceResult: ExitPlanModeDialogResult | "pending" = "pending";
-    void finishPromise.then((r) => {
-      if (r) raceResult = r;
-    });
+  it("Ctrl+G closes approval before the tool opens Pi's editor", async () => {
+    const { dialog, finishPromise } = makeDialog("Original");
     dialog.handleInput("\x07");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(raceResult).toBe("pending");
-    dialog.handleInput("\r");
-    await expect(finishPromise).resolves.toEqual({ action: "bypassPermissions" });
+    await expect(finishPromise).resolves.toEqual({ action: "edit" });
   });
   it("done() is idempotent: pressing Esc then Enter only resolves once", async () => {
     const { dialog, finishPromise } = makeDialog("Plan");
@@ -357,9 +343,9 @@ describe("ExitPlanModeDialog layout (full-width overlay)", () => {
     const lastLines = lines.slice(-10).join("\n");
     expect(lastLines).toContain("Yes, auto-accept edits on plan exit");
     expect(lastLines).toContain("Yes, bypass permissions on plan exit");
-    expect(lastLines).toContain("No, stay in plan mode");
-    expect(lastLines).toContain("No, and let me refine the plan");
-    expect(lastLines).toContain("ctrl-g to edit in $EDITOR");
+    expect(lastLines).toContain("Stay in plan mode");
+    expect(lastLines).toContain("Request changes to the plan…");
+    expect(lastLines).toContain("ctrl-g to edit with Pi");
     expect(lastLines).toContain("Plan saved to:");
   });
   it("shows 'The plan is empty.' when plan text is whitespace (no overflow markers)", () => {
@@ -372,7 +358,7 @@ describe("ExitPlanModeDialog layout (full-width overlay)", () => {
     expect(out).not.toContain("more below");
     expect(out).not.toContain("Here is the plan:");
     expect(out).toContain("Yes, proceed without a plan");
-    expect(out).toContain("ctrl-g to write a plan in $EDITOR");
+    expect(out).toContain("ctrl-g to write a plan with Pi");
     expect(out).not.toContain("Yes, auto-accept edits on plan exit");
   });
   it("options are always rendered (even when plan overflows)", () => {
@@ -381,8 +367,8 @@ describe("ExitPlanModeDialog layout (full-width overlay)", () => {
     const out = lines.join("\n");
     expect(out).toContain("Yes, auto-accept edits on plan exit");
     expect(out).toContain("Yes, bypass permissions on plan exit");
-    expect(out).toContain("No, stay in plan mode");
-    expect(out).toContain("No, and let me refine the plan");
+    expect(out).toContain("Stay in plan mode");
+    expect(out).toContain("Request changes to the plan…");
   });
 });
 describe("ExitPlanModeDialog plan rendering (scrollable middle)", () => {
@@ -408,9 +394,9 @@ describe("ExitPlanModeDialog plan rendering (scrollable middle)", () => {
     const out = dialog.render(80).join("\n");
     expect(out).toContain("Yes, auto-accept edits on plan exit");
     expect(out).toContain("Yes, bypass permissions on plan exit");
-    expect(out).toContain("No, stay in plan mode");
-    expect(out).toContain("No, and let me refine the plan");
-    expect(out).toContain("ctrl-g to edit in $EDITOR");
+    expect(out).toContain("Stay in plan mode");
+    expect(out).toContain("Request changes to the plan…");
+    expect(out).toContain("ctrl-g to edit with Pi");
   });
   it("total rendered lines fit within the terminal height", () => {
     const longText = Array.from({ length: 200 }, (_, i) => `Line ${i + 1}`).join("\n");
@@ -492,7 +478,6 @@ describe("ExitPlanModeDialog plan rendering (scrollable middle)", () => {
       stubDialogTheme,
       stubMarkdownTheme,
       (r) => resolveDone(r),
-      async () => undefined,
       () => 30,
     );
     dialog.handleInput("\x1b[B");

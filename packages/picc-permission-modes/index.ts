@@ -1349,12 +1349,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     }
     persistState();
   }
-  async function applyPlanRefine(notes: string, _ctx: ExtensionContext): Promise<void> {
-    pi.sendUserMessage(
-      `Refine the plan based on this feedback:\n\n${notes}`,
-      { deliverAs: "followUp" },
-    );
-  }
   async function readPlanFile(ctx: ExtensionContext): Promise<string> {
     const sessionId = ctx.sessionManager.getSessionId();
     const planPath = getPlanFilePath(sessionId);
@@ -1366,9 +1360,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       planText: async (ctx) => readPlanFile(ctx),
       applyExit: async (ctx, { mode, plan, allowedPrompts }) => {
         await applyPlanExit(mode, plan, ctx, allowedPrompts);
-      },
-      applyRefine: async (ctx, notes) => {
-        await applyPlanRefine(notes, ctx);
       },
     }),
   );

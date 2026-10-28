@@ -1390,8 +1390,8 @@ describe("ExitPlanMode tool", () => {
     expect(rendered).toContain("Step one");
     expect(rendered).toContain("Yes, auto-accept edits on plan exit");
     expect(rendered).toContain("Yes, bypass permissions on plan exit");
-    expect(rendered).toContain("No, stay in plan mode");
-    expect(rendered).toContain("No, and let me refine the plan");
+    expect(rendered).toContain("Stay in plan mode");
+    expect(rendered).toContain("Request changes to the plan…");
     expect(rendered).not.toContain("clear context");
   });
   it.each([
@@ -1514,26 +1514,21 @@ describe("ExitPlanMode tool", () => {
     const last = pi.appendEntries[pi.appendEntries.length - 1];
     expect((last.data as any).mode).toBe("plan");
   });
-  it("No, refine with edited plan sends the edit back as a follow-up", async () => {
+  it("Request changes returns feedback in the current tool result, without queuing a follow-up", async () => {
     const ctx = pi.fakeCtxFor({
       cwd,
       hasUI: true,
       ui: {
         ...pi.ui,
-        custom: async <T,>() =>
-          ({
-            action: "refine",
-            updatedPlan: "Please add more error handling.\n",
-          }) as T,
+        custom: async <T,>() => ({ action: "refine" }) as T,
+        editor: async () => "Please add more error handling.\n",
       } as any,
     });
     writePlan("# Plan to refine\n");
-    await pi.simulateToolExecution("ExitPlanMode", {}, ctx);
-    expect(
-      pi.userMessages.some(
-        (m) => m.text.includes("Refine the plan") && m.text.includes("error handling"),
-      ),
-    ).toBe(true);
+    const previousMessages = pi.userMessages.length;
+    const result = await pi.simulateToolExecution("ExitPlanMode", {}, ctx);
+    expect(JSON.stringify(result)).toContain("error handling");
+    expect(pi.userMessages).toHaveLength(previousMessages);
   });
   it("Esc / dialog-dismissed → stays in plan mode", async () => {
     const ctx = pi.fakeCtxFor({

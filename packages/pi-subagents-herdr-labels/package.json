@@ -1,0 +1,10 @@
+{
+  "name": "pi-subagents-herdr-labels",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keep Herdr agent numbers while retaining upstream pi-subagents metadata and lifecycle",
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "pi": { "extensions": ["./extensions/index.ts"] },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

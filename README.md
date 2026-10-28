@@ -8,6 +8,8 @@
 
 ### 2026-10-28
 
+- **picc 计划审批不再从弹窗里直接启动外部编辑器。** 第三项 `Stay in plan mode` 关闭审批并停住当前模型回合，等你继续输入；第四项 `Request changes to the plan…` 打开 Pi 原生反馈框，Esc/空提交同样返回主输入框，提交意见后只修改计划再审批、不直接执行。审批里的 Ctrl+G 先关闭弹窗再用 Pi 原生编辑器编辑计划，保存后重开审批；原生框里的 Ctrl+G 由 Pi 管理 vi 等外部编辑器的终端切换。保留 bypass-first、Shift+Tab、滚轮和空计划保护。隔离全套 562 通过/6 跳过；真实 Pi UI 与离线模型回合验证通过。
+- **Herdr 子任务不再覆盖 agent 编号。** 新增自有适配器 `packages/pi-subagents-herdr-labels`，由它调用未修改的 npm `pi-subagents` 入口，只过滤该桥写入的 state labels；编号/状态颜色、`3 approval` / `3 plan ready` 保留，上游摘要、标题后缀、刷新、恢复和完成清理仍在，任务详情仍看 Pi HUD。不改 Herdr、不靠周期刷编号抢标签。settings 保留 `{ "source": "npm:pi-subagents", "extensions": [] }` 供安装和 skills/prompts，紧接本地适配器，避免重复注册。其他机器 `git pull && ./setup.sh`；本机已定点更新 package 清单，在没有活动子任务时 `/reload` 或重启 Pi。上游包升级后需重启以清掉 Node 旧模块缓存。
 - **GPT（`openai-codex`）模型的 harness 对齐官方 Codex CLI，Claude 路径不变。** 之前 pi 用通用提示词和 `bash`/`edit`/`write` 工具跑 GPT，和 Codex 官方的请求形状差很多。现在三处一起改：
   1. 新增本地补丁版 `packages/pi-openai-codex-compat`（npm `pi-openai-codex-compat@0.0.29`）：`apply_patch` 自由格式工具替换 `edit`/`write`，`exec_command`/`write_stdin` 替换 `bash`，打开 Responses Lite（`reasoning.context=all_turns`、`parallel_tool_calls=false`），`end_turn=false` 自动续跑，远程 compaction。补丁修的是 Lite 下 `apply_patch` 被 schema 校验拒绝、续跑断掉的问题。配置在 `pi/openai-codex-compat.json`（`responsesLite: true`、`reasoningSummary: "off"`、`imageGeneration: false`），部署到 `~/.pi/agent/openai-codex-compat.json`。
   2. 新增自有插件 `packages/pi-gpt-codex`：只在 GPT 模型上把 pi 的通用开头和 “Be concise” 换成 Codex 风格系统提示词（自主完成、不中途停、compaction 后继续任务、只用 `apply_patch` 改文件），工具说明随当前工具集切换；项目上下文、`AGENTS.md` 和其他插件加的段落保留。bash 输出被截断时附上完整日志头部的读取方法。

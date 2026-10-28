@@ -58,8 +58,8 @@ describe("ExitPlanMode tool option order", () => {
     expect(OPTIONS_TUI).toEqual([
       "Yes, bypass permissions on plan exit",
       "Yes, auto-accept edits on plan exit",
-      "No, stay in plan mode",
-      "No, and let me refine the plan",
+      "Stay in plan mode",
+      "Request changes to the plan…",
     ]);
   });
 

@@ -107,10 +107,16 @@ index 567bea7..c7c77b0 100644
          ],
          details: { entered: true, declined: false },
 diff --git a/exitPlanModeDialog.ts b/exitPlanModeDialog.ts
-index c1f54aa..5ac79f4 100644
+index c1f54aa..c74431f 100644
 --- a/exitPlanModeDialog.ts
 +++ b/exitPlanModeDialog.ts
-@@ -6,6 +6,8 @@ import {
+@@ -1,28 +1,24 @@
+-import { readFileSync } from "node:fs";
+-import { spawn } from "node:child_process";
++// local patch: close approval before handing editing to Pi's native UI.
+ import {
+   type Component,
+   Markdown,
    type MarkdownTheme,
    matchesKey,
    type TUI,
@@ -119,7 +125,27 @@ index c1f54aa..5ac79f4 100644
  } from "@earendil-works/pi-tui";
  import type { Theme } from "@earendil-works/pi-coding-agent";
  import { shortenPath } from "./utils.ts";
-@@ -44,16 +46,16 @@ interface ExitPlanModeDialogTheme {
+-/** Action that the user chose in the dialog. Maps 1:1 to the existing
+- *  `ExitPlanModeChoice.action` discriminated union so the tool's switch
+- *  statement can dispatch on `result.action` unchanged. */
++/** Review actions; editing is handled by the tool after this overlay closes. */
+ export type ExitPlanModeDialogAction =
+   | "acceptEdits"
+   | "bypassPermissions"
+   | "no"
+-  | "refine";
++  | "refine"
++  | "edit";
+ export interface ExitPlanModeDialogResult {
+   action: ExitPlanModeDialogAction;
+-  /** Present when the user edited the plan in $EDITOR (Ctrl+G) before
+-   *  choosing. Tool echoes this back in the tool_result instead of the
+-   *  original `planText` so the agent sees the user's edits. */
+-  updatedPlan?: string;
+ }
+ interface ExitPlanModeDialogOption {
+   id: ExitPlanModeDialogAction;
+@@ -44,24 +40,24 @@ interface ExitPlanModeDialogTheme {
    emptyPlan: (text: string) => string;
  }
  const OPTIONS_NORMAL: ExitPlanModeDialogOption[] = [
@@ -140,8 +166,106 @@ index c1f54aa..5ac79f4 100644
 +  },
    {
      id: "no",
-     label: "No, stay in plan mode",
-@@ -263,6 +265,15 @@ export class ExitPlanModeDialog implements Component {
+-    label: "No, stay in plan mode",
++    label: "Stay in plan mode",
+     shortcutHint: "esc",
+   },
+   {
+     id: "refine",
+-    label: "No, and let me refine the plan",
++    label: "Request changes to the plan…",
+   },
+ ];
+ const OPTIONS_EMPTY: ExitPlanModeDialogOption[] = [
+@@ -72,7 +68,7 @@ const OPTIONS_EMPTY: ExitPlanModeDialogOption[] = [
+   },
+   {
+     id: "no",
+-    label: "No, stay in plan mode",
++    label: "Stay in plan mode",
+     shortcutHint: "esc",
+   },
+ ];
+@@ -149,38 +145,6 @@ export function buildMarkdownTheme(theme: Theme): MarkdownTheme {
+     strikethrough: (t) => strikethrough(t),
+   };
+ }
+-export async function launchExternalEditor(
+-  planPath: string,
+-  env: NodeJS.ProcessEnv = process.env,
+-): Promise<string | undefined> {
+-  const editor = env.EDITOR ?? env.VISUAL;
+-  if (!editor) return undefined;
+-  return new Promise((resolve) => {
+-    let proc: ReturnType<typeof spawn>;
+-    try {
+-      proc = spawn(editor, [planPath], {
+-        stdio: "inherit",
+-        shell: true,
+-        env,
+-      });
+-    } catch {
+-      resolve(undefined);
+-      return;
+-    }
+-    proc.on("close", (code) => {
+-      if (code !== 0 && code !== null) {
+-        resolve(undefined);
+-        return;
+-      }
+-      try {
+-        resolve(readFileSync(planPath, "utf-8"));
+-      } catch {
+-        resolve(undefined);
+-      }
+-    });
+-    proc.on("error", () => resolve(undefined));
+-  });
+-}
+ export class ExitPlanModeDialog implements Component {
+   private planText: string;
+   private planPath: string;
+@@ -189,9 +153,6 @@ export class ExitPlanModeDialog implements Component {
+   private readonly dialogTheme: ExitPlanModeDialogTheme;
+   private readonly markdownTheme: MarkdownTheme;
+   private readonly done: (result: ExitPlanModeDialogResult) => void;
+-  private readonly onEditorLaunch: (
+-    path: string,
+-  ) => Promise<string | undefined>;
+   private closed = false;
+   private cachedLines: string[] | null = null;
+   private cachedWidth = -1;
+@@ -208,7 +169,6 @@ export class ExitPlanModeDialog implements Component {
+     dialogTheme: ExitPlanModeDialogTheme,
+     markdownTheme: MarkdownTheme,
+     done: (result: ExitPlanModeDialogResult) => void,
+-    onEditorLaunch: (path: string) => Promise<string | undefined>,
+     getTerminalRows: () => number = () => 24,
+   ) {
+     this.planText = planText;
+@@ -217,7 +177,6 @@ export class ExitPlanModeDialog implements Component {
+     this.dialogTheme = dialogTheme;
+     this.markdownTheme = markdownTheme;
+     this.done = done;
+-    this.onEditorLaunch = onEditorLaunch;
+     this.getTerminalRows = getTerminalRows;
+     this.selectedIndex = 0;
+   }
+@@ -232,13 +191,6 @@ export class ExitPlanModeDialog implements Component {
+   invalidate(): void {
+     this.cachedLines = null;
+   }
+-  /** Invalidate both the rendered output cache AND the Markdown plan
+-   *  cache. Call this when the plan text changes (e.g., the user edited
+-   *  the plan in $EDITOR and we need to re-render the Markdown). */
+-  private invalidateAll(): void {
+-    this.cachedLines = null;
+-    this.cachedMdLines = null;
+-  }
+   private setSelectedIndex(index: number): void {
+     const clamped = Math.max(0, Math.min(this.options.length - 1, index));
+     if (clamped !== this.selectedIndex) {
+@@ -263,6 +215,15 @@ export class ExitPlanModeDialog implements Component {
      this.closed = true;
      this.done(result);
    }
@@ -157,7 +281,7 @@ index c1f54aa..5ac79f4 100644
    handleInput(data: string): void {
      if (this.closed) return;
      if (matchesKey(data, "escape")) {
-@@ -270,7 +281,7 @@ export class ExitPlanModeDialog implements Component {
+@@ -270,7 +231,7 @@ export class ExitPlanModeDialog implements Component {
        return;
      }
      if (matchesKey(data, "shift+tab")) {
@@ -166,7 +290,43 @@ index c1f54aa..5ac79f4 100644
        this.finish({ action: "acceptEdits" });
        return;
      }
-@@ -419,25 +430,27 @@ export class ExitPlanModeDialog implements Component {
+@@ -304,23 +265,11 @@ export class ExitPlanModeDialog implements Component {
+     if (matchesKey(data, "enter")) {
+       const opt = this.options[this.selectedIndex];
+       if (!opt) return;
+-      if (opt.id === "refine") {
+-        this.onEditorLaunch(this.planPath).then((updated) => {
+-          if (this.closed) return;
+-          if (updated === undefined) return;
+-          this.finish({ action: "refine", updatedPlan: updated });
+-        });
+-        return;
+-      }
+       this.finish({ action: opt.id });
+       return;
+     }
+     if (matchesKey(data, "ctrl+g")) {
+-      this.onEditorLaunch(this.planPath).then((updated) => {
+-        if (this.closed || updated === undefined) return;
+-        this.planText = updated;
+-        this.invalidateAll();
+-      });
++      this.finish({ action: "edit" });
+       return;
+     }
+     if (data.length === 1 && data >= "1" && data <= "9") {
+@@ -406,8 +355,8 @@ export class ExitPlanModeDialog implements Component {
+     hints.push(
+       this.dialogTheme.hint(
+         isEmpty
+-          ? "ctrl-g to write a plan in $EDITOR"
+-          : "ctrl-g to edit in $EDITOR",
++          ? "ctrl-g to write a plan with Pi"
++          : "ctrl-g to edit with Pi",
+       ),
+     );
+     hints.push(
+@@ -419,25 +368,27 @@ export class ExitPlanModeDialog implements Component {
      return lines;
    }
    /** Build a one-line scroll indicator showing the current position
@@ -198,7 +358,7 @@ index c1f54aa..5ac79f4 100644
    }
    /** Set the plan scroll offset to an absolute value, clamped to the
     *  valid range. Ensures the plan is rendered before scrolling. */
-@@ -446,7 +459,7 @@ export class ExitPlanModeDialog implements Component {
+@@ -446,7 +397,7 @@ export class ExitPlanModeDialog implements Component {
      const planLines = this.getPlanLines(width);
      const viewport = this.planViewportSize();
      const scrollable = Math.max(1, viewport - 1);
@@ -207,28 +367,94 @@ index c1f54aa..5ac79f4 100644
      const next = Math.max(0, Math.min(maxOffset, offset));
      if (next !== this.scrollOffset) {
        this.scrollOffset = next;
+@@ -454,28 +405,12 @@ export class ExitPlanModeDialog implements Component {
+     }
+   }
+ }
+-export interface CreateExitPlanModeDialogFactoryOptions {
+-  /** Optional ctx reference so the dialog can use pi's built-in editor when
+-   *  $EDITOR is unset. When omitted, Ctrl+G is a no-op if $EDITOR is unset. */
+-  ctx?: { ui: { notify: (msg: string, type?: "info" | "warning" | "error") => void } };
+-}
+ export function createExitPlanModeDialogFactory(
+   planText: string,
+   planPath: string,
+   dialogTheme: ExitPlanModeDialogTheme,
+   markdownTheme: MarkdownTheme,
+-  options: CreateExitPlanModeDialogFactoryOptions = {},
+ ) {
+-  const editorLauncher = (path: string): Promise<string | undefined> => {
+-    const result = launchExternalEditor(path);
+-    if (!process.env.EDITOR && !process.env.VISUAL && options.ctx) {
+-      options.ctx.ui.notify(
+-        "$EDITOR is not set. Set EDITOR or VISUAL to enable in-place plan editing.",
+-        "warning",
+-      );
+-    }
+-    return result;
+-  };
+   return (
+     tui: TUI,
+     _theme: Theme,
+@@ -499,7 +434,6 @@ export function createExitPlanModeDialogFactory(
+       dialogTheme,
+       markdownTheme,
+       done,
+-      editorLauncher,
+       getTerminalRows,
+     );
+     dialog.setBorderColor((s: string): string => dialogTheme.border(s));
 diff --git a/exitPlanModeTool.ts b/exitPlanModeTool.ts
-index 53408dd..1ebe9c9 100644
+index 53408dd..7414e3a 100644
 --- a/exitPlanModeTool.ts
 +++ b/exitPlanModeTool.ts
-@@ -21,14 +21,14 @@ export interface ExitPlanModeChoice {
-   feedback?: string;
+@@ -1,3 +1,5 @@
++// local patch: sequential native review/edit UI; cancellation ends this model turn.
++import { writeFileSync } from "node:fs";
+ import { Type } from "typebox";
+ import { defineTool } from "@earendil-works/pi-coding-agent";
+ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+@@ -14,22 +16,17 @@ export interface ExitPlanModeState {
+     ctx: ExtensionContext,
+     params: { mode: PermissionMode; plan: string; allowedPrompts?: AllowedPrompt[] },
+   ) => Promise<void>;
+-  applyRefine: (ctx: ExtensionContext, notes: string) => Promise<void>;
+-}
+-export interface ExitPlanModeChoice {
+-  action: "acceptEdits" | "bypassPermissions" | "no" | "refine";
+-  feedback?: string;
  }
  const OPTIONS_TUI: string[] = [
 -  "Yes, auto-accept edits on plan exit",
    "Yes, bypass permissions on plan exit",
+-  "No, stay in plan mode",
+-  "No, and let me refine the plan",
 +  "Yes, auto-accept edits on plan exit",
-   "No, stay in plan mode",
-   "No, and let me refine the plan",
++  "Stay in plan mode",
++  "Request changes to the plan…",
  ];
  const OPTIONS_HEADLESS: string[] = [
 -  "Yes, auto-accept edits on plan exit",
    "Yes, bypass permissions on plan exit",
+-  "No, stay in plan mode",
 +  "Yes, auto-accept edits on plan exit",
-   "No, stay in plan mode",
++  "Stay in plan mode",
  ];
  const EXIT_PLAN_MODE_PROMPT = `Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval.
-@@ -73,15 +73,18 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
+ ## How This Tool Works
+@@ -38,8 +35,9 @@ const EXIT_PLAN_MODE_PROMPT = `Use this tool when you are in plan mode and have
+ - This tool simply signals that you're done planning and ready for the user to review and approve
+ - The user will see the contents of your plan file when they review it
+ ## When This Tool Returns
+-- The user has approved your plan. The plan is echoed back to you in the tool result.
+-- Continue implementing the plan directly. Do not ask the user to confirm or restate the plan.
++- If the user approved, the plan is echoed back. Continue implementing without asking again.
++- If the user requested changes, revise the plan file and request approval again; do not implement.
++- If the user cancelled or chose to stay, remain in plan mode and wait for their next instruction.
+ ## When to Use This Tool
+ IMPORTANT: Only use this tool when the task requires planning the implementation steps of a task that requires writing code. For research tasks where you're gathering information, searching files, reading files or in general trying to understand the codebase - do NOT use this tool.
+ ## Before Using This Tool
+@@ -73,65 +71,75 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
        ),
      }),
      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -245,12 +471,144 @@ index 53408dd..1ebe9c9 100644
 +        return planNotReadyResult(planPath, "missing-or-empty-plan");
        }
        let result: ExitPlanModeDialogResult;
-       if (ctx.hasUI) {
+-      if (ctx.hasUI) {
 -        const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
-         const factory = createExitPlanModeDialogFactory(
-           planText,
-           planPath,
-@@ -218,4 +221,17 @@ function buildPlanApprovalToolResult(plan: string): string {
+-        const factory = createExitPlanModeDialogFactory(
+-          planText,
+-          planPath,
+-          {
+-            title: (t) => ctx.ui.theme.fg("accent", t),
+-            sectionLabel: (t) => ctx.ui.theme.fg("muted", t),
+-            optionSelected: (t) => ctx.ui.theme.fg("accent", t),
+-            optionDefault: (t) => ctx.ui.theme.fg("text", t),
+-            optionHint: (t) => ctx.ui.theme.fg("dim", t),
+-            hint: (t) => ctx.ui.theme.fg("dim", t),
+-            hintDim: (t) => ctx.ui.theme.fg("muted", t),
+-            border: (t) => {
++      if (ctx.hasUI && ctx.mode !== "rpc") {
++        // local patch: each approval overlay must release focus before opening an editor.
++        while (true) {
++          const factory = createExitPlanModeDialogFactory(
++            planText,
++            planPath,
++            {
++              title: (t) => ctx.ui.theme.fg("accent", t),
++              sectionLabel: (t) => ctx.ui.theme.fg("muted", t),
++              optionSelected: (t) => ctx.ui.theme.fg("accent", t),
++              optionDefault: (t) => ctx.ui.theme.fg("text", t),
++              optionHint: (t) => ctx.ui.theme.fg("dim", t),
++              hint: (t) => ctx.ui.theme.fg("dim", t),
++              hintDim: (t) => ctx.ui.theme.fg("muted", t),
++              border: (t) => {
++                try { return ctx.ui.theme.fg("borderAccent", t); }
++                catch {
++                  try { return ctx.ui.theme.fg("border", t); }
++                  catch { return t; }
++                }
++              },
++              emptyPlan: (t) => ctx.ui.theme.fg("warning", t),
++            },
++            buildMarkdownTheme(ctx.ui.theme),
++          );
++          result = await ctx.ui.custom<ExitPlanModeDialogResult>(factory, {
++            overlay: true,
++            overlayOptions: { anchor: "bottom-center", width: "100%" },
++          });
++          if (result?.action !== "edit") break;
++          const edited = await ctx.ui.editor("Edit plan", planText);
++          if (edited !== undefined) {
++            if (!edited.trim()) {
++              ctx.ui.notify("The plan cannot be empty; the saved plan was kept.", "warning");
++            } else {
+               try {
+-                return ctx.ui.theme.fg("borderAccent", t);
++                writeFileSync(planPath, edited, "utf8");
++                planText = edited;
+               } catch {
+-                try {
+-                  return ctx.ui.theme.fg("border", t);
+-                } catch {
+-                  return t;
+-                }
++                ctx.ui.notify("Could not save the edited plan; the previous plan was kept.", "error");
+               }
+-            },
+-            emptyPlan: (t) => ctx.ui.theme.fg("warning", t),
+-          },
+-          buildMarkdownTheme(ctx.ui.theme),
+-          { ctx },
+-        );
+-        result = await ctx.ui.custom<ExitPlanModeDialogResult>(factory, {
+-          overlay: true,
+-          overlayOptions: {
+-            anchor: "bottom-center",
+-            width: "100%",
+-          },
+-        });
++            }
++          }
++        }
+       } else {
+-        const choice = await ctx.ui.select(
+-          "Plan ready — what next?",
+-          OPTIONS_HEADLESS,
+-        );
++        const choice = await ctx.ui.select("Plan ready — what next?", OPTIONS_HEADLESS);
+         result = mapLegacyHeadlessChoiceToResult(choice);
+       }
+       if (!result || !result.action) {
+         return {
++          terminate: true,
+           content: [{ type: "text", text: "User dismissed ExitPlanMode dialog" }],
+           details: { exited: false },
+         };
+       }
+       switch (result.action) {
+         case "acceptEdits": {
+-          const echo = result.updatedPlan ?? planText;
++          const echo = planText;
+           await state.applyExit(ctx, {
+             mode: "acceptEdits",
+             plan: echo,
+@@ -151,7 +159,7 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
+           };
+         }
+         case "bypassPermissions": {
+-          const echo = result.updatedPlan ?? planText;
++          const echo = planText;
+           await state.applyExit(ctx, {
+             mode: "bypassPermissions",
+             plan: echo,
+@@ -172,20 +180,23 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
+         }
+         case "no":
+           return {
+-            content: [{ type: "text", text: "User chose to stay in plan mode" }],
++            terminate: true,
++            content: [{ type: "text", text: "The user did not approve the plan. Stay in plan mode and wait for their next instruction." }],
+             details: { exited: false, choice: "stay" },
+           };
+         case "refine": {
+-          const notes = (result.updatedPlan ?? "").trim();
++          // local patch: feedback is not a plan-file edit; Pi owns input and Ctrl+G.
++          const notes = (await ctx.ui.editor("Refine plan — what should change?"))?.trim();
+           if (!notes) {
+             return {
+-              content: [{ type: "text", text: "Plan refine cancelled" }],
++              terminate: true,
++              content: [{ type: "text", text: "Plan refinement cancelled. Stay in plan mode and wait for the user's next instruction." }],
+               details: { exited: false, choice: "refine-cancelled" },
+             };
+           }
+-          await state.applyRefine(ctx, notes);
++          // local patch: return feedback in this turn, never queue a second follow-up run.
+           return {
+-            content: [{ type: "text", text: "Plan refine sent back" }],
++            content: [{ type: "text", text: `The user requested changes to the plan:\n\n${notes}\n\nRevise the plan file, then request approval with ExitPlanMode. Do not implement before approval.` }],
+             details: { exited: false, choice: "refine" },
+           };
+         }
+@@ -218,4 +229,17 @@ function buildPlanApprovalToolResult(plan: string): string {
  ## Approved Plan:
  ${plan}`;
  }
@@ -269,7 +627,7 @@ index 53408dd..1ebe9c9 100644
 +}
  export { OPTIONS_TUI, OPTIONS_HEADLESS };
 diff --git a/index.ts b/index.ts
-index 90abc3a..1c1d3fe 100644
+index 90abc3a..0c7515e 100644
 --- a/index.ts
 +++ b/index.ts
 @@ -128,6 +128,7 @@ import {
@@ -495,7 +853,17 @@ index 90abc3a..1c1d3fe 100644
    pi.on("tool_result", async (event, ctx) => {
      if (event.toolName === "EnterPlanMode") {
        const details = (event as { details?: { entered?: boolean } }).details;
-@@ -1254,22 +1359,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1244,32 +1349,11 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+     }
+     persistState();
+   }
+-  async function applyPlanRefine(notes: string, _ctx: ExtensionContext): Promise<void> {
+-    pi.sendUserMessage(
+-      `Refine the plan based on this feedback:\n\n${notes}`,
+-      { deliverAs: "followUp" },
+-    );
+-  }
+   async function readPlanFile(ctx: ExtensionContext): Promise<string> {
      const sessionId = ctx.sessionManager.getSessionId();
      const planPath = getPlanFilePath(sessionId);
      if (!existsSync(planPath)) return "";
@@ -519,7 +887,17 @@ index 90abc3a..1c1d3fe 100644
    }
    pi.registerTool(
      makeExitPlanModeTool({
-@@ -1327,117 +1417,14 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1277,9 +1361,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+       applyExit: async (ctx, { mode, plan, allowedPrompts }) => {
+         await applyPlanExit(mode, plan, ctx, allowedPrompts);
+       },
+-      applyRefine: async (ctx, notes) => {
+-        await applyPlanRefine(notes, ctx);
+-      },
+     }),
+   );
+   pi.on("before_agent_start", async (event, ctx) => {
+@@ -1327,117 +1408,14 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
      return undefined;
    });
@@ -641,7 +1019,7 @@ index 90abc3a..1c1d3fe 100644
      state.originalCwd = ctx.cwd;
      currentSessionId = ctx.sessionManager.getSessionId();
      const reason = event?.reason;
-@@ -1519,7 +1506,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1519,7 +1497,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      _event: unknown,
      ctx: ExtensionContext,
    ): Promise<void> {
@@ -649,7 +1027,7 @@ index 90abc3a..1c1d3fe 100644
      await refreshSessionContext(ctx);
    }
    function applyFlagOverride(): void {
-@@ -1581,6 +1567,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1581,6 +1558,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
      ensurePlansDir();
      if (ctx.hasUI) {
@@ -657,7 +1035,7 @@ index 90abc3a..1c1d3fe 100644
        installFooter(ctx);
        updateStatus(ctx);
      }
-@@ -1588,7 +1575,4 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1588,7 +1566,4 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
    }
    pi.on("session_start", onSessionStart);
    pi.on("session_tree", onSessionTree);

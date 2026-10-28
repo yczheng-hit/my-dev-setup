@@ -19,4 +19,5 @@ herdr 插件 `local.pane-id`：整理 herdr 侧栏的 Agents 行，并补上 pan
 - 何时更新：herdr 启动；pane 新建、关闭、退出、移动；检测到 agent 或 agent 退出；tab 关闭、移动；工作区新建、关闭、拖动。每次全量扫描，已正确的跳过。
 - 手动刷新：`herdr plugin action invoke local.pane-id.sync`。
 - 只写显示用的 metadata（source `local.pane-id`），不影响 agent 状态，也不发按键。
+- `pi-subagents` 的异步详情不占用编号：`packages/pi-subagents-herdr-labels` 只过滤上游桥的 state-label 写入，保留摘要/标题和清理；这里不增加周期刷新来竞争 metadata。
 - `./setup.sh` 自动 `herdr plugin link` 本目录；日志：`herdr plugin log list --plugin local.pane-id`。

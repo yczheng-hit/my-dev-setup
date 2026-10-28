@@ -1,3 +1,5 @@
+// local patch: sequential native review/edit UI; cancellation ends this model turn.
+import { writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -14,22 +16,17 @@ export interface ExitPlanModeState {
     ctx: ExtensionContext,
     params: { mode: PermissionMode; plan: string; allowedPrompts?: AllowedPrompt[] },
   ) => Promise<void>;
-  applyRefine: (ctx: ExtensionContext, notes: string) => Promise<void>;
-}
-export interface ExitPlanModeChoice {
-  action: "acceptEdits" | "bypassPermissions" | "no" | "refine";
-  feedback?: string;
 }
 const OPTIONS_TUI: string[] = [
   "Yes, bypass permissions on plan exit",
   "Yes, auto-accept edits on plan exit",
-  "No, stay in plan mode",
-  "No, and let me refine the plan",
+  "Stay in plan mode",
+  "Request changes to the plan…",
 ];
 const OPTIONS_HEADLESS: string[] = [
   "Yes, bypass permissions on plan exit",
   "Yes, auto-accept edits on plan exit",
-  "No, stay in plan mode",
+  "Stay in plan mode",
 ];
 const EXIT_PLAN_MODE_PROMPT = `Use this tool when you are in plan mode and have finished writing your plan to the plan file and are ready for user approval.
 ## How This Tool Works
@@ -38,8 +35,9 @@ const EXIT_PLAN_MODE_PROMPT = `Use this tool when you are in plan mode and have 
 - This tool simply signals that you're done planning and ready for the user to review and approve
 - The user will see the contents of your plan file when they review it
 ## When This Tool Returns
-- The user has approved your plan. The plan is echoed back to you in the tool result.
-- Continue implementing the plan directly. Do not ask the user to confirm or restate the plan.
+- If the user approved, the plan is echoed back. Continue implementing without asking again.
+- If the user requested changes, revise the plan file and request approval again; do not implement.
+- If the user cancelled or chose to stay, remain in plan mode and wait for their next instruction.
 ## When to Use This Tool
 IMPORTANT: Only use this tool when the task requires planning the implementation steps of a task that requires writing code. For research tasks where you're gathering information, searching files, reading files or in general trying to understand the codebase - do NOT use this tool.
 ## Before Using This Tool
@@ -84,57 +82,64 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
         return planNotReadyResult(planPath, "missing-or-empty-plan");
       }
       let result: ExitPlanModeDialogResult;
-      if (ctx.hasUI) {
-        const factory = createExitPlanModeDialogFactory(
-          planText,
-          planPath,
-          {
-            title: (t) => ctx.ui.theme.fg("accent", t),
-            sectionLabel: (t) => ctx.ui.theme.fg("muted", t),
-            optionSelected: (t) => ctx.ui.theme.fg("accent", t),
-            optionDefault: (t) => ctx.ui.theme.fg("text", t),
-            optionHint: (t) => ctx.ui.theme.fg("dim", t),
-            hint: (t) => ctx.ui.theme.fg("dim", t),
-            hintDim: (t) => ctx.ui.theme.fg("muted", t),
-            border: (t) => {
-              try {
-                return ctx.ui.theme.fg("borderAccent", t);
-              } catch {
-                try {
-                  return ctx.ui.theme.fg("border", t);
-                } catch {
-                  return t;
+      if (ctx.hasUI && ctx.mode !== "rpc") {
+        // local patch: each approval overlay must release focus before opening an editor.
+        while (true) {
+          const factory = createExitPlanModeDialogFactory(
+            planText,
+            planPath,
+            {
+              title: (t) => ctx.ui.theme.fg("accent", t),
+              sectionLabel: (t) => ctx.ui.theme.fg("muted", t),
+              optionSelected: (t) => ctx.ui.theme.fg("accent", t),
+              optionDefault: (t) => ctx.ui.theme.fg("text", t),
+              optionHint: (t) => ctx.ui.theme.fg("dim", t),
+              hint: (t) => ctx.ui.theme.fg("dim", t),
+              hintDim: (t) => ctx.ui.theme.fg("muted", t),
+              border: (t) => {
+                try { return ctx.ui.theme.fg("borderAccent", t); }
+                catch {
+                  try { return ctx.ui.theme.fg("border", t); }
+                  catch { return t; }
                 }
-              }
+              },
+              emptyPlan: (t) => ctx.ui.theme.fg("warning", t),
             },
-            emptyPlan: (t) => ctx.ui.theme.fg("warning", t),
-          },
-          buildMarkdownTheme(ctx.ui.theme),
-          { ctx },
-        );
-        result = await ctx.ui.custom<ExitPlanModeDialogResult>(factory, {
-          overlay: true,
-          overlayOptions: {
-            anchor: "bottom-center",
-            width: "100%",
-          },
-        });
+            buildMarkdownTheme(ctx.ui.theme),
+          );
+          result = await ctx.ui.custom<ExitPlanModeDialogResult>(factory, {
+            overlay: true,
+            overlayOptions: { anchor: "bottom-center", width: "100%" },
+          });
+          if (result?.action !== "edit") break;
+          const edited = await ctx.ui.editor("Edit plan", planText);
+          if (edited !== undefined) {
+            if (!edited.trim()) {
+              ctx.ui.notify("The plan cannot be empty; the saved plan was kept.", "warning");
+            } else {
+              try {
+                writeFileSync(planPath, edited, "utf8");
+                planText = edited;
+              } catch {
+                ctx.ui.notify("Could not save the edited plan; the previous plan was kept.", "error");
+              }
+            }
+          }
+        }
       } else {
-        const choice = await ctx.ui.select(
-          "Plan ready — what next?",
-          OPTIONS_HEADLESS,
-        );
+        const choice = await ctx.ui.select("Plan ready — what next?", OPTIONS_HEADLESS);
         result = mapLegacyHeadlessChoiceToResult(choice);
       }
       if (!result || !result.action) {
         return {
+          terminate: true,
           content: [{ type: "text", text: "User dismissed ExitPlanMode dialog" }],
           details: { exited: false },
         };
       }
       switch (result.action) {
         case "acceptEdits": {
-          const echo = result.updatedPlan ?? planText;
+          const echo = planText;
           await state.applyExit(ctx, {
             mode: "acceptEdits",
             plan: echo,
@@ -154,7 +159,7 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
           };
         }
         case "bypassPermissions": {
-          const echo = result.updatedPlan ?? planText;
+          const echo = planText;
           await state.applyExit(ctx, {
             mode: "bypassPermissions",
             plan: echo,
@@ -175,20 +180,23 @@ export function makeExitPlanModeTool(state: ExitPlanModeState) {
         }
         case "no":
           return {
-            content: [{ type: "text", text: "User chose to stay in plan mode" }],
+            terminate: true,
+            content: [{ type: "text", text: "The user did not approve the plan. Stay in plan mode and wait for their next instruction." }],
             details: { exited: false, choice: "stay" },
           };
         case "refine": {
-          const notes = (result.updatedPlan ?? "").trim();
+          // local patch: feedback is not a plan-file edit; Pi owns input and Ctrl+G.
+          const notes = (await ctx.ui.editor("Refine plan — what should change?"))?.trim();
           if (!notes) {
             return {
-              content: [{ type: "text", text: "Plan refine cancelled" }],
+              terminate: true,
+              content: [{ type: "text", text: "Plan refinement cancelled. Stay in plan mode and wait for the user's next instruction." }],
               details: { exited: false, choice: "refine-cancelled" },
             };
           }
-          await state.applyRefine(ctx, notes);
+          // local patch: return feedback in this turn, never queue a second follow-up run.
           return {
-            content: [{ type: "text", text: "Plan refine sent back" }],
+            content: [{ type: "text", text: `The user requested changes to the plan:\n\n${notes}\n\nRevise the plan file, then request approval with ExitPlanMode. Do not implement before approval.` }],
             details: { exited: false, choice: "refine" },
           };
         }
