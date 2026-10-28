@@ -6,15 +6,27 @@
 
 按日期倒序记录影响使用或部署的变更；每次改配置、插件或部署行为时同步更新。
 
+### 2026-10-28
+
+- **GPT（`openai-codex`）模型的 harness 对齐官方 Codex CLI，Claude 路径不变。** 之前 pi 用通用提示词和 `bash`/`edit`/`write` 工具跑 GPT，和 Codex 官方的请求形状差很多。现在三处一起改：
+  1. 新增本地补丁版 `packages/pi-openai-codex-compat`（npm `pi-openai-codex-compat@0.0.29`）：`apply_patch` 自由格式工具替换 `edit`/`write`，`exec_command`/`write_stdin` 替换 `bash`，打开 Responses Lite（`reasoning.context=all_turns`、`parallel_tool_calls=false`），`end_turn=false` 自动续跑，远程 compaction。补丁修的是 Lite 下 `apply_patch` 被 schema 校验拒绝、续跑断掉的问题。配置在 `pi/openai-codex-compat.json`（`responsesLite: true`、`reasoningSummary: "off"`、`imageGeneration: false`），部署到 `~/.pi/agent/openai-codex-compat.json`。
+  2. 新增自有插件 `packages/pi-gpt-codex`：只在 GPT 模型上把 pi 的通用开头和 “Be concise” 换成 Codex 风格系统提示词（自主完成、不中途停、compaction 后继续任务、只用 `apply_patch` 改文件），工具说明随当前工具集切换；项目上下文、`AGENTS.md` 和其他插件加的段落保留。bash 输出被截断时附上完整日志头部的读取方法。
+  3. `pi/settings.json`：`modelThinkingLevels` 把 `openai-codex/gpt-6.1-sol` 固定为 `xhigh`；`pi-hashline-edit-pro` 对 `openai-codex/*` 关闭（`pi/pi-hashline-edit-pro.json` → `~/.config/pi-hashline-edit-pro/config.json`，合并写入，不覆盖本机其他键），Codex 模型改用 `apply_patch`。
+- picc 的权限闸现在也检查 `apply_patch` / `exec_command` / `shell_command`（原来它们不经过 `edit`/`write`/`bash` 检查，会绕过权限模式）：补丁按 `*** Add/Update/Delete/Move` 拆成逐文件的写入检查，`exec_command` 按 bash 命令检查。新增 9 个测试，全套 550 通过、6 跳过、0 失败。
+- 移除 `@nijaru/pi-fast-mode`：兼容包接管 `openai-codex` 流之后它不再生效（实测 `service_tier` 为空，与加载顺序无关）。Fast 模式改用兼容包自己的 `fastMode`（默认关），用 `/codex-settings` 切换，或在 `~/.pi/agent/openai-codex-compat.json` 写 `"fastMode": true`，请求带 `service_tier: "priority"`。
+- 其他机器同步：`git pull && ./setup.sh`，然后重启 pi（或 `/reload`）。`/login` 用 ChatGPT 账号登录后选 `openai-codex/*` 模型即可。
+- 回滚：在 `pi/settings.json` 删掉 `repo:packages/pi-openai-codex-compat`、`repo:packages/pi-gpt-codex` 和 `modelThinkingLevels`，需要的话加回 `npm:@nijaru/pi-fast-mode`，执行 `./setup.sh` 后 `/reload`；`setup.sh` 合并设置时不会删本机已有的键，所以还要手动删掉 `~/.pi/agent/settings.json` 里的 `modelThinkingLevels`，并删除 `~/.pi/agent/openai-codex-compat.json`。也可以把 `~/.my-dev-setup-backups/<时间>/` 里的旧文件拷回。
+
 ### 2026-10-23
 
+- `/btw` 升级到 pi-btw-split `0.7.1-split.10`：一个 BTW 线程变成**连续对话**，追问能看到之前的问答；主会话快照只在对话开始时取，之后主会话的变化不会再悄悄改掉 BTW 看到的内容。要跟上主会话时：`/btw:sync`（随下一个问题追加主会话新进展），或 `/btw:autosnap on`（每个问题前自动追加，存在 `~/.pi/agent/btw.json` 的 `snapshot.auto`，默认关），模型也会在需要时自己调用 `main_session_update`。pane 标题显示 `main context 14:02 · main +3 rounds since (/btw:sync)`。主会话切分支、换 BTW 模型/thinking、重载或对话太长时，才用新快照重开，并带上之前的问答。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
 - herdr Spaces 侧栏恢复原样，工作区名前不再加序号（`packages/herdr-pane-id` 0.6.0 会清掉旧的 `$ws_num`，`herdr/config.toml` 删除 `[ui.sidebar.spaces]`）。
 - herdr Agents 侧栏再整理：第一行为 `1 · tools · pi-config`，只有编号随状态变色，工作区名和 tab 名保持原来的颜色，工作区名不加粗；工作中由黄改橙、完成由青改蓝，和空闲的绿色区分开（`[theme.custom]`）。pi 等待确认时编号处显示 `1 approval` / `1 plan ready`（红），确认后恢复。`packages/herdr-pane-id` 升到 0.5.0，`herdr-ui-prompt-blocked.ts` 改为写带编号的 blocked state label。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync`，已开的 pi 执行 `/reload`。
 - herdr Agents 侧栏改为**用 agent 编号代替状态圆圈**：每个 agent 一行一个唯一编号 `1`、`2`、`3`，颜色仍随状态（空闲绿、工作黄、等待红、完成蓝），顺序与 `prefix+N` 跳转一致；行内不再重复工作区序号（修复同一工作区三个 agent 都显示 `1`）。Spaces 区保留工作区序号。`packages/herdr-pane-id` 升到 0.3.0（用 state label 显示编号，agent 增减、tab 或工作区变化时重排），`herdr-ui-prompt-blocked.ts` 不再写 state label，等待原因只走 `$blocked_reason`。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。
 - herdr 侧栏的工作区名前加上序号，例如 Spaces 显示 `1 · tools`，Agents 显示 `1 · tools · <tab>`。序号与 `prefix+shift+N` 一致，新建、关闭或拖动工作区后自动更新。由 `packages/herdr-pane-id` 插件（0.2.0）写入 `$ws_num` token，`herdr/config.toml` 新增 `[ui.sidebar.spaces]` 行。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。
 - herdr 左侧 Agents 列表在工具名后显示 pane ID，例如 `pi · w1:p3`。由新的 herdr 插件 `packages/herdr-pane-id`（`local.pane-id`）把 ID 写成 `$pane_id` token：herdr 启动、新建 pane、pane 跨工作区移动、检测到 agent 时自动更新；`herdr/config.toml` 第二行改为 `["agent", { token = "$pane_id", dim = true }]`。其他机器执行 `./setup.sh`（复制 config 并 link 插件），再执行 `herdr plugin action invoke local.pane-id.sync` 立即补上已有 pane，或重启 herdr。
 
-- 新增 `@nijaru/pi-fast-mode`：`/fast`（`on` / `off` / `status`）切换 Codex Fast 模式，请求带 `service_tier: "priority"`，额度消耗约 2.5×，开启时底部显示 `⚡ FAST`。只对 Pi 自带的 `openai-codex` 提供方生效（需先 `/login` 用 ChatGPT 账号登录），走 `local`（OmniRoute）的模型不受影响。默认关闭；开关状态记在每个会话里，并写入 `~/.pi/agent/extensions/pi-fast-mode.json` 作为新会话默认值。其他机器执行 `./setup.sh` 或 `pi install npm:@nijaru/pi-fast-mode`，然后重启 Pi。
+- 新增 `@nijaru/pi-fast-mode`：`/fast`（`on` / `off` / `status`）切换 Codex Fast 模式，请求带 `service_tier: "priority"`，额度消耗约 2.5×，开启时底部显示 `⚡ FAST`。只对 Pi 自带的 `openai-codex` 提供方生效（需先 `/login` 用 ChatGPT 账号登录），走 `local`（OmniRoute）的模型不受影响。默认关闭；开关状态记在每个会话里，并写入 `~/.pi/agent/extensions/pi-fast-mode.json` 作为新会话默认值。其他机器执行 `./setup.sh` 或 `pi install npm:@nijaru/pi-fast-mode`，然后重启 Pi。（2026-10-28 起已被兼容包的 `fastMode` 取代。）
 
 ### 2026-10-22
 
@@ -103,6 +115,8 @@ my-dev-setup/
 │   ├── themes/claude-dark.json              # 自定义主题
 │   ├── keybindings.json                    # Ctrl+E / Alt+T 切换 thinking，End 到行尾
 │   ├── pi-cc-extensions.json               # diff、卡片、footer 等 UI 偏好
+│   ├── openai-codex-compat.json            # GPT/Codex：Responses Lite、reasoning summary 等
+│   ├── pi-hashline-edit-pro.json           # 对 openai-codex/* 关闭 hashline（合并写入）
 │   ├── WATCHDOG.yml                        # pi-omp-advisor 的 main watchdog 关闭
 │   ├── permissions.json
 │   └── extensions/
@@ -116,12 +130,15 @@ my-dev-setup/
 │       └── picc-permission-modes/config.json
 ├── packages/                               # 本地补丁版 / 本地插件（vendored）
 │   ├── picc-permission-modes/
+│   ├── pi-openai-codex-compat/
+│   ├── pi-gpt-codex/
 │   ├── pi-hud-footer/
 │   ├── pi-scheduler/
 │   ├── pi-subagent-hud/
 │   └── herdr-pane-id/                      # herdr 插件：侧栏 agent 编号、pane ID、工作区序号
 └── patches/                                # 第三方包相对 npm 原版的改动
     ├── picc-permission-modes/0.1.3-local.patch
+    ├── pi-openai-codex-compat/0.0.29-local.patch
     ├── pi-hud-footer/0.8.0-local.patch
     └── pi-scheduler/0.5.1-local.patch
 ```
@@ -148,13 +165,15 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 | 目录 | 类型 | 基础版本 | 相对原版的改动 |
 |---|---|---|---|
 | `packages/picc-permission-modes` | 第三方 + 补丁 | npm `@ladbabynpm/picc-permission-modes@0.1.3` | `patches/picc-permission-modes/0.1.3-local.patch` |
+| `packages/pi-openai-codex-compat` | 第三方 + 补丁 | npm `pi-openai-codex-compat@0.0.29` | `patches/pi-openai-codex-compat/0.0.29-local.patch` |
 | `packages/pi-hud-footer` | 第三方 + 补丁 | npm `pi-hud-footer@0.8.0` | `patches/pi-hud-footer/0.8.0-local.patch` |
 | `packages/pi-scheduler` | 第三方 + 补丁 | npm `@jl1990/pi-scheduler@0.5.1` | `patches/pi-scheduler/0.5.1-local.patch` |
 | `packages/pi-subagent-hud` | 自己的小插件 | — | — |
+| `packages/pi-gpt-codex` | 自己的小插件 | — | GPT 模型专用的 Codex 风格系统提示词和输出截断提示，其他模型不受影响 |
 | `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
 | `packages/pi-fork-save` | 自己的小插件 | — | `/fork-save` 保存分叉但不切换前台，稍后用 `pi --session` 加载 |
 
-三个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
+四个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
 
 **picc-permission-modes**：基于 [Ladbaby/picc-permission-modes](https://github.com/Ladbaby/picc-permission-modes) 的 npm `@ladbabynpm/picc-permission-modes@0.1.3`，详细记录在它的 `LOCAL-PATCH.md`：
 
@@ -166,6 +185,11 @@ herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的
 6. **plan mode 只能手动进入**：`config.json` 设置 `"planMode": { "agentCanEnter": false }` 后，不注册模型可以调用的 `EnterPlanMode` 工具，Pi 不会主动切换到 plan mode，也不会弹窗询问。手动入口 `/plan`、`/mode plan`、`Shift+Tab` 照常可用。plan mode 里的 `ExitPlanMode` 计划批准流程不变。本仓库配置已经设为 `false`；删除该字段或改为 `true` 即恢复原版行为。修改后执行 `/reload` 生效。
 7. **启动模式可配置**：`config.json` 的 `permissions.defaultMode`（与 Claude Code `settings.json` 同名）决定新会话的初始模式，可填 `default`、`acceptEdits`、`plan`、`bypassPermissions`（或 `bypass`）、`auto`。本仓库设为 `bypassPermissions`。恢复或分叉的会话、`--permission-mode` 参数和 `PICC_PERMISSION_MODE` 环境变量优先。同时修复：有界面的新会话不会把启动模式告诉子 agent，子 agent 原来退回 default。
 8. **去掉 Windows 专用逻辑**：只在 macOS/Linux 使用。删除可疑 Windows 路径检查（它在 macOS 上也会误判 `.`、`notes.` 这类路径并弹窗），以及上游代码里只在 Windows 生效的 UNC 路径、盘符、`~\` 分支；测试改用 POSIX 路径并自带配置，全套 541 通过、0 失败。
+9. **Codex 风格工具也过权限闸**：`apply_patch` 按 `*** Add/Update/Delete/Move` 拆成逐文件的 write/edit 检查，`exec_command` / `shell_command` 按 bash 命令检查（`write_stdin` 只向已启动的进程写输入，不单独检查）。没有这一条，GPT 的 `apply_patch` 会绕过 plan / default / acceptEdits 模式。代码在 `codexTools.ts`，全套 550 通过、6 跳过、0 失败。
+
+**pi-openai-codex-compat**：npm `pi-openai-codex-compat@0.0.29` + 一处本地补丁，把 `openai-codex` provider 的请求补到接近官方 Codex CLI（`apply_patch`、`exec_command`、Responses Lite、`end_turn=false` 续跑、远程 compaction、`fastMode`）。补丁让 Lite 的 `functions` namespace 接受 custom（自由格式）工具，否则 `apply_patch` 在 Lite 下被 schema 校验拒绝。它不能和 `pi-openai-codex-conversion` 同时装，且只影响 `openai-codex` provider。详见 `packages/pi-openai-codex-compat/LOCAL-PATCH.md`。
+
+**pi-gpt-codex 0.1.0**：在本仓库维护的小插件，只在 GPT 模型（`openai-codex` / `openai` Responses 路由）上通过 `before_agent_start` 改写系统提示词选项，并在 `tool_result` 给被截断的 shell 输出补上读取完整日志头部的提示；Claude 等其他模型原样放行。它必须排在 `pi-openai-codex-compat` 之后、`pi-omp-advisor` 和 `pi-repl-py` 之前，所以 `pi/settings.json` 里它俩紧跟 picc。测试：`PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent" npm test --prefix packages/pi-gpt-codex`（5 个单元测试）；另有不连真实模型的端到端测试 `test/live-codex.mjs`（本地 mock Codex 端点 + 真实 pi CLI，Lite 开/关），命令见 `packages/pi-openai-codex-compat/LOCAL-PATCH.md`。
 
 **pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 本地补丁：去掉 HUD 左侧缩进；两种 HUD 样式显示当前会话名称；新增 `/rename 新名称`（不带参数时弹出输入框）。名称通过 Pi 原生会话 API 保存，恢复会话后仍显示，Pi 自带 `/name` 也会同步刷新 HUD。未命名时不占位置，长名称只在 HUD 中截断；可用 `display.all.sessionName: false` 隐藏。改动见 `patches/pi-hud-footer/0.8.0-local.patch`，详细验证及测试命令见 `packages/pi-hud-footer/LOCAL-PATCH.md`。
 
@@ -186,7 +210,6 @@ pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-revi
 pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (≥6.5.0) pi-repl-py (0.9.0)
 pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
 @narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
-@nijaru/pi-fast-mode (0.0.5)    # /fast：openai-codex 的 Fast 模式（service_tier=priority，约 2.5× 额度）
 pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
 ```
 
