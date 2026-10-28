@@ -1,10 +1,9 @@
 // Display-only sidebar metadata for every pane (herdr plugin local.pane-id):
-//   state labels  "<n> <workspace> · <tab>" for every agent pane, where n is the
-//                 agent number 1, 2, 3... in `herdr agent list` order (= sidebar
-//                 order = focus_agent prefix+N). Shown by the `state_text` token
-//                 in the agent's state color; one token, so no " · " after n.
-//                 blocked defaults to "<n> approval"; a pi pane may replace it
-//                 with its own reason (pi/extensions/herdr-ui-prompt-blocked.ts).
+//   state labels  the agent number 1, 2, 3... for every agent pane, in
+//                 `herdr agent list` order (= sidebar order = focus_agent prefix+N).
+//                 Shown by `state_text` in place of the state dot, in the state color.
+//                 A pi pane replaces blocked with "<n> <reason>"
+//                 (pi/extensions/herdr-ui-prompt-blocked.ts).
 //   $pane_id      pane token: public pane id (w1:p3)
 //   $ws_num       workspace token: workspace number (Spaces section)
 // Idempotent; run by herdr on startup and on pane/tab/workspace lifecycle events.
@@ -27,7 +26,6 @@ const report = (args, id) => {
 
 const snapshot = JSON.parse(run(["api", "snapshot"])).result?.snapshot ?? {};
 const workspaces = new Map((snapshot.workspaces ?? []).map((w) => [w.workspace_id, w]));
-const tabs = new Map((snapshot.tabs ?? []).map((t) => [t.tab_id, t]));
 const agents = JSON.parse(run(["agent", "list"])).result?.agents ?? [];
 const panes = JSON.parse(run(["pane", "list"])).result?.panes ?? [];
 
@@ -39,12 +37,7 @@ for (const w of workspaces.values()) {
   }
 }
 
-const labelFor = new Map(
-  agents.map((agent, index) => {
-    const where = [workspaces.get(agent.workspace_id)?.label, tabs.get(agent.tab_id)?.label].filter(Boolean).join(" · ");
-    return [agent.pane_id, { num: String(index + 1), text: `${index + 1} ${where}`.trim() }];
-  }),
-);
+const numberFor = new Map(agents.map((agent, index) => [agent.pane_id, String(index + 1)]));
 
 for (const pane of panes) {
   const id = pane.pane_id;
@@ -52,15 +45,16 @@ for (const pane of panes) {
   const args = [];
   if (pane.tokens?.pane_id !== id) args.push("--token", `pane_id=${id}`);
   if (pane.tokens?.ws_num !== undefined) args.push("--clear-token", "ws_num"); // pre-0.3.0 leftover
-  const want = labelFor.get(id);
+  const num = numberFor.get(id);
   const labels = pane.state_labels ?? {};
-  if (want) {
+  if (num) {
     // A label report replaces this source's whole label set, so always send all of them.
     // `labels` is the merged view: a pi-reported reason ("<n> plan ready") is kept as
     // long as its number is current.
-    if (STATES.some((state) => labels[state] !== want.text) || !labels.blocked?.startsWith(`${want.num} `)) {
-      for (const state of STATES) args.push("--state-label", `${state}=${want.text}`);
-      args.push("--state-label", `blocked=${want.num} approval`);
+    const blockedOk = labels.blocked === num || labels.blocked?.startsWith(`${num} `);
+    if (STATES.some((state) => labels[state] !== num) || !blockedOk) {
+      for (const state of STATES) args.push("--state-label", `${state}=${num}`);
+      args.push("--state-label", `blocked=${num}`);
     }
   } else if (Object.keys(labels).length) {
     args.push("--clear-state-labels");

@@ -1,8 +1,8 @@
 id = "local.pane-id"
 name = "Agent number / pane ID sidebar"
-version = "0.4.0"
+version = "0.5.0"
 min_herdr_version = "0.9.1"
-description = "Agent rows as \"<n> <workspace> · <tab>\" via state labels; $pane_id and $ws_num tokens"
+description = "Numbers agents 1..N (state_text, state-colored) and reports $pane_id (w1:p3) and $ws_num for the sidebar"
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -29,10 +29,6 @@ on = "pane.agent_detected"
 command = ["node", "sync.mjs"]
 
 [[events]]
-on = "tab.renamed"
-command = ["node", "sync.mjs"]
-
-[[events]]
 on = "tab.closed"
 command = ["node", "sync.mjs"]
 
@@ -42,10 +38,6 @@ command = ["node", "sync.mjs"]
 
 [[events]]
 on = "workspace.created"
-command = ["node", "sync.mjs"]
-
-[[events]]
-on = "workspace.renamed"
 command = ["node", "sync.mjs"]
 
 [[events]]

@@ -6,9 +6,8 @@
 //   every ctx.ui prompt, so we forward those.
 // - Reason: herdr has no blocked sub-states, so we publish a display-only
 //   state label for `blocked`. The local.pane-id herdr plugin labels every agent
-//   row "<n> <workspace> · <tab>" (and blocked "<n> approval"); we keep its agent
-//   number and replace the whole blocked row with "<n> plan ready" etc. Clearing
-//   our source falls back to the plugin's labels.
+//   with its number; we keep that number and show "<n> plan ready" etc.
+//   Clearing our source falls back to the plugin's labels.
 // @ts-nocheck
 
 import { execFile } from "node:child_process";
@@ -46,7 +45,7 @@ export default function (pi) {
       report(["--clear-state-labels", "--clear-token", "blocked_reason"]);
       return;
     }
-    // Reuse the agent number from the plugin's label ("3 tools · pi-config").
+    // Reuse the agent number from the plugin's label.
     try {
       execFile(herdrBin, ["pane", "get", paneId], { timeout: 2000 }, (error, stdout) => {
         if (seq !== reportSeq) return; // prompt already ended

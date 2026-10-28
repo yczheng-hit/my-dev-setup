@@ -25,13 +25,12 @@ auto_switch = false
 yellow = "#ff9e64"
 teal = "#7aa2f7"
 
-# Agent rows: "<n> <workspace> · <tab>" as one state-colored token, so the number
-# replaces the state dot with no " · " after it. Labels come from the herdr plugin
-# local.pane-id (packages/herdr-pane-id); while a pi prompt waits, pi replaces the
-# whole row with "<n> plan ready" / "<n> approval" (herdr-ui-prompt-blocked.ts).
+# Agent rows: the agent number (herdr plugin local.pane-id, packages/herdr-pane-id)
+# replaces the state dot and takes the state color; while a pi prompt waits it reads
+# "<n> plan ready" / "<n> approval" (herdr-ui-prompt-blocked.ts).
 [ui.sidebar.agents]
 rows = [
-  [{ token = "state_text", bold = true }, "machine"],
+  [{ token = "state_text", bold = true }, "machine", { token = "workspace", bold = false }, "tab"],
   ["agent", { token = "$pane_id", dim = true }],
 ]
 
