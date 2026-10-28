@@ -2,6 +2,9 @@
   "defaultProvider": "anthropic",
   "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "high",
+  "modelThinkingLevels": {
+    "openai-codex/gpt-6.1-sol": "xhigh"
+  },
   "enabledModels": [
     "anthropic/claude-opus-5-5",
     "anthropic/claude-fable-5-1",
@@ -16,6 +19,8 @@
     "repo:packages/pi-fork-save",
     "npm:pi-cc-extensions",
     "repo:packages/picc-permission-modes",
+    "repo:packages/pi-openai-codex-compat",
+    "repo:packages/pi-gpt-codex",
     "npm:pi-subagents",
     "npm:@mrclrchtr/supi-review",
     "npm:pi-omp-advisor",
@@ -24,7 +29,6 @@
     "npm:pi-context",
     "repo:packages/pi-scheduler",
     "npm:@narumitw/pi-goal",
-    "npm:@nijaru/pi-fast-mode",
     "repo:tools/pi-btw-split",
     "npm:pi-web-access",
     "npm:pi-sticky-last-prompt",

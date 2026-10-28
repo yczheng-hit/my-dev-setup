@@ -1,0 +1,934 @@
+import { isString } from "../../value-contracts.ts";
+import {
+  isJsonValue,
+  isObject,
+  requireJsonRecords,
+  requireJsonRecord,
+  type JsonRecord,
+} from "../../codex-protocol.ts";
+import type {
+  Api,
+  AssistantMessage,
+  Context,
+  ImageContent,
+  Message,
+  Model,
+  TextContent,
+  TextSignatureV1,
+  Tool,
+  ToolCall,
+  ToolResultMessage,
+  TranscriptToolSupport,
+} from "@earendil-works/pi-ai";
+import {
+  getSystemMessageText,
+  normalizeContext,
+  renderSystemMessageUpdate,
+  resolveTranscript,
+  resolveTranscriptTools,
+} from "@earendil-works/pi-ai";
+
+/**
+ * Focused copies of the methods used to serialize Pi messages for OpenAI's
+ * Responses API. Adapted from @earendil-works/pi-ai@0.86.0:
+ *
+ * - src/api/openai-responses-shared.ts
+ * - src/api/transform-messages.ts
+ * - src/api/constrained-sampling.ts
+ * - src/utils/hash.ts
+ * - src/utils/sanitize-unicode.ts
+ *
+ * Keep this module behaviorally aligned with Pi AI when updating the peer
+ * dependency. It is local because Pi's extension loader does not expose the
+ * openai-responses-shared package subpath to extensions.
+ */
+
+export type ResponsesItem = JsonRecord;
+export type ToolResultImageDetail = "auto" | "low" | "high" | "original";
+type ToolResultOutput =
+  | string
+  | Array<
+      | { type: "input_text"; text: string }
+      | { type: "input_image"; detail: ToolResultImageDetail; image_url: string }
+    >;
+
+type ConvertResponsesMessagesOptions = {
+  includeSystemPrompt?: boolean;
+  grammarToolInputProperties?: ReadonlyMap<string, string>;
+  supportsMidConvoSystemMessages?: boolean;
+  supportsAdditionalTools?: boolean;
+  supportsToolSearch?: boolean;
+  toolOptions?: ConvertResponsesToolsOptions;
+  nativeAssistantItems?: ReadonlyMap<string, readonly ResponsesItem[]>;
+  namespacedToolNames?: ReadonlySet<string>;
+  textContentItemToolResultNames?: ReadonlySet<string>;
+  toolResultImageDetail?: ToolResultImageDetail;
+};
+
+export type ConvertResponsesToolsOptions = {
+  strict?: boolean | null;
+  supportsStrictMode?: boolean;
+  supportsOpenAIGrammarTools?: boolean;
+  deferLoading?: boolean;
+  namespacedToolNames?: ReadonlySet<string>;
+};
+
+function shortHash(value: string): string {
+  let high = 0xdeadbeef;
+  let low = 0x41c6ce57;
+  for (let index = 0; index < value.length; index++) {
+    const character = value.charCodeAt(index);
+    high = Math.imul(high ^ character, 2_654_435_761);
+    low = Math.imul(low ^ character, 1_597_334_677);
+  }
+  high =
+    Math.imul(high ^ (high >>> 16), 2_246_822_507) ^ Math.imul(low ^ (low >>> 13), 3_266_489_909);
+  low =
+    Math.imul(low ^ (low >>> 16), 2_246_822_507) ^ Math.imul(high ^ (high >>> 13), 3_266_489_909);
+  return (low >>> 0).toString(36) + (high >>> 0).toString(36);
+}
+
+function sanitizeSurrogates(text: string): string {
+  return text.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
+    "",
+  );
+}
+
+function getGrammarToolInput(
+  toolName: string,
+  arguments_: ToolCall["arguments"],
+  inputProperty: string,
+): string {
+  const input: unknown = arguments_[inputProperty];
+  if (!isString(input)) {
+    throw new Error(
+      `Grammar tool call "${toolName}" requires argument "${inputProperty}" to be a string.`,
+    );
+  }
+  return input;
+}
+
+function inferGrammarInputProperty(tool: Tool): string {
+  if (!isObject(tool.parameters)) {
+    throw new Error("grammar constrained sampling requires an object parameter schema");
+  }
+  const schema = tool.parameters;
+  if (schema.type !== "object") {
+    throw new Error("grammar constrained sampling requires an object parameter schema");
+  }
+  if (
+    !Array.isArray(schema["required"]) ||
+    schema["required"].length !== 1 ||
+    !isString(schema["required"][0])
+  ) {
+    throw new Error("grammar constrained sampling requires exactly one required string property");
+  }
+
+  const inputProperty = schema["required"][0];
+  if (!isObject(schema["properties"]) || !isObject(schema["properties"][inputProperty])) {
+    throw new Error(
+      `grammar constrained sampling requires a properties entry for ${inputProperty}`,
+    );
+  }
+  if (schema["properties"][inputProperty]?.type !== "string") {
+    throw new Error(`grammar constrained sampling property ${inputProperty} must have type string`);
+  }
+  return inputProperty;
+}
+
+interface JsonSchemaObject {
+  [key: string]: unknown;
+  type?: unknown;
+  properties?: Record<string, JsonSchemaObject | undefined>;
+  required?: unknown;
+}
+
+export class UnsupportedStrictJsonSchemaError extends Error {}
+
+const UNSUPPORTED_STRICT_SCHEMA_KEYS = [
+  "$ref",
+  "$defs",
+  "definitions",
+  "allOf",
+  "oneOf",
+  "patternProperties",
+  "dependentSchemas",
+  "dependencies",
+  "unevaluatedProperties",
+  "propertyNames",
+  "contains",
+  "prefixItems",
+  "not",
+  "if",
+  "then",
+  "else",
+] as const;
+
+function isJsonSchemaObject(value: unknown): value is JsonSchemaObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStructuredSchema(schema: unknown): boolean {
+  if (!isJsonSchemaObject(schema)) return false;
+  const types =
+    typeof schema.type === "string" ? [schema.type] : Array.isArray(schema.type) ? schema.type : [];
+  return (
+    types.includes("object") ||
+    types.includes("array") ||
+    schema.properties !== undefined ||
+    schema["items"] !== undefined
+  );
+}
+
+function schemaAllowsNull(schema: unknown): boolean {
+  if (!isJsonSchemaObject(schema)) return false;
+  if (schema.type === "null" || (Array.isArray(schema.type) && schema.type.includes("null"))) {
+    return true;
+  }
+  if (
+    schema["const"] === null ||
+    (Array.isArray(schema["enum"]) && schema["enum"].includes(null))
+  ) {
+    return true;
+  }
+  return (
+    Array.isArray(schema["anyOf"]) &&
+    schema["anyOf"].some((variant: unknown) => schemaAllowsNull(variant))
+  );
+}
+
+function makeJsonSchemaNodeStrict(schema: unknown): void {
+  if (!isJsonSchemaObject(schema)) {
+    throw new UnsupportedStrictJsonSchemaError("boolean schemas are unsupported");
+  }
+  for (const key of UNSUPPORTED_STRICT_SCHEMA_KEYS) {
+    if (schema[key] !== undefined) {
+      throw new UnsupportedStrictJsonSchemaError(`${key} schemas are unsupported`);
+    }
+  }
+
+  const anyOf: unknown = schema["anyOf"];
+  if (anyOf !== undefined) {
+    if (!Array.isArray(anyOf) || anyOf.length === 0) {
+      throw new UnsupportedStrictJsonSchemaError("anyOf must contain at least one schema");
+    }
+    for (const variant of anyOf) {
+      if (isStructuredSchema(variant)) {
+        throw new UnsupportedStrictJsonSchemaError("object and array unions are unsupported");
+      }
+      makeJsonSchemaNodeStrict(variant);
+    }
+  }
+
+  const items: unknown = schema["items"];
+  if (items !== undefined) {
+    if (Array.isArray(items)) {
+      throw new UnsupportedStrictJsonSchemaError("tuple schemas are unsupported");
+    }
+    makeJsonSchemaNodeStrict(items);
+  }
+
+  const isObjectSchema = schema.type === "object";
+  if (schema.properties !== undefined && !isObjectSchema) {
+    throw new UnsupportedStrictJsonSchemaError("properties require type object");
+  }
+  if (!isObjectSchema) return;
+  if (schema["additionalProperties"] !== undefined && schema["additionalProperties"] !== false) {
+    throw new UnsupportedStrictJsonSchemaError(
+      "schema-valued or true additionalProperties is unsupported",
+    );
+  }
+  if (schema.properties !== undefined && !isJsonSchemaObject(schema.properties)) {
+    throw new UnsupportedStrictJsonSchemaError("object properties must be a schema map");
+  }
+  if (
+    schema.required !== undefined &&
+    (!Array.isArray(schema.required) || schema.required.some((key) => typeof key !== "string"))
+  ) {
+    throw new UnsupportedStrictJsonSchemaError("object required must be a string array");
+  }
+
+  const properties = schema.properties ?? {};
+  const propertyNames = Object.keys(properties);
+  const required = new Set<unknown>(Array.isArray(schema.required) ? schema.required : []);
+  if ([...required].some((key) => !isString(key) || !propertyNames.includes(key))) {
+    throw new UnsupportedStrictJsonSchemaError("required contains an unknown property");
+  }
+  for (const [key, property] of Object.entries(properties)) {
+    makeJsonSchemaNodeStrict(property);
+    if (!required.has(key) && !schemaAllowsNull(property)) {
+      properties[key] = { anyOf: [property, { type: "null" }] };
+    }
+  }
+  schema.required = propertyNames;
+  schema["additionalProperties"] = false;
+}
+
+/** Convert a tool schema to the strict subset expected by provider constrained sampling. */
+export function makeStrictJsonSchema(schema: Tool["parameters"]): Record<string, unknown> {
+  const cloned: unknown = structuredClone(schema);
+  if (!isJsonSchemaObject(cloned)) {
+    throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
+  }
+  makeJsonSchemaNodeStrict(cloned);
+  if (cloned.type !== "object") {
+    throw new UnsupportedStrictJsonSchemaError("root schema must have type object");
+  }
+  return cloned;
+}
+
+function getJsonSchemaToolParameters(tool: Tool, strict: boolean | undefined): unknown {
+  return strict === true ? makeStrictJsonSchema(tool.parameters) : tool.parameters;
+}
+
+function resolveJsonSchemaStrictSampling(
+  tool: Tool,
+  supportsStrictMode: boolean,
+): boolean | undefined {
+  const config = tool.constrainedSampling;
+  if (!config || config.type !== "json_schema") return undefined;
+  if (supportsStrictMode) {
+    try {
+      makeStrictJsonSchema(tool.parameters);
+      return true;
+    } catch (error) {
+      if (!(error instanceof UnsupportedStrictJsonSchemaError)) throw error;
+      if (config.strict !== "require") return undefined;
+      throw new Error(
+        `Tool "${tool.name}" requires JSON-schema constrained sampling, but ${error.message}.`,
+        { cause: error },
+      );
+    }
+  }
+  if (config.strict === "require") {
+    throw new Error(
+      `Tool "${tool.name}" requires JSON-schema constrained sampling, but strict tools are unsupported.`,
+    );
+  }
+  return undefined;
+}
+
+function resolveGrammarConstrainedSampling(
+  tool: Tool,
+  supportsOpenAIGrammarTools: boolean,
+): { format: "lark" | "regex"; definition: string; inputProperty: string } | undefined {
+  const config = tool.constrainedSampling;
+  if (!config || config.type !== "grammar" || !supportsOpenAIGrammarTools) return undefined;
+
+  const larkDefinition = config.variants.openai_lark;
+  const regexDefinition = config.variants.openai_regex;
+  const hasLarkDefinition = isString(larkDefinition) && larkDefinition.trim().length > 0;
+  const hasRegexDefinition = isString(regexDefinition) && regexDefinition.trim().length > 0;
+  if (!hasLarkDefinition && !hasRegexDefinition) {
+    throw new Error(
+      `Tool "${tool.name}" cannot use grammar constrained sampling: no supported grammar variant was provided.`,
+    );
+  }
+
+  try {
+    const definition = hasLarkDefinition ? larkDefinition : regexDefinition;
+    if (!isString(definition)) {
+      throw new Error(`Tool "${tool.name}" has an invalid grammar definition.`);
+    }
+    return {
+      format: hasLarkDefinition ? "lark" : "regex",
+      definition,
+      inputProperty: inferGrammarInputProperty(tool),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Tool "${tool.name}" cannot use grammar constrained sampling: ${message}.`, {
+      cause: error,
+    });
+  }
+}
+
+export function createGrammarToolInputProperties(
+  tools: readonly Tool[] | undefined,
+  supportsOpenAIGrammarTools: boolean,
+): ReadonlyMap<string, string> {
+  const properties = new Map<string, string>();
+  for (const tool of tools ?? []) {
+    const grammar = resolveGrammarConstrainedSampling(tool, supportsOpenAIGrammarTools);
+    if (grammar) properties.set(tool.name, grammar.inputProperty);
+  }
+  return properties;
+}
+
+export function convertResponsesTools(
+  tools: readonly Tool[],
+  options?: ConvertResponsesToolsOptions,
+): ResponsesItem[] {
+  const defaultStrict = options?.strict === undefined ? false : options.strict;
+  const supportsStrictMode = options?.supportsStrictMode ?? true;
+  const supportsOpenAIGrammarTools = options?.supportsOpenAIGrammarTools ?? false;
+
+  const convertTool = (tool: Tool): ResponsesItem => {
+    const grammar = resolveGrammarConstrainedSampling(tool, supportsOpenAIGrammarTools);
+    if (grammar) {
+      const converted: ResponsesItem = {
+        type: "custom",
+        name: tool.name,
+        description: tool.description,
+        format: {
+          type: "grammar",
+          syntax: grammar.format,
+          definition: grammar.definition,
+        },
+      };
+      if (options?.deferLoading) converted["defer_loading"] = true;
+      return converted;
+    }
+
+    const constrainedStrict = resolveJsonSchemaStrictSampling(tool, supportsStrictMode);
+    const strict = constrainedStrict ?? defaultStrict;
+    // Strict function tools must send the strict schema subset: every property required,
+    // optional properties nullable, and `additionalProperties: false` on each object.
+    const parameters = getJsonSchemaToolParameters(tool, strict === true);
+    if (!isJsonValue(parameters)) {
+      throw new Error(`Tool "${tool.name}" has non-JSON parameters.`);
+    }
+    const converted: ResponsesItem = {
+      type: "function",
+      name: tool.name,
+      description: tool.description,
+      parameters,
+    };
+    if (options?.deferLoading) converted["defer_loading"] = true;
+    if (supportsStrictMode) converted["strict"] = strict;
+    return converted;
+  };
+
+  const result: ResponsesItem[] = [];
+  const namespaces = new Map<string, ResponsesItem>();
+  for (const tool of tools) {
+    const converted = convertTool(tool);
+    const namespaced = splitNamespacedToolName(tool.name, options?.namespacedToolNames);
+    if (!namespaced) {
+      result.push(converted);
+      continue;
+    }
+    if (converted["type"] !== "function") {
+      throw new Error(`Namespaced tool "${tool.name}" must serialize as a function tool.`);
+    }
+
+    const child: ResponsesItem = {
+      ...converted,
+      name: namespaced.name,
+    };
+    if (supportsStrictMode) child["strict"] = false;
+    let namespace = namespaces.get(namespaced.namespace);
+    if (!namespace) {
+      namespace = {
+        type: "namespace",
+        name: namespaced.namespace,
+        description: `Tools in the ${namespaced.namespace} namespace.`,
+        tools: [],
+      };
+      namespaces.set(namespaced.namespace, namespace);
+      result.push(namespace);
+    }
+    requireJsonRecords(namespace["tools"]).push(child);
+  }
+  return result;
+}
+
+function splitNamespacedToolName(
+  toolName: string,
+  allowedNames: ReadonlySet<string> | undefined,
+): { namespace: string; name: string } | undefined {
+  if (!allowedNames?.has(toolName)) return undefined;
+  const separator = toolName.indexOf(".");
+  if (separator <= 0 || separator === toolName.length - 1) {
+    throw new Error(`Invalid namespaced tool name: ${toolName}`);
+  }
+  return {
+    namespace: toolName.slice(0, separator),
+    name: toolName.slice(separator + 1),
+  };
+}
+
+const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+
+function replaceImagesWithPlaceholder(
+  content: (TextContent | ImageContent)[],
+  placeholder: string,
+): TextContent[] {
+  const result: TextContent[] = [];
+  let previousWasPlaceholder = false;
+
+  for (const block of content) {
+    if (block.type === "image") {
+      if (!previousWasPlaceholder) result.push({ type: "text", text: placeholder });
+      previousWasPlaceholder = true;
+      continue;
+    }
+    result.push(block);
+    previousWasPlaceholder = block.text === placeholder;
+  }
+  return result;
+}
+
+function downgradeUnsupportedImages(messages: Message[], model: Model<Api>): Message[] {
+  if (model.input.includes("image")) return messages;
+  return messages.map((message) => {
+    if (message.role === "user" && Array.isArray(message.content)) {
+      return {
+        ...message,
+        content: replaceImagesWithPlaceholder(message.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
+      };
+    }
+    if (message.role === "toolResult") {
+      return {
+        ...message,
+        content: replaceImagesWithPlaceholder(message.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
+      };
+    }
+    return message;
+  });
+}
+
+function transformMessages(
+  messages: Message[],
+  model: Model<Api>,
+  normalizeToolCallId?: (id: string, model: Model<Api>, source: AssistantMessage) => string,
+): Message[] {
+  const toolCallIdMap = new Map<string, string>();
+  const normalizedMessages = messages.map((message) =>
+    message.content == null ? { ...message, content: [] } : message,
+  );
+  const imageAwareMessages = downgradeUnsupportedImages(normalizedMessages, model);
+
+  const transformed = imageAwareMessages.map((message) => {
+    if (message.role === "user" || message.role === "system") return message;
+    if (message.role === "toolResult") {
+      const normalizedId = toolCallIdMap.get(message.toolCallId);
+      return normalizedId && normalizedId !== message.toolCallId
+        ? { ...message, toolCallId: normalizedId }
+        : message;
+    }
+
+    const assistantMessage = message;
+    const isSameModel =
+      assistantMessage.provider === model.provider &&
+      assistantMessage.api === model.api &&
+      assistantMessage.model === model.id;
+    const transformedContent = assistantMessage.content.flatMap((block) => {
+      if (block.type === "thinking") {
+        if (block.redacted) return isSameModel ? block : [];
+        if (isSameModel && block.thinkingSignature) return block;
+        if (!block.thinking || block.thinking.trim() === "") return [];
+        if (isSameModel) return block;
+        return { type: "text" as const, text: block.thinking };
+      }
+      if (block.type === "text") {
+        return isSameModel ? block : { type: "text" as const, text: block.text };
+      }
+      if (block.type === "toolCall") {
+        const toolCall = block;
+        let normalizedToolCall = toolCall;
+        if (!isSameModel && toolCall.thoughtSignature) {
+          normalizedToolCall = { ...toolCall };
+          Reflect.deleteProperty(normalizedToolCall, "thoughtSignature");
+        }
+        if (!isSameModel && normalizeToolCallId) {
+          const normalizedId = normalizeToolCallId(toolCall.id, model, assistantMessage);
+          if (normalizedId !== toolCall.id) {
+            toolCallIdMap.set(toolCall.id, normalizedId);
+            normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
+          }
+        }
+        return normalizedToolCall;
+      }
+      return block;
+    });
+    return { ...assistantMessage, content: transformedContent };
+  });
+
+  const result: Message[] = [];
+  let pendingToolCalls: ToolCall[] = [];
+  let existingToolResultIds = new Set<string>();
+  // System messages are transparent to tool-call accounting: one that lands between a
+  // tool call and its results is held back and emitted after the results (synthetic
+  // ones included), so it never causes a duplicate result for a call answered later.
+  const heldSystemMessages: Message[] = [];
+  const closePendingToolCalls = () => {
+    if (pendingToolCalls.length > 0) {
+      for (const toolCall of pendingToolCalls) {
+        if (existingToolResultIds.has(toolCall.id)) continue;
+        result.push({
+          role: "toolResult",
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: [{ type: "text", text: "No result provided" }],
+          isError: true,
+          timestamp: Date.now(),
+        } satisfies ToolResultMessage);
+      }
+      pendingToolCalls = [];
+      existingToolResultIds = new Set();
+    }
+    result.push(...heldSystemMessages);
+    heldSystemMessages.length = 0;
+  };
+
+  for (const message of transformed) {
+    if (message.role === "assistant") {
+      closePendingToolCalls();
+      const assistantMessage = message;
+      if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
+        continue;
+      }
+      const toolCalls = assistantMessage.content.filter(
+        (block): block is ToolCall => block.type === "toolCall",
+      );
+      if (toolCalls.length > 0) {
+        pendingToolCalls = toolCalls;
+        existingToolResultIds = new Set();
+      }
+      result.push(message);
+    } else if (message.role === "toolResult") {
+      existingToolResultIds.add(message.toolCallId);
+      result.push(message);
+    } else if (message.role === "system") {
+      if (pendingToolCalls.length > 0) heldSystemMessages.push(message);
+      else result.push(message);
+    } else if (message.role === "user") {
+      closePendingToolCalls();
+      result.push(message);
+    } else {
+      result.push(message);
+    }
+  }
+  closePendingToolCalls();
+  return result;
+}
+
+function parseTextSignature(
+  signature: string | undefined,
+): { id: string; phase?: TextSignatureV1["phase"] } | undefined {
+  if (!signature) return undefined;
+  if (signature.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(signature);
+      if (isObject(parsed) && parsed.v === 1 && isString(parsed.id)) {
+        if (parsed.phase === "commentary" || parsed.phase === "final_answer") {
+          return { id: parsed.id, phase: parsed.phase };
+        }
+        return { id: parsed.id };
+      }
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      // Fall through to legacy plain-string handling.
+    }
+  }
+  return { id: signature };
+}
+
+function convertToolResultOutput(
+  model: Model<Api>,
+  content: readonly (TextContent | ImageContent)[],
+  imageDetail: ToolResultImageDetail,
+  textAsContentItem: boolean,
+): ToolResultOutput {
+  const textContent = content.filter((item): item is TextContent => item.type === "text");
+  const textResult = textContent.map((item) => item.text).join("\n");
+  const images = content.filter((item): item is ImageContent => item.type === "image");
+  const hasText = textResult.trim().length > 0;
+
+  if (images.length === 0 && textAsContentItem && textContent.length > 0) {
+    return [{ type: "input_text", text: sanitizeSurrogates(textResult) }];
+  }
+
+  if (images.length === 0 || !model.input.includes("image")) {
+    return sanitizeSurrogates(
+      hasText ? textResult : images.length > 0 ? "(see attached image)" : "(no tool output)",
+    );
+  }
+
+  return [
+    ...(hasText ? [{ type: "input_text" as const, text: sanitizeSurrogates(textResult) }] : []),
+    ...images.map((image) => ({
+      type: "input_image" as const,
+      detail: imageDetail,
+      image_url: `data:${image.mimeType};base64,${image.data}`,
+    })),
+  ];
+}
+
+/**
+ * How a Responses transport expresses tool changes, as Pi AI 1.4.0 chooses it. `additional_tools`
+ * items accumulate and cannot remove a tool, so with them every tool is declared in
+ * `additional_tools` items and removals are announced as text. Synthetic tool search can only add
+ * tools.
+ */
+function getResponsesToolSupport(options: {
+  supportsMidConvoSystemMessages?: boolean;
+  supportsAdditionalTools?: boolean;
+  supportsToolSearch?: boolean;
+}): TranscriptToolSupport {
+  if (options.supportsMidConvoSystemMessages && options.supportsAdditionalTools) return "changes";
+  return options.supportsToolSearch ? "additions" : "none";
+}
+
+/** Precedes every `additional_tools` item after the first, as in Pi AI. */
+function renderIncrementalToolsNotice(unavailable: ReadonlySet<string>): string {
+  const notice =
+    "This is an incremental tools update. Previously declared tools remain available unless explicitly marked unavailable. A tool declared again here is available again, and its latest definition replaces the earlier one.";
+  return unavailable.size > 0
+    ? `${notice}\nStill unavailable: ${[...unavailable].join(", ")}.`
+    : notice;
+}
+
+function renderToolRemovalNotice(names: readonly string[]): string {
+  return `The following tools are no longer available. Do not call them:\n${names.map((name) => `- ${name}`).join("\n")}`;
+}
+
+export function convertResponsesMessages(
+  model: Model<Api>,
+  context: Context,
+  allowedToolCallProviders: ReadonlySet<string>,
+  options?: ConvertResponsesMessagesOptions,
+): ResponsesItem[] {
+  const transcript = resolveTranscript(
+    normalizeContext(context),
+    options?.supportsMidConvoSystemMessages,
+  );
+  const messages: ResponsesItem[] = [];
+  const normalizeIdPart = (part: string): string => {
+    const sanitized = part.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const normalized = sanitized.length > 64 ? sanitized.slice(0, 64) : sanitized;
+    return normalized.replace(/_+$/, "");
+  };
+  const buildForeignResponsesItemId = (itemId: string): string => {
+    const normalized = `fc_${shortHash(itemId)}`;
+    return normalized.length > 64 ? normalized.slice(0, 64) : normalized;
+  };
+  const normalizeToolCallId = (
+    id: string,
+    _targetModel: Model<Api>,
+    source: AssistantMessage,
+  ): string => {
+    if (!allowedToolCallProviders.has(model.provider)) return normalizeIdPart(id);
+    if (!id.includes("|")) return normalizeIdPart(id);
+    const [callId, itemId] = id.split("|");
+    if (callId === undefined || itemId === undefined) {
+      throw new Error("A compound tool-call id is incomplete.");
+    }
+    const normalizedCallId = normalizeIdPart(callId);
+    const isForeignToolCall = source.provider !== model.provider || source.api !== model.api;
+    let normalizedItemId = isForeignToolCall
+      ? buildForeignResponsesItemId(itemId)
+      : normalizeIdPart(itemId);
+    if (!normalizedItemId.startsWith("fc_")) {
+      normalizedItemId = normalizeIdPart(`fc_${normalizedItemId}`);
+    }
+    return `${normalizedCallId}|${normalizedItemId}`;
+  };
+
+  const transformedMessages = transformMessages(transcript.messages, model, normalizeToolCallId);
+  const toolSupport = getResponsesToolSupport(options ?? {});
+  const transcriptTools = resolveTranscriptTools(transcript.messages, toolSupport);
+  let declaredAdditionalTools = false;
+  /** Tools announced as removed and not declared again since. */
+  const unavailableTools = new Set<string>();
+  const includeSystemPrompt = options?.includeSystemPrompt ?? true;
+  const supportsDeveloperRole =
+    !isObject(model.compat) || model.compat["supportsDeveloperRole"] !== false;
+  const instructionRole = model.reasoning && supportsDeveloperRole ? "developer" : "system";
+
+  let messageIndex = 0;
+  let sourceIndex = 0;
+  let systemIndex = 0;
+  for (const message of transformedMessages) {
+    const isLeadingSystemMessage = sourceIndex++ === 0 && message.role === "system";
+    if (message.role === "system") {
+      // transformMessages keeps system messages in order, so their position matches the transcript.
+      const anchorsToolChanges = systemIndex++ >= transcriptTools.foldedSystemMessages;
+      const addedTools = anchorsToolChanges ? (message.toolsAdded ?? []) : [];
+      for (const tool of addedTools) unavailableTools.delete(tool.name);
+      const toolOptions = { ...options?.toolOptions };
+      if (options?.namespacedToolNames) {
+        toolOptions.namespacedToolNames = options.namespacedToolNames;
+      }
+      if (addedTools.length > 0 && toolSupport === "changes") {
+        if (declaredAdditionalTools) {
+          messages.push({
+            role: instructionRole,
+            content: renderIncrementalToolsNotice(unavailableTools),
+          });
+        }
+        declaredAdditionalTools = true;
+        messages.push({
+          type: "additional_tools",
+          role: "developer",
+          tools: convertResponsesTools(addedTools, toolOptions),
+        });
+      } else if (addedTools.length > 0 && toolSupport === "additions") {
+        const names = addedTools.map((tool) => tool.name);
+        const callId = `pi_tool_load_${shortHash(`system:${messageIndex}:${names.join(",")}`)}`;
+        messages.push({
+          type: "tool_search_call",
+          call_id: callId,
+          execution: "client",
+          status: "completed",
+          arguments: { query: names.join(" "), limit: names.length },
+        });
+        messages.push({
+          type: "tool_search_output",
+          call_id: callId,
+          execution: "client",
+          status: "completed",
+          tools: convertResponsesTools(addedTools, { ...toolOptions, deferLoading: true }),
+        });
+      }
+      if (!isLeadingSystemMessage || includeSystemPrompt) {
+        const parts = [
+          isLeadingSystemMessage
+            ? getSystemMessageText(message)
+            : renderSystemMessageUpdate(message),
+        ];
+        if (anchorsToolChanges) {
+          // A redefinition is a removal plus an addition of the same name; only true removals
+          // are announced.
+          const added = new Set((message.toolsAdded ?? []).map((tool) => tool.name));
+          const removed = (message.toolsRemoved ?? [])
+            .map((tool) => tool.name)
+            .filter((name) => !added.has(name));
+          if (removed.length > 0) parts.push(renderToolRemovalNotice(removed));
+          // Recorded after this message's additions, whose notice precedes this removal notice.
+          for (const name of removed) unavailableTools.add(name);
+        }
+        const text = parts.filter((part) => part.length > 0).join("\n\n");
+        if (text.length > 0) {
+          messages.push({ role: instructionRole, content: sanitizeSurrogates(text) });
+        }
+      }
+    } else if (message.role === "user") {
+      if (isString(message.content)) {
+        messages.push({
+          role: "user",
+          content: [{ type: "input_text", text: sanitizeSurrogates(message.content) }],
+        });
+      } else {
+        const content = message.content.map((item) =>
+          item.type === "text"
+            ? { type: "input_text", text: sanitizeSurrogates(item.text) }
+            : {
+                type: "input_image",
+                detail: "auto",
+                image_url: `data:${item.mimeType};base64,${item.data}`,
+              },
+        );
+        if (content.length === 0) continue;
+        messages.push({ role: "user", content });
+      }
+    } else if (message.role === "assistant") {
+      const nativeItems = message.responseId
+        ? options?.nativeAssistantItems?.get(message.responseId)
+        : undefined;
+      if (nativeItems) {
+        messages.push(...nativeItems.map((item) => structuredClone(item)));
+        messageIndex++;
+        continue;
+      }
+
+      const output: ResponsesItem[] = [];
+      const assistantMessage = message;
+      const isDifferentModel =
+        assistantMessage.model !== model.id &&
+        assistantMessage.provider === model.provider &&
+        assistantMessage.api === model.api;
+      let textBlockIndex = 0;
+
+      for (const block of message.content) {
+        if (block.type === "thinking") {
+          if (block.thinkingSignature) {
+            output.push(
+              requireJsonRecord(
+                JSON.parse(block.thinkingSignature),
+                "assistant thinking signature",
+              ),
+            );
+          }
+        } else if (block.type === "text") {
+          const parsedSignature = parseTextSignature(block.textSignature);
+          const fallbackMessageId =
+            textBlockIndex === 0
+              ? `msg_pi_${messageIndex}`
+              : `msg_pi_${messageIndex}_${textBlockIndex}`;
+          textBlockIndex++;
+          let messageId = parsedSignature?.id ?? fallbackMessageId;
+          if (messageId.length > 64) messageId = `msg_${shortHash(messageId)}`;
+          const textItem: ResponsesItem = {
+            type: "message",
+            role: "assistant",
+            content: [
+              { type: "output_text", text: sanitizeSurrogates(block.text), annotations: [] },
+            ],
+            status: "completed",
+            id: messageId,
+          };
+          if (parsedSignature?.phase !== undefined) textItem.phase = parsedSignature.phase;
+          output.push(textItem);
+        } else if (block.type === "toolCall") {
+          const [callId, itemIdRaw] = block.id.split("|");
+          const customInputProperty = options?.grammarToolInputProperties?.get(block.name);
+          const namespaced = splitNamespacedToolName(block.name, options?.namespacedToolNames);
+          let itemId = itemIdRaw;
+          // Preserve item IDs only when they match the replayed tool type.
+          // Item IDs from another model of the same provider and API are always omitted.
+          // call_id still pairs every call with its result when an item ID is omitted.
+          const itemIdPrefix = customInputProperty === undefined ? "fc_" : "ctc_";
+          if (isDifferentModel || !itemId?.startsWith(itemIdPrefix)) {
+            itemId = undefined;
+          }
+          if (customInputProperty !== undefined) {
+            const customToolCall: ResponsesItem = {
+              type: "custom_tool_call",
+              name: block.name,
+              input: sanitizeSurrogates(
+                getGrammarToolInput(block.name, block.arguments, customInputProperty),
+              ),
+            };
+            if (itemId !== undefined) customToolCall["id"] = itemId;
+            if (callId !== undefined) customToolCall["call_id"] = callId;
+            output.push(customToolCall);
+          } else {
+            const functionCall: ResponsesItem = {
+              type: "function_call",
+              name: namespaced?.name ?? block.name,
+              arguments: JSON.stringify(block.arguments),
+            };
+            if (itemId !== undefined) functionCall["id"] = itemId;
+            if (callId !== undefined) functionCall["call_id"] = callId;
+            if (namespaced) functionCall["namespace"] = namespaced.namespace;
+            output.push(functionCall);
+          }
+        }
+      }
+      if (output.length === 0) continue;
+      messages.push(...output);
+    } else if (message.role === "toolResult") {
+      const [callId] = message.toolCallId.split("|");
+      const output = convertToolResultOutput(
+        model,
+        message.content,
+        options?.toolResultImageDetail ?? "auto",
+        message.isError !== true &&
+          (options?.textContentItemToolResultNames?.has(message.toolName) ?? false),
+      );
+      messages.push({
+        type: options?.grammarToolInputProperties?.has(message.toolName)
+          ? "custom_tool_call_output"
+          : "function_call_output",
+        call_id: callId,
+        output,
+      });
+    }
+    if (!isLeadingSystemMessage) messageIndex++;
+  }
+  return messages;
+}

@@ -128,6 +128,7 @@ import {
   type DiffLine,
 } from "./utils.ts";
 import { extractFirstBashPath } from "./pathExtractors.ts";
+import { expandCodexToolCall } from "./codexTools.ts";
 import {
   MODE_META,
   type AllowedPrompt,
@@ -731,8 +732,19 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     return { ...state.ctx, shouldAvoidPermissionPrompts: true };
   }
   pi.on("tool_call", async (event, ctx): Promise<{ block: true; reason: string } | undefined> => {
-    const tool = event.toolName;
     const input = (event.input ?? {}) as Record<string, unknown>;
+    for (const call of expandCodexToolCall(event.toolName, input)) {
+      const blocked = await gateToolCall(event.toolCallId, call.tool, call.input, ctx);
+      if (blocked) return blocked;
+    }
+    return undefined;
+  });
+  async function gateToolCall(
+    toolCallId: string,
+    tool: string,
+    input: Record<string, unknown>,
+    ctx: ExtensionContext,
+  ): Promise<{ block: true; reason: string } | undefined> {
     if (tool === "edit" || tool === "write") {
       const target = extractToolPath(input);
       const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
@@ -748,7 +760,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
           pathInAllowedWorkingPath(target, state.ctx, ctx.cwd) &&
           !isDangerousFilePath(target)
         ) {
-          rememberClassifierDecision(event.toolCallId, {
+          rememberClassifierDecision(toolCallId, {
             kind: "allow",
             via: "safeAllowlist",
           });
@@ -766,13 +778,13 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
         return { block: true, reason: preDecision.message };
       }
       if (preDecision.behavior === "allow") {
-        rememberClassifierDecision(event.toolCallId, {
+        rememberClassifierDecision(toolCallId, {
           kind: "allow",
           via: "safeAllowlist",
         });
         return undefined;
       }
-      return askAutoClassifier(event.toolCallId, tool, input, ctx);
+      return askAutoClassifier(toolCallId, tool, input, ctx);
     }
     if (currentMode === "bypassPermissions") {
       return applyBypassGate(tool, input, ctx);
@@ -783,10 +795,10 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       return { block: true, reason: decision.message };
     }
     if (currentMode === "plan") {
-      return askAutoClassifier(event.toolCallId, tool, input, ctx);
+      return askAutoClassifier(toolCallId, tool, input, ctx);
     }
     return askUserPermission(decision, tool, input, ctx);
-  });
+  }
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolName === "EnterPlanMode") {
       const details = (event as { details?: { entered?: boolean } }).details;

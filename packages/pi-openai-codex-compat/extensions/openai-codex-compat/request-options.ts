@@ -1,0 +1,121 @@
+import {
+  calculateCost,
+  hasApi,
+  type Api,
+  type AssistantMessage,
+  type Model,
+} from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CODEX_API, CODEX_PROVIDER } from "./codex-identifiers.ts";
+import type { CodexCompatConfig, WebSearchMode } from "./config.ts";
+import { resolveFileConfig, type ConfigResolver } from "./config-context.ts";
+import { isObject, type JsonRecord } from "./codex-protocol.ts";
+import { selectedRegistryModel } from "./model-context.ts";
+import { splitNamespacedToolName, WEB_RUN_TOOL_NAME } from "./namespaced-tools.ts";
+
+export type CodexRequestOptionsApi = Pick<ExtensionAPI, "on">;
+
+export function isCodexModel(model: Model<Api> | undefined): model is Model<typeof CODEX_API> {
+  return model !== undefined && model.provider === CODEX_PROVIDER && hasApi(model, CODEX_API);
+}
+
+function isWebSearchTool(value: unknown): boolean {
+  return isObject(value) && value.type === "web_search";
+}
+
+function isWebRunNamespace(value: unknown): boolean {
+  if (!isObject(value) || value.type !== "namespace") return false;
+  const webRun = splitNamespacedToolName(WEB_RUN_TOOL_NAME);
+  if (!webRun) {
+    throw new Error("The web.run tool name is not namespaced.");
+  }
+  return (
+    value.name === webRun.namespace &&
+    Array.isArray(value.tools) &&
+    value.tools.some(
+      (tool) => isObject(tool) && tool.type === "function" && tool.name === webRun.name,
+    )
+  );
+}
+
+function webSearchTool(mode: Exclude<WebSearchMode, "disabled">, images: boolean): JsonRecord {
+  const tool: JsonRecord = {
+    type: "web_search",
+    external_web_access: mode !== "cached",
+  };
+  if (mode === "indexed") tool["indexed_web_access"] = true;
+  if (images) tool["search_content_types"] = ["text", "image"];
+  return tool;
+}
+
+export function applyCodexRequestOptions(
+  payload: JsonRecord,
+  config: CodexCompatConfig,
+  options: { modelId: string; supportsImageSearch: boolean },
+): JsonRecord {
+  const result = structuredClone(payload);
+
+  if (config.fastMode) result.service_tier = "priority";
+
+  const text = isObject(result.text) ? result.text : {};
+  result.text = { ...text, verbosity: config.textVerbosity };
+
+  const reasoning = result["reasoning"];
+  if (isObject(reasoning)) {
+    const updatedReasoning = { ...reasoning };
+    if (config.reasoningSummary === "off") {
+      Reflect.deleteProperty(updatedReasoning, "summary");
+    } else {
+      updatedReasoning["summary"] = config.reasoningSummary;
+    }
+    // The Codex endpoint rejects `reasoning.mode`.
+    Reflect.deleteProperty(updatedReasoning, "mode");
+    result["reasoning"] = updatedReasoning;
+  }
+
+  const tools = Array.isArray(result.tools) ? result.tools : [];
+  const toolsWithoutSearch = tools.filter((tool) => !isWebSearchTool(tool));
+  if (tools.some(isWebRunNamespace) || config.webSearch === "disabled") {
+    if (Array.isArray(result.tools)) result.tools = toolsWithoutSearch;
+  } else {
+    result.tools = [
+      ...toolsWithoutSearch,
+      webSearchTool(config.webSearch, options.supportsImageSearch),
+    ];
+  }
+
+  return result;
+}
+
+/** Recompute cost from canonical rates so payload-only priority mode cannot be undercounted. */
+export function applyPriorityPricing(
+  message: AssistantMessage,
+  model: Model<Api>,
+): AssistantMessage {
+  const usage = structuredClone(message.usage);
+  calculateCost(model, usage);
+  const multiplier = model.id === "gpt-5.5" ? 2.5 : 2;
+  usage.cost.input *= multiplier;
+  usage.cost.output *= multiplier;
+  usage.cost.cacheRead *= multiplier;
+  usage.cost.cacheWrite *= multiplier;
+  usage.cost.total =
+    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+  return { ...message, usage };
+}
+
+export default function registerCodexRequestOptions(
+  pi: CodexRequestOptionsApi,
+  resolveConfig: ConfigResolver = resolveFileConfig,
+): void {
+  pi.on("before_provider_request", (event, ctx) => {
+    const model = selectedRegistryModel(ctx);
+    if (!isCodexModel(model) || !isObject(event.payload)) return undefined;
+
+    const config = resolveConfig(ctx);
+    return applyCodexRequestOptions(event.payload, config, {
+      modelId: model.id,
+      supportsImageSearch: model.input.includes("image"),
+    });
+  });
+}

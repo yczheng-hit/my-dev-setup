@@ -1,0 +1,573 @@
+# `apply_patch` Instruction Feedback
+
+## Status
+
+This document is the standalone implementation reference for model and TUI
+feedback produced by `apply_patch`. It defines the agreed result structure,
+terminology, rendering, failure inspection, and test requirements.
+
+`APPLY_PATCH_SEMANTIC_OPERATIONS.md` remains authoritative for filesystem and
+matching semantics. This document is authoritative for presenting those
+semantics to the model and user.
+
+## Goals
+
+Feedback must:
+
+1. retain the aggregate changed-file summary;
+2. when an instruction ledger is needed, report every instruction without a
+   model-facing limit;
+3. attribute filesystem effects and errors to the instruction that produced
+   them;
+4. report failed and not-run instructions;
+5. use concise, simplified technical English;
+6. report deterministic facts rather than speculative outcomes; and
+7. avoid repeating old or replacement text supplied in the patch.
+
+## Aggregate summary
+
+Successful results retain the current summary:
+
+```text
+Success. Updated the following files:
+A added.txt
+M updated.txt
+D deleted.txt
+```
+
+When every instruction has no filesystem effect:
+
+```text
+Success. No files were changed.
+```
+
+Failed results identify the failed instruction and list confirmed changed
+paths:
+
+```text
+Patch failed at instruction 3 of 5.
+Files changed:
+M updated.txt
+A destination.txt
+```
+
+The changed-file list includes completed effects from failed instructions. A
+path whose final state is not verified is not listed as changed unless another
+completed, verified effect on that path is available.
+
+When a failed instruction creates only a directory or leaves only a temporary
+entry, use:
+
+```text
+Filesystem changed.
+```
+
+The directory or temporary-entry path remains on its instruction instead of
+being mislabelled as an added file.
+
+`No files were changed.` is valid only when every relevant path was verified
+unchanged. When no changed path is confirmed and at least one relevant final
+state is not verified, omit the global changed/unchanged statement and report
+the unverified state on its instruction.
+
+Keep the existing exit-code and wall-time envelope where the tool currently
+uses it.
+
+## Patch instruction results
+
+Append an instruction ledger when at least one instruction is not `APPLIED` or
+an applied instruction has a feedback clause. Omit the ledger when every
+instruction is `APPLIED` without feedback.
+
+When included, the aggregate summary is followed by this exact heading:
+
+```text
+Patch instruction results:
+```
+
+Every instruction is then listed in source order, including ordinary applied
+instructions without feedback. Model feedback has no instruction limit and no
+omitted-count message.
+
+Visible statuses are:
+
+- `APPLIED`
+- `NO CHANGE`
+- `SKIPPED`
+- `FAILED`
+- `NOT RUN`
+
+The TUI may additionally use `PLANNED` while an `apply_patch` call is still in
+progress. Pi renders this read-only preview after the arguments are complete
+and before execution begins. `PLANNED` is not sent to the model and does not
+appear in completed tool results.
+
+Example:
+
+```text
+Patch instruction results:
+1. [APPLIED] Update a.txt
+2. [NO CHANGE] Delete missing.txt - Path already absent.
+3. [FAILED] Update & Move source.txt -> destination.txt - Created destination.txt; source.txt remains; The updated content was written to the destination, but removing the source failed: permission denied; The file at destination.txt contains the requested content byte-for-byte despite the reported error.
+4. [NOT RUN] Update other.txt - Instruction 3 failed.
+```
+
+Model-facing separators and move arrows are ASCII. The TUI may use styled
+status labels and Unicode arrows.
+
+## Concision rules
+
+When the ledger is included because another instruction needs explanation, an
+ordinary applied instruction needs only its status and operation:
+
+```text
+1. [APPLIED] Add a.txt
+2. [APPLIED] Update b.txt
+3. [APPLIED] Update & Move c.txt -> d.txt
+4. [APPLIED] Move e.txt -> f.txt
+5. [APPLIED] Delete g.txt
+```
+
+Add a short clause only for:
+
+- a no-change or skipped reason;
+- a failure;
+- a non-obvious externally visible filesystem effect;
+- a partial effect;
+- a final state that is not verified.
+
+Do not include:
+
+- old or replacement patch blocks;
+- a diff-availability warning;
+- verbose proof sections;
+- a duplicated raw error section;
+- prose that merely restates an ordinary successful operation.
+
+## Terminology
+
+Do not expose these terms in model or TUI feedback:
+
+- `Committed prefix`
+- `exact`
+- `inexact`
+- `dead`
+- `dominated`
+- `no-op`
+- `preflight`
+- `installed`
+
+Prefer:
+
+- `created`
+- `replaced`
+- `updated`
+- `deleted`
+- `removed`
+- `moved`
+- `present`
+- `absent`
+- `remains`
+- `not verified`
+- `validation`
+- `patch format`
+- `symlink`
+
+Generated explanatory text must not speculate with words such as `may`,
+`might`, `possibly`, `probably`, or `likely`. When inspection cannot determine
+a path's state, say:
+
+```text
+Final state not verified for a.txt.
+```
+
+## No-change results
+
+Render semantic no-ops as `NO CHANGE`:
+
+```text
+1. [NO CHANGE] Update a.txt - The instruction contains no changes.
+2. [NO CHANGE] Update b.txt - Old and replacement content are identical.
+3. [NO CHANGE] Update c.txt - Applying the update would not change the file.
+4. [NO CHANGE] Add d.txt - The file already contains the requested content byte-for-byte.
+5. [NO CHANGE] Delete e.txt - Path already absent.
+6. [NO CHANGE] Move f.txt -> f.txt - Source and destination identify the same entry.
+7. [NO CHANGE] Move a.txt -> b.txt - Instruction 2 already moved this entry.
+```
+
+The fulfilled-move result records and references the earlier instruction that
+performed the move. A missing related instruction number is an internal
+invariant failure; there is no generic earlier-instruction fallback.
+
+## Skipped results
+
+Render a semantically eliminated operation as `SKIPPED`, not `DEAD`.
+
+```text
+2. [SKIPPED] Update a.txt - Instruction 4 deletes a.txt before another instruction reads it.
+```
+
+For a shared hard-linked file:
+
+```text
+2. [SKIPPED] Update a.txt - Instructions 4 and 6 delete every link before another instruction reads the file.
+```
+
+The concise reason and related instruction numbers remain on the skipped
+instruction. Do not create a separate proof section.
+
+## Per-instruction filesystem effects
+
+Each instruction result stores:
+
+- its status;
+- an optional concise reason;
+- completed externally visible filesystem effects;
+- relevant final path states;
+- an optional error;
+- related instruction numbers.
+
+The operation label is sufficient for ordinary successful effects. Explicit
+effects are required for:
+
+- a partial effect from a failed instruction;
+- destination replacement;
+- symlink entry versus target behavior, including the raw target pathname
+  stored in the symlink;
+- a parent directory that remains after failure;
+- deletion of a destination before replacement failure;
+- a temporary entry remaining after cleanup failure;
+- a source remaining after destination creation or replacement; and
+- a final state that is not verified.
+
+Effects from a failed instruction remain attached to that instruction. They
+must not be called earlier changes.
+
+Use only `symlink` terminology. Symlink feedback records the raw target
+pathname returned by `readlink`; it does not substitute a resolved absolute
+path.
+
+Every replacement effect records both the verified previous entry type and the
+verified resulting entry type. A resulting symlink also records its raw target
+pathname. Replacement feedback must not omit either entry type. If
+neither execution nor post-failure inspection can verify the result, report
+the final state as not verified instead of claiming a replacement.
+
+Examples:
+
+```text
+1. [APPLIED] Add alias.txt - alias.txt, previously a symlink to target.txt, is now a regular file.
+```
+
+```text
+1. [APPLIED] Update alias.txt - Modified file content through the symlink at alias.txt (target: target.txt); the symlink was not modified.
+```
+
+```text
+1. [APPLIED] Move alias.txt -> moved/alias.txt - Moved the symlink alias.txt; moved/alias.txt is now a symlink to target.txt.
+```
+
+Deletion and move differ only because deletion removes the symlink while a
+move preserves it and its stored target pathname. Feedback reports the
+resulting path directly rather than making an unconditional claim about the
+filesystem path named by the target.
+
+Failure examples:
+
+```text
+3. [FAILED] Update & Move a.txt -> b.txt - Created b.txt; a.txt remains; The updated content was written to the destination, but removing the source failed: permission denied; The file at b.txt contains the requested content byte-for-byte despite the reported error.
+```
+
+```text
+3. [FAILED] Move a.txt -> b.txt - b.txt is still a regular file; a.txt remains; Move failed: permission denied.
+```
+
+```text
+3. [FAILED] Move a.txt -> b.txt - Deleted the previous b.txt; b.txt is absent; replacement failed: permission denied.
+```
+
+```text
+3. [FAILED] Move a.txt -> dir/b.txt - Created directory dir; move failed: permission denied.
+```
+
+## Post-failure inspection
+
+After a low-level filesystem operation fails, inspect every relevant source,
+destination, parent, followed target, and temporary path before constructing
+feedback.
+
+Path-state feedback uses only deterministic states:
+
+- present as a regular file;
+- present as a symlink;
+- absent;
+- unchanged;
+- contains the requested content byte-for-byte;
+- differs from the requested content;
+- differs from the previously observed content;
+- differs from both the requested and previously observed content;
+- is a different filesystem entry;
+- entry type changed; or
+- not verified.
+
+Examples:
+
+```text
+3. [FAILED] Update a.txt - Write failed: permission denied; a.txt is unchanged.
+```
+
+```text
+3. [FAILED] Update a.txt - Write reported an error; The file at a.txt contains the requested content byte-for-byte despite the reported error.
+```
+
+```text
+3. [FAILED] Update a.txt - Write failed: input/output error; final state not verified for a.txt.
+```
+
+An empty recorded-change list is not proof that no file changed.
+
+## Unreadable previous content
+
+Replacing a file without reading its previous content produces ordinary
+success feedback:
+
+```text
+Success. Updated the following files:
+A file.txt
+
+Patch instruction results:
+1. [APPLIED] Add file.txt
+```
+
+Do not tell the model that previous content was unreadable, a diff is
+unavailable, history is incomplete, or the result is inexact. Diff
+availability is a TUI/history concern, not an operation result.
+
+## Matching failures
+
+A strict matching failure belongs to the failed update instruction. Do not
+emit a detached matcher-diagnostics section or repeat old/replacement patch
+text:
+
+```text
+3. [FAILED] Update file.ts - Old content was not found.
+```
+
+Missing `@@` anchors analogously report `Context was not found.`.
+
+## Not-run results
+
+Every not-run instruction identifies why it did not run:
+
+```text
+4. [NOT RUN] Update other.txt - Instruction 3 failed.
+```
+
+For errors not owned by an instruction:
+
+```text
+1. [NOT RUN] Update a.txt - Patch format error.
+```
+
+```text
+1. [NOT RUN] Update a.txt - apply_patch setup failed before this instruction was executed.
+```
+
+Cancellation uses
+`apply_patch was cancelled before this instruction was executed.` A
+non-cancellation stop without an owning instruction uses
+`apply_patch stopped before this instruction was executed.` Patch-level
+cancellation says `apply_patch was cancelled before execution.` or identifies
+the last completed instruction.
+
+## Patch-level failures
+
+Use a patch-level statement only when no instruction owns the error.
+
+```text
+Patch format error at line 1: the patch must begin with "*** Begin Patch".
+
+Patch instruction results:
+1. [NOT RUN] Update a.txt - Patch format error.
+```
+
+```text
+apply_patch setup failed: filesystem access failed for path.
+
+Patch instruction results:
+1. [NOT RUN] Update a.txt - apply_patch setup failed before this instruction was executed.
+```
+
+Rejected tool input uses `apply_patch request rejected: <cause>` once at patch
+level and `The apply_patch request was rejected before this instruction was
+executed.` on each affected instruction.
+
+If cancellation or an integration callback stops the patch after an
+instruction completed and before another instruction became active:
+
+```text
+apply_patch stopped after instruction 3.
+```
+
+Completed instruction effects remain listed normally.
+
+## TUI
+
+The TUI retains its aggregate visual summary. It follows that summary with
+`Patch instruction results:` and every instruction row under the same
+conditional rule as model feedback.
+
+Collapsed rendering keeps each row concise:
+
+```text
+• Edited 2 files (+3 -1)
+
+Patch instruction results:
+1. [APPLIED] Update a.txt
+2. [NO CHANGE] Delete missing.txt — Path already absent.
+3. [FAILED] Update & Move source.txt → destination.txt — Created destination.txt; source.txt remains; The updated content was written to the destination, but removing the source failed; The file at destination.txt contains the requested content byte-for-byte despite the reported error.
+4. [NOT RUN] Update other.txt — Instruction 3 failed.
+```
+
+Expanded rendering nests these details beneath the relevant instruction:
+
+- applied textual diffs;
+- non-obvious filesystem effects;
+- final-state verification;
+- useful system-error details.
+
+Partial effects are not rendered as detached successful operations. Failed
+matching feedback does not repeat old or replacement patch blocks.
+
+When the default-off `applyPatchDebug` setting is enabled, the title becomes
+`apply_patch (debug)` and a completed collapsed result renders the exact text
+content returned to the model without an extra renderer-only heading. Expanding
+the same result continues to render the normal aggregate visual summary,
+instruction rows, and complete diffs. Partial tool-call previews are unchanged
+because they do not yet have final model-facing feedback.
+
+## Canonical data
+
+Model and TUI formatters consume one canonical instruction-result structure:
+
+```ts
+type InstructionResult = {
+  index: number;
+  operation: OperationLabel;
+  status: "applied" | "planned" | "no-change" | "skipped" | "failed" | "not-run";
+  reason?: InstructionReason;
+  effects: InstructionEffect[];
+  finalStates: FinalPathState[];
+  error?: InstructionError;
+  relatedInstructions?: number[];
+};
+```
+
+Replacement effects are complete:
+
+```ts
+type FileEntry = { entryType: "regular-file" } | { entryType: "symlink"; target: string };
+
+type ReplacementEffect = {
+  kind: "replaced";
+  path: string;
+  previousEntry: FileEntry;
+  replacementEntry: FileEntry;
+};
+```
+
+Only presentation differs:
+
+- styled status labels;
+- path presentation;
+- ASCII versus Unicode move arrows and separators;
+- expanded TUI diffs;
+- syntax highlighting; and
+- expanded system-error details.
+
+Semantic wording and facts remain shared.
+
+## Required tests
+
+### Completeness
+
+- model and TUI results with 1, 8, 9, 100, and 500 instructions;
+- every instruction appears whenever the ledger is included;
+- all-applied instructions without feedback omit the ledger;
+- one applied instruction with feedback includes every instruction;
+- no omitted-count message exists.
+
+### Summary and attribution
+
+- successful A/M/D summary remains;
+- all-no-change summary remains;
+- failed summary lists confirmed changed paths;
+- effects from failed instructions appear under that instruction;
+- an unverified final state does not produce `No files were changed.`.
+
+### Terminology
+
+Generated model and TUI feedback does not contain:
+
+- `Committed prefix`
+- `exact`
+- `inexact`
+- `installed`
+- `dead`
+- `dominated`
+- the heading `Instructions:`
+
+When the conditional ledger is present, its heading is
+`Patch instruction results:`.
+
+### Deterministic failures
+
+Cover:
+
+- patch-level input and format errors appear once;
+- cancelled execution, no-owner stops, setup failures, rejected requests, and
+  patch-format failures use distinct reasons;
+- every replacement records both entry types and every resulting symlink
+  records its raw target;
+- unchanged after failure;
+- requested content present after a reported write failure;
+- different content after failure;
+- same-content entry replacement after failure;
+- entry-type change after failure;
+- unchanged planned content from an earlier instruction;
+- final state not verified;
+- a confirmed partial move remains in the changed-file summary when later
+  inspection cannot verify the destination;
+- destination created while source remains;
+- destination replaced while source remains;
+- destination deleted and replacement absent;
+- parents created without a false no-change statement;
+- temporary entry remains without a false no-change statement; and
+- post-operation verification failure.
+
+Strict mismatch coverage verifies the source is unchanged and the original
+context or expected-lines error is reported.
+
+### No patch-content repetition
+
+Model feedback does not reproduce old or replacement hunk blocks.
+
+### Model/TUI parity
+
+Every fixture has the same statuses, concise reasons, filesystem effects,
+final path states, and instruction attribution in model and TUI output.
+
+With `applyPatchDebug` enabled:
+
+- a completed collapsed result contains the complete model-facing text;
+- a completed expanded result contains the normal visual summary and diffs;
+- changing the setting updates existing result components; and
+- partial previews remain unchanged.
+
+## Documentation
+
+Implementation changes must also update:
+
+- `APPLY_PATCH_SEMANTIC_OPERATIONS.md`
+- `README.md`
+- `CHANGELOG.md`

@@ -1,0 +1,217 @@
+import { isString } from "./value-contracts.ts";
+import { readFileSync } from "node:fs";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
+import {
+  approximateTokens,
+  isObject,
+  truncateMiddleWithTokenBudget,
+  type JsonRecord,
+  type JsonValue,
+} from "./codex-protocol.ts";
+import { requestCodexJson, type CodexJsonRequestOptions } from "./codex-transport.ts";
+import type { WebSearchMode } from "./config.ts";
+import type { ConfigResolver } from "./config-context.ts";
+import type { CodexToolBackgroundResolver } from "./codex-tool-surface.ts";
+import { DEFAULT_CONFIG } from "./config.ts";
+import { WEB_RUN_TOOL_NAME } from "./namespaced-tools.ts";
+import {
+  PI_INPUT_MESSAGE_ITEM_SCHEMA,
+  RESPONSES_INPUT_MESSAGE_ITEM_SCHEMA,
+  RESPONSES_OUTPUT_MESSAGE_ITEM_SCHEMA,
+  type ResponsesInputItem,
+  type ResponsesInputMessageItem,
+  type ResponsesOutputMessageItem,
+  type ResponsesOutputTextContent,
+} from "./responses-item-schema.ts";
+import { isCodexModel } from "./request-options.ts";
+import type {
+  CodexToolExecutionContext,
+  ToolDefinitionWithContext,
+} from "./tool-definition-contract.ts";
+import { codexToolAuthentication, codexToolHistory } from "./tool-runtime.ts";
+import { renderWebRunCall, renderWebRunResult, type WebRunDetails } from "./web-run-render.ts";
+import { WEB_RUN_PARAMETERS } from "./web-run-schema.ts";
+
+const SEARCH_ENDPOINT = "alpha/search";
+const SEARCH_OUTPUT_TOKEN_BUDGET = 2_500;
+const ASSISTANT_CONTEXT_TOKEN_BUDGET = 1_000;
+
+const WEB_RUN_DESCRIPTION = readFileSync(
+  new URL("./web-run-description.txt", import.meta.url),
+  "utf8",
+);
+
+export type WebRunTool = ToolDefinitionWithContext<
+  typeof WEB_RUN_PARAMETERS,
+  WebRunDetails,
+  Record<string, never>,
+  CodexToolExecutionContext
+>;
+export type WebRunApi = Pick<ExtensionAPI, "getAllTools"> & {
+  registerTool: (tool: WebRunTool) => void;
+};
+
+export type { WebRunDetails } from "./web-run-render.ts";
+
+type JsonRequester = (
+  model: Model<Api>,
+  path: string,
+  body: JsonRecord,
+  options: CodexJsonRequestOptions,
+) => Promise<JsonValue>;
+
+function visibleMessage(
+  item: ResponsesInputItem,
+): ResponsesInputMessageItem | ResponsesOutputMessageItem | undefined {
+  if (Value.Check(RESPONSES_OUTPUT_MESSAGE_ITEM_SCHEMA, item)) {
+    const content = item.content.flatMap((part) =>
+      part.type === "output_text" ? [{ type: "output_text" as const, text: part.text }] : [],
+    );
+    return content.length > 0 ? { type: "message", role: "assistant", content } : undefined;
+  }
+  if (
+    !Value.Check(PI_INPUT_MESSAGE_ITEM_SCHEMA, item) &&
+    !Value.Check(RESPONSES_INPUT_MESSAGE_ITEM_SCHEMA, item)
+  ) {
+    return undefined;
+  }
+  if (item.role === "user" && Array.isArray(item.content)) {
+    const content = item.content.flatMap((part) =>
+      isObject(part) && part.type === "input_text" && isString(part.text)
+        ? [{ type: "input_text" as const, text: part.text }]
+        : [],
+    );
+    return content.length > 0 ? { type: "message", role: "user", content } : undefined;
+  }
+  return undefined;
+}
+
+function truncateAssistantMessages(
+  messages: Array<ResponsesInputMessageItem | ResponsesOutputMessageItem>,
+): Array<ResponsesInputMessageItem | ResponsesOutputMessageItem> {
+  let remaining = ASSISTANT_CONTEXT_TOKEN_BUDGET;
+  const result: Array<ResponsesInputMessageItem | ResponsesOutputMessageItem> = [];
+
+  for (const message of messages) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+      result.push(message);
+      continue;
+    }
+
+    const content: ResponsesOutputTextContent[] = [];
+    for (const part of message.content) {
+      if (part.type !== "output_text" || remaining === 0) continue;
+      const tokens = approximateTokens(part.text);
+      if (tokens <= remaining) {
+        content.push(part);
+        remaining -= tokens;
+      } else {
+        content.push({
+          ...part,
+          text: truncateMiddleWithTokenBudget(part.text, remaining),
+        });
+        remaining = 0;
+      }
+    }
+    if (content.length > 0) {
+      result.push({ ...message, content });
+    }
+  }
+  return result;
+}
+
+/** Build the same two-user-turn text tail used by standalone Codex search. */
+export function recentSearchInput(
+  history: readonly ResponsesInputItem[],
+): Array<ResponsesInputMessageItem | ResponsesOutputMessageItem> | undefined {
+  const visible = history
+    .map(visibleMessage)
+    .filter((item): item is ResponsesInputMessageItem | ResponsesOutputMessageItem =>
+      Boolean(item),
+    );
+  const latestUser = visible.findLastIndex((item) => item.role === "user");
+  if (latestUser < 0) return undefined;
+
+  const throughLatestUser = visible.slice(0, latestUser + 1);
+  const userIndexes = throughLatestUser
+    .map((item, index) => (item.role === "user" ? index : -1))
+    .filter((index) => index >= 0);
+  const start = userIndexes.at(-2) ?? userIndexes.at(-1);
+  if (start === undefined) return undefined;
+  return truncateAssistantMessages(throughLatestUser.slice(start));
+}
+
+function externalWebAccess(mode: WebSearchMode): boolean | "indexed" {
+  if (mode === "live") return true;
+  if (mode === "indexed") return "indexed";
+  return false;
+}
+
+export default function registerWebRun(
+  pi: WebRunApi,
+  resolveConfig: ConfigResolver,
+  resolveToolBackground: CodexToolBackgroundResolver = () => DEFAULT_CONFIG.toolBackground,
+  requestJson: JsonRequester = requestCodexJson,
+): void {
+  pi.registerTool({
+    name: WEB_RUN_TOOL_NAME,
+    label: WEB_RUN_TOOL_NAME,
+    description: WEB_RUN_DESCRIPTION,
+    promptSnippet: "Search and browse the internet",
+    promptGuidelines: [
+      "Use `web.run` when the user explicitly asks to browse or when answering requires current, niche, high-stakes, or precisely sourced information, including recommendations that may change over time.",
+      'Batch independent `web.run` operations in one call, pass only required parameters, and keep `search_query` to at most four queries; use `response_length: "medium"` or `"long"` when sending four.',
+      "For technical research, prefer primary sources; for OpenAI product questions, inspect local code first and restrict fallback browsing to official OpenAI sites.",
+      "Cite supported claims with direct Markdown links near the relevant text, never expose internal reference IDs, and respect the description's quotation and source word limits.",
+    ],
+    parameters: WEB_RUN_PARAMETERS,
+    executionMode: "parallel",
+    renderShell: "self",
+    // Searching and browsing change nothing locally but reach the open web.
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const model = ctx.model;
+      if (!isCodexModel(model)) {
+        throw new Error("web.run is available only with an OpenAI Codex model.");
+      }
+      const authentication = await codexToolAuthentication(ctx, model);
+      const config = resolveConfig(ctx);
+      const history = codexToolHistory(ctx, model, config.imageDetail);
+      const input = recentSearchInput(history);
+      const body: JsonRecord = {
+        id: ctx.sessionManager.getSessionId(),
+        model: model.id,
+        commands: params,
+        settings: {
+          allowed_callers: ["direct"],
+          external_web_access: externalWebAccess(config.webSearch),
+        },
+        max_output_tokens: SEARCH_OUTPUT_TOKEN_BUDGET,
+      };
+      if (input) body.input = input;
+      const requestOptions: CodexJsonRequestOptions = { ...authentication };
+      if (signal) requestOptions.signal = signal;
+      const response = await requestJson(model, SEARCH_ENDPOINT, body, requestOptions);
+      if (!isObject(response) || !isString(response["output"])) {
+        throw new Error("OpenAI Codex returned an invalid standalone web-search response.");
+      }
+      const results = Array.isArray(response["results"])
+        ? response["results"].map((result) => structuredClone(result))
+        : undefined;
+      const details: WebRunDetails = {};
+      if (results) details.results = results;
+      return {
+        content: [{ type: "text", text: response["output"] }],
+        details,
+      };
+    },
+    renderCall(args, theme, context) {
+      return renderWebRunCall(args, theme, context, resolveToolBackground);
+    },
+    renderResult(result, options, theme, context) {
+      return renderWebRunResult(result, options, theme, context, resolveToolBackground);
+    },
+  });
+}

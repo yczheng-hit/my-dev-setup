@@ -1,0 +1,14 @@
+diff --color -ru pa/extensions/openai-codex-compat/responses-tool-schema.ts pb/extensions/openai-codex-compat/responses-tool-schema.ts
+--- a/extensions/openai-codex-compat/responses-tool-schema.ts	2026-10-28 11:47:33
++++ b/extensions/openai-codex-compat/responses-tool-schema.ts	2026-10-28 11:47:33
+@@ -52,7 +52,9 @@
+     description: { type: "string" },
+     tools: {
+       type: "array",
+-      items: RESPONSES_FUNCTION_TOOL_DEFINITION_SCHEMA,
++      items: {
++        anyOf: [RESPONSES_FUNCTION_TOOL_DEFINITION_SCHEMA, RESPONSES_CUSTOM_TOOL_DEFINITION_SCHEMA],
++      },
+     },
+   },
+   required: ["type", "name", "description", "tools"],

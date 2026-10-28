@@ -1,0 +1,346 @@
+import type {
+  BeforeProviderHeadersEvent,
+  CompactionResult,
+  ContextWithSystemEvent,
+  ExtensionAPI,
+  ExtensionContext,
+  SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
+import {
+  getCurrentTools,
+  type Api,
+  type Message,
+  type Model,
+  type OpenAICodexResponsesOptions,
+  type ProviderHeaders,
+} from "@earendil-works/pi-ai";
+import { addRemoteCompactionFeature, type JsonRecord } from "./codex-protocol.ts";
+import { CODEX_API, CODEX_PROVIDER } from "./codex-identifiers.ts";
+import {
+  branchInstructions,
+  branchTranscript,
+  providerHistory,
+  remoteCompactionMarkerSummary,
+  requestGrammarToolInputProperties,
+  requestTools,
+  responsesCompatibility,
+  searchCheckpoint,
+  type GrammarToolInputProperties,
+} from "./compaction-checkpoint.ts";
+import { APPLY_PATCH_INPUT_PROPERTY, APPLY_PATCH_TOOL_NAME } from "./apply-patch.ts";
+import { resolveFileConfig, type ConfigResolver } from "./config-context.ts";
+import type { CodexProviderRuntime } from "./codex-provider.ts";
+import { responsesCompactionV2Metadata, type CodexCompactionMetadata } from "./codex-metadata.ts";
+import { errorFromThrown } from "./error-from-thrown.ts";
+import {
+  CodexApiError,
+  CodexHttpError,
+  CodexProtocolError,
+  WebSocketCloseError,
+} from "./codex-transport/codex-transport-errors.ts";
+import { latestRequestTools } from "./request-tools-entry.ts";
+import { selectedRegistryModel } from "./model-context.ts";
+
+export type RemoteCompactionContext = Parameters<ConfigResolver>[0] & {
+  getContextUsage: ExtensionContext["getContextUsage"];
+  getSystemPrompt: ExtensionContext["getSystemPrompt"];
+  hasUI: boolean;
+  model: Model<Api> | undefined;
+  modelRegistry: Pick<ExtensionContext["modelRegistry"], "getApiKeyAndHeaders">;
+  sessionManager: Pick<
+    ExtensionContext["sessionManager"],
+    "getBranch" | "getLeafId" | "getSessionId"
+  >;
+  ui: Pick<ExtensionContext["ui"], "notify">;
+};
+
+export type RemoteCompactionLifecycleHandler = (
+  event: { type?: string },
+  ctx: RemoteCompactionContext,
+) => void;
+
+export type RemoteCompactionContextHandler = (
+  event: Pick<ContextWithSystemEvent, "messages">,
+  ctx: RemoteCompactionContext,
+) => { messages: ContextWithSystemEvent["messages"] } | undefined;
+
+export type RemoteCompactionHeadersHandler = (
+  event: Pick<BeforeProviderHeadersEvent, "headers">,
+  ctx: RemoteCompactionContext,
+) => void;
+
+type RemoteCompactionHookResult =
+  | {
+      cancel: true;
+      compaction?: never;
+    }
+  | {
+      cancel?: never;
+      compaction: CompactionResult;
+    };
+
+export type RemoteCompactionHookHandler = (
+  event: {
+    branchEntries: SessionBeforeCompactEvent["branchEntries"];
+    customInstructions?: string;
+    preparation: Pick<
+      SessionBeforeCompactEvent["preparation"],
+      "firstKeptEntryId" | "tokensBefore"
+    >;
+    reason: SessionBeforeCompactEvent["reason"];
+    signal: AbortSignal;
+    willRetry: boolean;
+  },
+  ctx: RemoteCompactionContext,
+) => Promise<RemoteCompactionHookResult | undefined>;
+
+/**
+ * Shared `pi.events` channel that names why an extension cancelled a compaction. Pi reports only
+ * "Compaction cancelled", so an extension that requested the compaction, such as
+ * pi-compact-assistant, reads the reason here. The payload is `{ source, reason }`, where `reason`
+ * is a complete sentence without provider error text.
+ */
+export const COMPACTION_CANCELLED_CHANNEL = "compaction:cancelled";
+
+const IDENTIFIER = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * Why native compaction failed, for other extensions and the model. Provider error messages,
+ * WebSocket close reasons, and JSON parser errors can quote provider text, so only statuses, codes,
+ * and the kind of failure are named.
+ */
+export function cancellationReason(error: unknown): string {
+  const failed = "OpenAI Codex native compaction failed";
+  let details: string[] = [];
+  if (error instanceof CodexProtocolError) {
+    details = ["invalid Codex response"];
+  } else if (error instanceof CodexApiError) {
+    details = [
+      ...(error.status === undefined ? [] : [`HTTP ${String(error.status)}`]),
+      ...(error.code !== undefined && IDENTIFIER.test(error.code) ? [error.code] : []),
+    ];
+  } else if (error instanceof CodexHttpError) {
+    details = [`HTTP ${String(error.status)}`];
+  } else if (error instanceof WebSocketCloseError && error.code !== undefined) {
+    details = [`WebSocket close code ${String(error.code)}`];
+  }
+  const named = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return `${failed}${named}. History was preserved.`;
+}
+
+export type RemoteCompactionApi = {
+  getActiveTools: () => string[];
+  /** Publish why native compaction was cancelled on the shared compaction-cancelled channel. */
+  publishCancellation: (reason: string) => void;
+  onBeforeProviderHeaders: (handler: RemoteCompactionHeadersHandler) => void;
+  onContext: (handler: RemoteCompactionContextHandler) => void;
+  onSessionBeforeCompact: (handler: RemoteCompactionHookHandler) => void;
+  onSessionShutdown: (handler: RemoteCompactionLifecycleHandler) => void;
+  onSessionStart: (handler: RemoteCompactionLifecycleHandler) => void;
+};
+
+export function remoteCompactionApi(pi: ExtensionAPI): RemoteCompactionApi {
+  const context = (ctx: ExtensionContext): RemoteCompactionContext => {
+    return {
+      cwd: ctx.cwd,
+      getContextUsage: () => ctx.getContextUsage(),
+      getSystemPrompt: () => ctx.getSystemPrompt(),
+      hasUI: ctx.hasUI,
+      isProjectTrusted: () => ctx.isProjectTrusted(),
+      model: selectedRegistryModel(ctx),
+      modelRegistry: ctx.modelRegistry,
+      sessionManager: ctx.sessionManager,
+      ui: ctx.ui,
+    };
+  };
+
+  return {
+    getActiveTools: () => pi.getActiveTools(),
+    publishCancellation: (reason) => {
+      pi.events.emit(COMPACTION_CANCELLED_CHANNEL, { source: "pi-openai-codex-compat", reason });
+    },
+    onBeforeProviderHeaders: (handler) =>
+      pi.on("before_provider_headers", (event, ctx) => handler(event, context(ctx))),
+    // The full-transcript event returns messages verbatim. A changed `context`
+    // result would fold every later system message into the leading one, so
+    // `instructions` would no longer be the branch's leading prompt and the
+    // inline developer items in `input` would repeat the folded updates.
+    onContext: (handler) =>
+      pi.on("context_with_system", (event, ctx) => handler(event, context(ctx))),
+    onSessionBeforeCompact: (handler) =>
+      pi.on("session_before_compact", (event, ctx) => handler(event, context(ctx))),
+    onSessionShutdown: (handler) =>
+      pi.on("session_shutdown", (event, ctx) => handler(event, context(ctx))),
+    onSessionStart: (handler) =>
+      pi.on("session_start", (event, ctx) => handler(event, context(ctx))),
+  };
+}
+
+function selectedCodexModel(model: Model<Api> | undefined): model is Model<typeof CODEX_API> {
+  return Boolean(model && model.provider === CODEX_PROVIDER && model.api === CODEX_API);
+}
+
+function appendFeatureHeader(headers: Record<string, string | null>): void {
+  const key = Object.keys(headers).find(
+    (header) => header.toLowerCase() === "x-codex-beta-features",
+  );
+  if (key) headers[key] = addRemoteCompactionFeature(headers[key]);
+  else headers["x-codex-beta-features"] = addRemoteCompactionFeature(undefined);
+}
+
+function featureHeaders(headers: ProviderHeaders | undefined): ProviderHeaders {
+  const result: ProviderHeaders = { ...headers };
+  appendFeatureHeader(result);
+  return result;
+}
+
+function instructionsForCompaction(systemPrompt: string, customInstructions?: string): string {
+  const custom = customInstructions?.trim();
+  return custom
+    ? `${systemPrompt}\n\nAdditional guidance for this compaction:\n${custom}`
+    : systemPrompt;
+}
+
+/**
+ * Grammar input properties for a branch without saved request tools. The next
+ * turn declares the transcript's tools plus the active ones. Sessions from
+ * before Pi recorded tool declarations declare none, so an active
+ * `apply_patch`, the only grammar tool Pi's tool registry can identify, is
+ * added as that turn would add it. Its replayed calls then keep their custom
+ * tool call and output types.
+ */
+function fallbackGrammarToolInputProperties(
+  model: Model<Api>,
+  transcript: readonly Message[],
+  activeNames: readonly string[],
+): GrammarToolInputProperties {
+  const properties = new Map(requestGrammarToolInputProperties(model, transcript));
+  if (
+    !properties.has(APPLY_PATCH_TOOL_NAME) &&
+    activeNames.includes(APPLY_PATCH_TOOL_NAME) &&
+    responsesCompatibility(model.compat).supportsOpenAIGrammarTools
+  ) {
+    properties.set(APPLY_PATCH_TOOL_NAME, APPLY_PATCH_INPUT_PROPERTY);
+  }
+  return properties;
+}
+
+function compactionMetadata(reason: SessionBeforeCompactEvent["reason"]): CodexCompactionMetadata {
+  switch (reason) {
+    case "manual":
+      return responsesCompactionV2Metadata("manual", "user_requested", "standalone_turn");
+    case "threshold":
+      return responsesCompactionV2Metadata("auto", "context_limit", "pre_turn");
+    case "overflow":
+      return responsesCompactionV2Metadata("auto", "context_limit", "mid_turn");
+  }
+}
+
+export default function registerRemoteCompaction(
+  pi: RemoteCompactionApi,
+  runtime: CodexProviderRuntime,
+  resolveConfig: ConfigResolver = resolveFileConfig,
+): void {
+  pi.onSessionStart((_event, ctx) => runtime.captureScope(ctx));
+  pi.onSessionShutdown((_event, ctx) => {
+    runtime.clearSession(ctx.sessionManager.getSessionId());
+  });
+
+  pi.onContext((event, ctx) => {
+    runtime.captureScope(ctx);
+    const checkpoint = searchCheckpoint(ctx.sessionManager.getBranch());
+    if (checkpoint.kind === "absent") return undefined;
+    return {
+      messages: event.messages.filter((message) => message.role !== "compactionSummary"),
+    };
+  });
+
+  pi.onBeforeProviderHeaders((event, ctx) => {
+    if (selectedCodexModel(ctx.model)) appendFeatureHeader(event.headers);
+  });
+
+  pi.onSessionBeforeCompact(async (event, ctx) => {
+    if (!selectedCodexModel(ctx.model)) return undefined;
+    if (event.signal.aborted) return { cancel: true };
+    runtime.captureScope(ctx);
+
+    try {
+      const authentication = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+      if (!authentication.ok) throw new Error(authentication.error);
+      if (!authentication.apiKey) throw new Error("OpenAI Codex authentication is unavailable.");
+
+      const sessionId = ctx.sessionManager.getSessionId();
+      const cached = runtime.latestTemplate(sessionId);
+      const matching = cached?.modelId === ctx.model.id ? cached : undefined;
+      // Declare the tools the branch's latest request to this model sent, as
+      // saved in the session. The transcript also lists tools Pi leaves out of
+      // requests (codemode `only` mode), and other extensions can edit them.
+      // Sessions without a saved entry, such as those older versions wrote,
+      // declare the transcript's current tools.
+      const saved = latestRequestTools(event.branchEntries, ctx.model.id);
+      const transcript = saved ? undefined : branchTranscript(event.branchEntries);
+      const config = resolveConfig(ctx);
+      const grammarToolInputProperties =
+        saved?.grammarToolInputProperties ??
+        fallbackGrammarToolInputProperties(ctx.model, transcript ?? [], pi.getActiveTools());
+      const history = providerHistory({
+        branch: event.branchEntries,
+        wireModel: ctx.model,
+        grammarToolInputProperties,
+        imageDetail: config.imageDetail,
+        recoverLatestOverflowPrefix: event.reason === "overflow" && event.willRetry,
+      });
+      const template: JsonRecord = {
+        ...matching?.payload,
+        tools: saved?.tools ?? requestTools(ctx.model, getCurrentTools(transcript ?? [])),
+      };
+      const requestOptions: OpenAICodexResponsesOptions = {
+        ...matching?.requestOptions,
+        apiKey: authentication.apiKey,
+        headers: featureHeaders(authentication.headers),
+        sessionId,
+        signal: event.signal,
+      };
+      const compacted = await runtime.compact({
+        model: ctx.model,
+        requestOptions,
+        history,
+        // Turn requests send the branch's leading system message as `instructions`
+        // and carry later system messages inline in the history. A branch without
+        // a leading system message (a pre-0.86 session) falls back to Pi's
+        // current prompt so the compaction still sees instructions.
+        instructions: instructionsForCompaction(
+          branchInstructions(ctx.model, event.branchEntries) || ctx.getSystemPrompt(),
+          event.customInstructions,
+        ),
+        grammarToolInputProperties,
+        template,
+        priority: config.fastMode,
+        compactionMetadata: compactionMetadata(event.reason),
+        compactionDecision: {
+          reason: event.reason,
+          willRetry: event.willRetry,
+        },
+      });
+
+      const compaction: CompactionResult = {
+        summary: remoteCompactionMarkerSummary(),
+        firstKeptEntryId: event.preparation.firstKeptEntryId,
+        tokensBefore: event.preparation.tokensBefore,
+        details: compacted.checkpoint,
+      };
+      if (compacted.usage) compaction.usage = compacted.usage;
+      return { compaction };
+    } catch (error) {
+      if (!event.signal.aborted && ctx.hasUI) {
+        const failure = errorFromThrown(
+          error,
+          "OpenAI Codex native compaction failed with a non-Error value.",
+        );
+        ctx.ui.notify(`OpenAI Codex native compaction failed: ${failure.message}`, "error");
+      }
+      if (!event.signal.aborted) pi.publishCancellation(cancellationReason(error));
+      return { cancel: true };
+    }
+  });
+}

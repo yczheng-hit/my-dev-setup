@@ -767,6 +767,35 @@ describe("permission-modes extension: tool_call gate", () => {
       expect(pi.activeTools).toEqual(before);
     });
   });
+  describe("Codex-style tools (apply_patch / exec_command)", () => {
+    const blockCtx = () =>
+      pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async <T,>() => ("Block") as T } as any });
+    const patch = (file: string) =>
+      `*** Begin Patch\n*** Update File: ${file}\n@@\n-a\n+b\n*** End Patch\n`;
+    it("default mode asks before apply_patch edits and exec_command shell commands", async () => {
+      await switchMode("default");
+      expect(await pi.simulateToolCall("apply_patch", { patch: patch("src/foo.ts") }, blockCtx())).toMatchObject({ block: true });
+      expect(await pi.simulateToolCall("exec_command", { cmd: "npm test" }, blockCtx())).toMatchObject({ block: true });
+    });
+    it("exec_command keeps the read-only allowlist", async () => {
+      await switchMode("default");
+      expect(await pi.simulateToolCall("exec_command", { cmd: "ls -la" }, blockCtx())).toBeUndefined();
+    });
+    it("acceptEdits auto-approves apply_patch inside cwd", async () => {
+      await switchMode("acceptEdits");
+      expect(await pi.simulateToolCall("apply_patch", { patch: patch("src/foo.ts") })).toBeUndefined();
+    });
+    it("bypass still prompts when apply_patch touches a sensitive file", async () => {
+      await switchMode("bypassPermissions");
+      expect(await pi.simulateToolCall("apply_patch", { patch: patch("src/foo.ts") })).toBeUndefined();
+      expect(await pi.simulateToolCall("apply_patch", { patch: patch("/home/user/.gitconfig") }, blockCtx())).toMatchObject({ block: true });
+    });
+    it("plan mode does not let apply_patch edit project files", async () => {
+      await switchMode("plan");
+      const result = await pi.simulateToolCall("apply_patch", { patch: patch("src/foo.ts") }, blockCtx());
+      expect(result).toMatchObject({ block: true });
+    });
+  });
   describe("bypassPermissions mode", () => {
     it("auto-approves edit inside cwd", async () => {
       await switchMode("bypassPermissions");

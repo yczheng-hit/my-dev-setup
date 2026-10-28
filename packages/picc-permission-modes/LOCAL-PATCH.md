@@ -162,3 +162,25 @@ asked for approval on ordinary paths: `grep`/`read` with path `.`, `src/.`, `not
 Full suite in an isolated copy with Pi 1.4.0 host dependencies: **541 passed, 6 skipped, 0 failed**.
 Patch regenerated and verified: npm original (CRLF stripped) + patch equals this directory's runtime
 files. Pi 1.4.0 loads all 26 extensions with no errors.
+
+## Codex-style tools go through the same permission gate (2026-10-28)
+
+**Symptom.** With GPT on the `openai-codex` provider, `pi-openai-codex-compat` replaces `edit`/`write`/`bash`
+with `apply_patch`, `exec_command` and `write_stdin`. The gate only knew `bash`/`edit`/`write`, so the new
+tools fell through to "no-path tool" → allow: plan, default and acceptEdits mode no longer stopped edits or
+shell commands, and bypass mode skipped its sensitive-path (D4) check.
+
+**Change.**
+- New `codexTools.ts` with `expandCodexToolCall`: `exec_command` (`cmd`) and `shell_command` (`command`) become a
+  `bash` call; `apply_patch` is parsed into one `write` (Add File) or `edit` (Update/Delete File, plus the
+  `Move to` target) per file with its path; other tools are passed through unchanged. An unparseable patch is
+  gated as an edit with no path, so it asks (or is denied without UI) instead of being allowed.
+- `index.ts`: the `tool_call` handler now loops over the expanded calls and runs the existing gate on each
+  (`gateToolCall`, the old handler body with `toolCallId` passed in); the first block wins. Claude's tools are
+  unaffected: `expandCodexToolCall` returns them as-is.
+- `write_stdin` is left ungated: it only feeds a process the user already approved.
+
+**Tests.** `codexTools.test.ts` (parser/mapping) and a "Codex-style tools" block in `index.test.ts` (default asks,
+read-only `exec_command` allowed, acceptEdits allows in cwd, bypass still asks on `~/.gitconfig`, plan mode
+blocks project edits). Full suite: **550 passed, 6 skipped, 0 failed**. Patch regenerated and verified:
+npm original (CRLF stripped) + patch equals this directory's runtime files.

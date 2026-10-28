@@ -50,6 +50,22 @@ install_file() {
   log "$label    ${dst/#$HOME/~}"
 }
 
+# merge_json_file <src> <dst>: keys in the repo file win, keys only present on
+# this machine (e.g. set through a plugin's own settings UI) are kept.
+merge_json_file() {
+  local src="$1" dst="$2" tmp
+  tmp="$(mktemp)"
+  node -e '
+    const fs = require("fs");
+    const [src, dst, out] = process.argv.slice(1);
+    const desired = JSON.parse(fs.readFileSync(src, "utf8"));
+    const current = fs.existsSync(dst) ? JSON.parse(fs.readFileSync(dst, "utf8")) : {};
+    fs.writeFileSync(out, JSON.stringify({ ...current, ...desired }, null, 2) + "\n");
+  ' "$src" "$dst" "$tmp"
+  install_file "$tmp" "$dst"
+  rm -f "$tmp"
+}
+
 # ---------------------------------------------------------------- preflight
 step "Preflight"
 missing=0
@@ -156,6 +172,12 @@ for theme in "$REPO"/pi/themes/*.json; do
   install_file "$theme" "$PI_DIR/themes/$(basename "$theme")"
 done
 install_file "$REPO/pi/permissions.json" "$(dirname "$PI_DIR")/permissions.json"
+
+# GPT/Codex harness: pi-openai-codex-compat reads $PI_DIR/openai-codex-compat.json;
+# pi-hashline-edit-pro is switched off for Codex models, which edit through apply_patch.
+merge_json_file "$REPO/pi/openai-codex-compat.json" "$PI_DIR/openai-codex-compat.json"
+hashline_dir="${PI_HASHLINE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/pi-hashline-edit-pro}"
+merge_json_file "$REPO/pi/pi-hashline-edit-pro.json" "$hashline_dir/config.json"
 
 # Extensions and per-extension config files, mirrored into $PI_DIR/extensions.
 (cd "$REPO/pi/extensions" && find . -type f) | sort | while read -r rel; do

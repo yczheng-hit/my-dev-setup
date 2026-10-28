@@ -1,0 +1,16 @@
+{
+  "name": "pi-gpt-codex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex-style system prompt and output hints for GPT models in pi; other models are untouched",
+  "pi": {
+    "extensions": ["./extensions/index.ts"]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
