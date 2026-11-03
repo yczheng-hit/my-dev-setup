@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One explicit machine setup/update entry; safe preparation remains available inside Pi.
+# Validate and update installed files directly; the current Pi is not restarted.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mode=apply

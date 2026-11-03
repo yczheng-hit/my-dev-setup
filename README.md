@@ -8,13 +8,9 @@
 
 > 按仓库说明配置或更新我的 Pi 环境，保留当前会话。
 
-agent 按 [AGENTS.md](AGENTS.md) 执行检查、下载和验证，**不需要你另开终端、手动运行脚本或为了更新退出 Pi**。
+agent 按 [AGENTS.md](AGENTS.md) 检查、临时验证并**直接更新磁盘安装与配置**。当前 Pi 不自动重启，新版核心下次正常启动生效。
 
-- **Pi 正在运行**：新版组合保存为持久候选，当前会话继续使用现有版本；下次正常启动、且没有其他旧 Pi 进程时自动激活。
-- **Pi 未运行**：直接安装并配置。
-- **已经是目标版本与配置**：验证后保持不变，不重复排队。
-
-核心与第三方插件整套切换，不把 `/reload` 当成 Pi 核心热升级；不自动 kill、重启或 reload 当前会话。安装沿用原包管理器及 Node prefix，不另装第二份 Pi。
+没有候选队列、自动启动钩子或维护／版本锁文件。沿用原包管理器及 Node prefix，不另装第二份 Pi；保留基本备份与自定义文件保护。不要并发运行维护，也不要在更新后自动 `/reload`。旧会话仍可能延迟加载新版插件或接触新版共享数据，这不是完全隔离的热更新。
 
 需要 **macOS/Linux、git、Node >=22.19/npm、Herdr**；monitor 另需 Python >=3.11。Node、Herdr 和系统软件不自动升级。完整流程、安装渠道和异常处理见 [自动维护](docs/maintenance.md)。
 
@@ -23,7 +19,7 @@ agent 按 [AGENTS.md](AGENTS.md) 执行检查、下载和验证，**不需要你
 这是个人配置，不是通用安全默认：
 
 - 权限默认为 **`bypassPermissions`**，计划批准默认选项也是 bypass。需要更保守的模式时，先修改 [权限配置](pi/extensions/picc-permission-modes/config.json)。
-- 配置包含默认模型、模型白名单及 SSH/SCP allowlist，部署到其他机器前应检查；**不包含账号或 API key**。
+- 配置包含默认模型、模型白名单及通用权限模板，首次部署前应检查。更新保留本机默认模型、思考级别和编辑器；已有权限文件由本机管理，不自动覆盖。**不包含账号或 API key**。
 - 不读写凭据、真实 session 或聊天日志，不清全局缓存；包安装及 hashline 数据备份只保存在本机。
 
 ## 主要功能
@@ -53,7 +49,7 @@ monitor 默认只观察。显式开启自动确认后是界面识别，**不是�
 | 自有扩展与适配器 | 使用 `packages/` 中的代码，与新版远程依赖一起验证 |
 | 自有独立工具 | BTW、monitor 按仓库固定 commit 初始化；已有不同版本或本地修改保留，不自动 reset/merge |
 
-[maintenance.lock.json](maintenance.lock.json) 记录成功验证的直接依赖版本和完整性，**不是完整间接依赖锁，也不是本机已安装状态**。本机状态看维护收据；不要用宽泛的 `pi update --extensions` 替代分类型维护。
+每次维护重新查询远程版本，同一次操作安装刚验证的精确版本；不保存仓库版本锁文件。实际版本记录在本机 settings 和备份收据。不要用宽泛的 `pi update --extensions` 替代分类型维护。
 
 本地补丁记录在 [patches/](patches/)，修改补丁包时同步运行代码、测试和对应 patch。历史变更看 Git，不在 README 维护另一份版本流水。
 
@@ -62,13 +58,13 @@ monitor 默认只观察。显式开启自动确认后是界面识别，**不是�
 ```text
 AGENTS.md                 # agent 维护约定
 bootstrap.sh              # agent 调用的统一更新入口
-maintenance*.json         # 来源策略与已验证候选记录
+maintenance.json          # 插件分类与自有工具来源策略
 pi/                       # Pi 配置模板、主题、独立扩展
 herdr/                    # Herdr 配置模板
 packages/                 # 仓库维护的扩展、适配器与补丁包
 patches/                  # 相对已记录第三方基线的运行代码 patch
 tools/                    # 自有独立 checkout；monitor 为 submodule
-scripts/                  # 候选验证、启动钩子、部署事务与测试
+scripts/                  # 临时验证、直接更新、配置备份与测试
 monitor.sh                # 在已有 Herdr pane 中启动 monitor
 ```
 
@@ -79,15 +75,15 @@ monitor.sh                # 在已有 Herdr pane 中启动 monitor
 以下是 agent 使用的诊断入口，也可手动运行：
 
 ```sh
-node scripts/maintain.mjs status   # 本机 applied / queued / failed 收据
-./bootstrap.sh --check            # 只读查询最新版本、安装渠道和来源分类
-./bootstrap.sh --prepare          # 临时验证，不排队、不安装启动钩子
+node scripts/maintain.mjs status   # 最近一次本机维护收据
+./bootstrap.sh --check            # 只读查询版本、安装渠道和来源分类
+./bootstrap.sh --prepare          # 仅临时验证，不安装配置
 node scripts/check-pi-extensions.mjs .  # 已安装组合的隔离加载检查
 ```
 
-候选排队不等于当前会话已升级；`pi --version` 表示磁盘安装版本，不证明已有进程已切换。验证覆盖宿主补丁、完整扩展 factory/shutdown 和合成 SDK/UI 回归，**不替代真实 provider、OAuth 或完整 UI 验收**。
+`pi --version` 表示磁盘安装版本，不证明已有进程已切换。验证覆盖宿主补丁、完整扩展 factory/shutdown 和合成 SDK/UI 回归，**不替代真实 provider、OAuth 或完整 UI 验收**。
 
-配置使用 ownership 清单和 SHA-256 事务：保留自定义/修改过的代码，只清理哈希未变的旧受管资源。包安装与配置分别备份，不承诺整台机器的原子回滚。启动前发现候选过期会延期；安装中途失败会保留收据与备份，不强行启动混合版本。详见 [部署安全与恢复](docs/deployment-safety.md)。
+配置使用 ownership 清单和 SHA-256 检查：保留自定义/修改过的代码，只清理哈希未变的旧受管资源。包安装与配置分别备份，不使用锁、不支持并发维护，也不承诺整台机器原子回滚。失败会保留收据与备份，不自动重试。详见 [部署安全与恢复](docs/deployment-safety.md)。
 
 开发回归（`PI_HOST_DIR` 指向实际 Pi package 目录）：
 

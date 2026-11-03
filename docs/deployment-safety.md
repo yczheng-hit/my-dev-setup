@@ -1,10 +1,10 @@
 # 本地预检、部署清单与恢复
 
-这些脚本已实现并在临时目录验证；本轮没有运行真实 `setup.sh`、写入活动设置、修改活动 Pi 安装或 reload 用户会话。默认权限模式仍为 `bypassPermissions`。
+配置部署使用临时验证、ownership 清单和本机备份；默认权限模式仍为 `bypassPermissions`。
 
 本机 settings 可直接引用本地仓库 package；新启动或 `/reload` 可能直接加载当前源码。没有运行 setup 只说明未同步受管配置/宿主事务，不能据此断言新版代码未启用。宿主补丁仍须重启 Pi。
 
-新版自动更新入口见 [maintenance.md](maintenance.md)：`bootstrap.sh` 检查 Pi 安装渠道、只更新远程直用包、保留仓库 hack，并通过 `MY_DEV_SETUP_SETTINGS` 将已验证的精确来源交给部署脚本；有运行中 Pi 时由 agent 持久排队，下次安全自然启动自动激活，不要求手动退出或外部执行。现有配置 restore 不覆盖包管理器更新或 hashline 数据迁移。
+更新入口见 [maintenance.md](maintenance.md)：`bootstrap.sh` 检查原安装渠道、验证后直接更新远程包与配置，保留仓库 hack；不排队、不安装启动钩子、不使用维护或部署锁。当前 Pi 不自动重启，新版核心下次启动生效。配置 restore 不覆盖包管理器更新或 hashline 数据迁移。
 
 ## 只读扩展组合预检
 
@@ -28,10 +28,10 @@ PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent" \
 
 - `<agentDir>/.my-dev-setup-manifest.json` 保存仓库身份、目标路径、已部署 SHA-256 和类型，不包含会话正文或凭据。
 - 只清理 inventory 中已管理、位于 extensions/themes 根下且当前哈希仍等于上次部署的旧资源。修改过或未知资源保留；官方 `herdr-agent-state.ts` 不参与 stale prune。不会清空目标目录。
-- 遇到同路径的自定义扩展代码会保留并警告；已管理但被手动修改的扩展同样保留。仓库明确管理的 JSON 配置仍按原有规则更新/合并，更新前备份。未知本机顶层 JSON 键保留；packages 是整份替换，支持对象 `repo:` 和资源过滤。
+- 遇到同路径的自定义扩展代码会保留并警告；已管理但被手动修改的扩展同样保留。JSON 配置更新前备份；四个本机偏好键（provider/model/thinking/editor）保留，权限配置仅缺失时初始化，已有文件交给本机管理，不自动合并或覆盖。未知本机顶层 JSON 键保留；packages 是整份替换，支持对象 `repo:` 和资源过滤。
 - AGENTS-only 补丁同时校验 SDK 与 bundled CLI；custom legacy Claude rules 拒绝整个计划。不迁移或删除用户 `.claude` 文件。
-- 单个 agent-dir 的排他锁阻止同时部署/恢复；锁只在短暂同步文件事务期间存在。崩溃留下锁时，先核对锁内 PID，确认已退出后才手动移除；不自动抢锁或 kill。
-- 写入前校验全部旧哈希，逐项再验、临时文件原子 rename；普通 I/O 失败按已知哈希回滚，不覆盖并发人工修改。文件系统无法跨多个文件/目录保证 crash-atomic：断电/进程被杀仍需要检查 prepared 备份和锁，不能宣称绝对事务性。
+- 部署和恢复顺序执行，不使用锁文件；不要并发运行 setup、更新或恢复。
+- 写入前校验全部旧哈希，逐项再验、临时文件原子 rename；普通 I/O 失败按已知哈希回滚，不覆盖并发人工修改。文件系统无法跨多个文件/目录保证 crash-atomic：断电/进程被杀仍需要检查 prepared 备份，不能宣称绝对事务性。
 - 拒绝目标或祖先符号链接。自定义 agent-dir 的 scheduler/HUD 使用 Pi `getAgentDir()`；setup 不偷偷把官方 Herdr integration 安装到默认目录，需独立管理该集成。
 - 配置事务之外的工具 clone/npm 安装、plugin link、官方 integration、venv、Herdr reload 不在该恢复范围。此工具不是整个机器的快照。
 

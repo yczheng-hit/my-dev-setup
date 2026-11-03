@@ -139,13 +139,18 @@ test('object repo package filters survive expansion', () => {
   } finally { f.cleanup(); }
 });
 
-test('deployment lock refuses concurrent apply without touching targets', () => {
+test('deployment and restore create no lock files and ignore retired lock markers', () => {
   const f = fixture(); try {
     const plan = f.plan();
-    f.put(path.join(f.agentDir, '.my-dev-setup-deploy.lock'), 'another-live-writer');
-    assert.throws(() => f.apply(plan), /Deployment lock exists/);
-    assert.equal(fs.existsSync(path.join(f.agentDir, 'settings.json')), false);
-    assert.equal(fs.existsSync(path.join(f.root, 'backups')), false);
+    const marker = path.join(f.agentDir, '.my-dev-setup-deploy.lock');
+    f.put(marker, 'retired marker');
+    const backup = f.apply(plan);
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'retired marker');
+    restoreBackup(backup, true);
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'retired marker');
+    fs.unlinkSync(marker);
+    f.apply(f.plan());
+    assert.equal(fs.existsSync(marker), false);
   } finally { f.cleanup(); }
 });
 
@@ -203,4 +208,40 @@ test('restore I/O failure rolls completed restores forward to deployed state', (
     restoreBackup(backup, true);
     assert.equal(fs.readFileSync(path.join(f.agentDir, 'keybindings.json'), 'utf8'), '{"custom":true}');
   } finally { fs.renameSync = rename; f.cleanup(); }
+});
+for (const resolved of [false, true]) {
+  test(`local preferences survive ${resolved ? 'resolved update' : 'setup'}`, () => {
+    const f = fixture(); try {
+      const prefs = { defaultProvider: 'local-provider', defaultModel: 'local-model', defaultThinkingLevel: 'low', externalEditor: 'local-editor' };
+      const settingsPath = path.join(f.agentDir, 'settings.json');
+      f.put(settingsPath, JSON.stringify({ ...prefs, localOnly: true }));
+      let extra = {};
+      if (resolved) {
+        const settingsFile = path.join(f.root, 'resolved.json');
+        const source = JSON.parse(fs.readFileSync(path.join(f.repo, 'pi/settings.json')));
+        source.packages[3] = 'npm:pi-cc-extensions@1.0.13';
+        f.put(settingsFile, JSON.stringify(source)); extra = { settingsFile };
+      }
+      const before = fs.readFileSync(settingsPath), plan = f.plan(extra);
+      assert.deepEqual(fs.readFileSync(settingsPath), before);
+      f.apply(plan);
+      const settings = JSON.parse(fs.readFileSync(settingsPath));
+      for (const [key, value] of Object.entries(prefs)) assert.equal(settings[key], value);
+      assert.equal(settings.localOnly, true); assert.equal(Object.hasOwn(settings, 'modelThinkingLevels'), false);
+      if (resolved) assert.ok(settings.packages.includes('npm:pi-cc-extensions@1.0.13'));
+      assert.deepEqual(f.plan(extra).changes, []);
+    } finally { f.cleanup(); }
+  });
+}
+
+test('machine policy files are initialized once, not copied back or merged on later deployment', () => {
+  const f = fixture(); try {
+    f.apply(f.plan());
+    const files = [path.join(path.dirname(f.agentDir), 'permissions.json'), path.join(f.agentDir, 'extensions/picc-permission-modes/config.json')];
+    for (const file of files) fs.appendFileSync(file, '\n');
+    const before = files.map(file => fs.readFileSync(file));
+    assert.deepEqual(f.plan().changes, []);
+    assert.equal(f.apply(f.plan()), null);
+    for (const [index, file] of files.entries()) assert.deepEqual(fs.readFileSync(file), before[index]);
+  } finally { f.cleanup(); }
 });

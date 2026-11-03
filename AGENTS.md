@@ -1,9 +1,11 @@
-# Repository bootstrap and maintenance
+# Repository maintenance
 
-When given this repository URL to set up or refresh a machine, read `docs/maintenance.md`, then run `./bootstrap.sh` through the agent's shell tool. Keep the current Pi session running: a live session gets a durable validated candidate and automatic activation on the next safe normal Pi start. The user does not need an external terminal or a manual maintenance command.
+For setup or updates, read `docs/maintenance.md`, then run `./bootstrap.sh` through the agent's shell tool. It validates temporarily and updates installed files directly, even while Pi is running. Keep the current session running; the user uses the new runtime on their next normal start. There is no candidate queue, startup hook or maintenance/version lock. Run maintenance sequentially.
 
-At the start of each new maintenance session in this repository, run `node scripts/maintain.mjs check` once. Follow the user's requested scope: inspection-only requests stay read-only; setup/update requests use bootstrap without asking again for routine downloads, validation and configuration.
+At the start of a maintenance session, run `node scripts/maintain.mjs check` once. Inspection-only requests stay read-only.
 
-`maintenance.json` classifies packages. Remote npm/git entries track current releases. Repository-owned, adapter and patched packages use this checkout and its pinned owner-tool commits: do not query, merge, rebase or replace them from the original third-party upstream. Preserve working-tree edits. Pi upgrades preserve the detected original installer and Node prefix; an unsupported installation is a blocker, not permission to install a second Pi.
+`pi/settings.json` is the package list; `maintenance.json` classifies sources. Update ordinary remote packages to current releases. Repository-owned, adapter and patched packages use this checkout and pinned owner-tool commits; preserve local edits and do not merge or replace them from third-party upstream. Preserve Pi's original installer and Node prefix.
 
-Report separately: latest discovered, candidate validated, installed, queued for next safe start, and current runtime. Factory loading does not prove live provider/auth/UI correctness. Never commit credentials, sessions, machine-specific paths or downloaded dependencies. Commit/push only when requested. Search with ripgrep (`grep` tool or `rg`).
+Preserve local `defaultProvider`, `defaultModel`, `defaultThinkingLevel` and `externalEditor`. Existing machine permission files stay local and untouched; local agents handle any policy/schema changes explicitly. Never copy machine-specific rules into this repository.
+
+Report installed versions, validation results and whether a new Pi start is needed. Do not claim the current process was hot-upgraded. Direct updates can affect lazy-loaded plugins/shared data in old sessions; do not reload automatically. Keep basic backups and custom-file ownership protection. Never commit credentials, sessions, machine-specific paths or downloaded dependencies. Commit/push only when requested. Search with ripgrep.

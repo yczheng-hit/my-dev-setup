@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// AI/bootstrap entry: remote latest, repository-owned hacks unchanged, original Pi installer.
+// Direct maintenance: validate in a temporary directory, then update the original installation.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { inspectInstallation, hostUpdateCommand, inventory, resolveLatest, resolvedSettings, readJson, executable, PI_PACKAGE } from './maintenance-policy.mjs';
+import { inspectInstallation, legacyLauncher, hostUpdateCommand, inventory, resolveLatest, resolvedSettings, readJson, executable, PI_PACKAGE } from './maintenance-policy.mjs';
 import { planAgentsOnly } from './agents-only.mjs';
-import { buildPlan, planExtensionTree } from './managed-deploy.mjs';
-import { queuePrepared, readQueued, queueRoot, repositoryDigest, restoreLaunchHook, installLaunchHook } from './maintenance-queue.mjs';
+import { planExtensionTree } from './managed-deploy.mjs';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const json = value => JSON.stringify(value, null, 2) + '\n';
 function run(command, args, options = {}) {
@@ -29,7 +28,7 @@ function atomic(file, content) {
 function stateRoot(agentDir) { return path.join(agentDir, 'state/my-dev-setup'); }
 export function parseArgs(args) {
   const command = args.shift() ?? 'check';
-  if (!['check', 'update', 'bootstrap', 'status', 'activate'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status|activate [--repo DIR] [--agent-dir DIR] [--apply]');
+  if (!['check', 'update', 'bootstrap', 'status'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status [--repo DIR] [--agent-dir DIR] [--apply]');
   const options = { command, repo: ROOT, agentDir: path.resolve(process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi/agent')) };
   while (args.length) {
     const flag = args.shift();
@@ -41,20 +40,20 @@ export function parseArgs(args) {
   options.repo = fs.realpathSync(options.repo);
   return options;
 }
-export function classifyDrift(repo, lock) {
+export function classifyDrift(repo, target) {
   const data = inventory(repo);
   return data.entries.map(entry => ({ source: entry.source, kind: entry.kind, target: entry.kind.startsWith('remote-')
-    ? lock.remotes.find(item => item.source === entry.source)?.resolved : `${entry.policy} (no upstream merge)` }));
+    ? target.remotes.find(item => item.source === entry.source)?.resolved : `${entry.policy} (no upstream merge)` }));
 }
 function checkPrerequisites() {
   for (const name of ['git', 'npm']) if (!executable(name)) throw new Error(`Install ${name} before bootstrap`);
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || major === 22 && minor < 19) throw new Error('Node >=22.19 is required; Node itself is not automatically replaced');
 }
-function candidateSettings(repo, lock, stage, liveAgent) {
-  const settings = resolvedSettings(repo, lock);
+function candidateSettings(repo, target, stage, liveAgent) {
+  const settings = resolvedSettings(repo, target);
   const live = path.join(liveAgent, 'settings.json');
-  // Only the extension resource list is read; never copy live auth/models/session configuration.
+  // Only resource paths are inherited; never copy live auth/models/session configuration.
   if (settings.extensions === undefined && fs.existsSync(live)) settings.extensions = readJson(live).extensions;
   if (settings.extensions) settings.extensions = settings.extensions.map(item => {
     const prefix = /^[!+-]/.test(item) ? item[0] : '', source = item.slice(prefix.length);
@@ -62,11 +61,10 @@ function candidateSettings(repo, lock, stage, liveAgent) {
   });
   atomic(path.join(stage, 'settings.json'), json(settings));
   for (const [relative, bytes] of planExtensionTree(repo, liveAgent)) {
-    const target = path.join(stage, 'extensions', relative);
+    const file = path.join(stage, 'extensions', relative);
     if (relative.endsWith('.json') && path.basename(relative) !== 'package.json') continue;
-    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, bytes);
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes);
   }
-  return settings;
 }
 export function ensureRepositoryTools(repo, command = run) {
   const policy = inventory(repo).policy;
@@ -86,7 +84,6 @@ export function ensureRepositoryTools(repo, command = run) {
     command('git', ['-C', target, 'checkout', '--quiet', '--detach', rule.commit]);
   }
 }
-// Match setup's targeted native recovery before testing the candidate loader.
 export function ensureNativeDependencies(repo, dir, runtimeNode, { command = run, probe = spawnSync } = {}) {
   const env = { ...process.env, PATH: `${path.dirname(runtimeNode)}${path.delimiter}${process.env.PATH ?? ''}` };
   const script = path.join(repo, 'scripts/native-deps.mjs');
@@ -113,17 +110,14 @@ function ensureLocalDependencies(repo, runtimeNode) {
     ensureNativeDependencies(repo, dir, runtimeNode);
   }
 }
-async function prepare(repo, agentDir, lock, installation) {
-  checkPrerequisites();
-  ensureRepositoryTools(repo);
+async function prepare(repo, agentDir, target, installation) {
+  checkPrerequisites(); ensureRepositoryTools(repo);
   const runtimeNode = installation.node ?? process.execPath;
   ensureLocalDependencies(repo, runtimeNode);
-  const sourceHash = repositoryDigest(repo);
   const stage = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-maintain-')));
   try {
     const stageAgent = path.join(stage, 'agent'), hostRoot = path.join(stage, 'host');
     fs.mkdirSync(stageAgent); fs.mkdirSync(hostRoot);
-    // Candidate host and remotes are resolved independently of the active Pi process.
     const home = path.join(stage, 'home'); fs.mkdirSync(home);
     const env = { ...process.env, PATH: `${path.dirname(runtimeNode)}${path.delimiter}${process.env.PATH ?? ''}`,
       HOME: home, npm_config_userconfig: path.join(home, '.npmrc'), npm_config_cache: path.join(stage, 'npm-cache'),
@@ -131,234 +125,164 @@ async function prepare(repo, agentDir, lock, installation) {
     for (const key of Object.keys(env)) if (/^(?:PI_|PICC_|HERDR_|ANTHROPIC_|OPENAI_|CLAUDE_|BTW_)/.test(key)) delete env[key];
     env.JITI_FS_CACHE = 'false';
     const npm = executable('npm', env);
-    run(npm, ['install', '--prefix', hostRoot, '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps', `${PI_PACKAGE}@${lock.host.version}`], { env });
+    run(npm, ['install', '--prefix', hostRoot, '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps', `${PI_PACKAGE}@${target.host.version}`], { env });
     const host = path.join(hostRoot, 'node_modules', PI_PACKAGE);
-    if (readJson(path.join(host, 'package.json')).version !== lock.host.version) throw new Error('Candidate Pi version mismatch');
+    if (readJson(path.join(host, 'package.json')).version !== target.host.version) throw new Error('Candidate Pi version mismatch');
     const hostResolution = readJson(path.join(hostRoot, 'package-lock.json')).packages[`node_modules/${PI_PACKAGE}`];
-    if (hostResolution.integrity !== lock.host.integrity) throw new Error('Candidate Pi integrity mismatch');
+    if (hostResolution.integrity !== target.host.integrity) throw new Error('Candidate Pi integrity mismatch');
     for (const item of planAgentsOnly(host, stageAgent)) if (item.after !== null) {
       fs.writeFileSync(item.file, item.after); run(runtimeNode, ['--check', item.file]);
     }
-    // Install exact remote versions. Local/hacked packages never enter an installer input.
     const npmDir = path.join(stageAgent, 'npm'); fs.mkdirSync(npmDir);
-    const specs = lock.remotes.filter(item => item.kind === 'remote-npm').map(item => `${item.name}@${item.version}`);
+    const specs = target.remotes.filter(item => item.kind === 'remote-npm').map(item => `${item.name}@${item.version}`);
     if (specs.length) run(npm, ['install', '--prefix', npmDir, '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', ...specs], { env });
-    for (const item of lock.remotes.filter(item => item.kind === 'remote-npm')) {
+    for (const item of target.remotes.filter(item => item.kind === 'remote-npm')) {
       const installed = readJson(path.join(npmDir, 'node_modules', item.name, 'package.json'));
       const resolved = readJson(path.join(npmDir, 'package-lock.json')).packages[`node_modules/${item.name}`];
       if (installed.version !== item.version || resolved.integrity !== item.integrity) throw new Error(`Candidate integrity/version mismatch: ${item.name}`);
     }
-    for (const item of lock.remotes.filter(item => item.kind === 'remote-git')) {
-      const target = path.join(stageAgent, 'git', item.identity);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      run('git', ['clone', '--quiet', '--no-checkout', item.url, target], { env });
-      run('git', ['-C', target, 'checkout', '--quiet', '--detach', item.commit], { env });
-      if (fs.existsSync(path.join(target, 'package.json'))) run(npm, ['install', '--prefix', target, '--omit=dev', '--no-package-lock', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund'], { env });
+    for (const item of target.remotes.filter(item => item.kind === 'remote-git')) {
+      const dir = path.join(stageAgent, 'git', item.identity);
+      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      run('git', ['clone', '--quiet', '--no-checkout', item.url, dir], { env });
+      run('git', ['-C', dir, 'checkout', '--quiet', '--detach', item.commit], { env });
+      if (fs.existsSync(path.join(dir, 'package.json'))) run(npm, ['install', '--prefix', dir, '--omit=dev', '--no-package-lock', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund'], { env });
     }
-    candidateSettings(repo, lock, stageAgent, agentDir);
+    candidateSettings(repo, target, stageAgent, agentDir);
     run(runtimeNode, [path.join(repo, 'scripts/check-pi-extensions.mjs'), repo, '--host', host, '--agent-dir', stageAgent, '--settings', path.join(stageAgent, 'settings.json')], { env });
-    // Reuse bounded synthetic SDK regression tests against the candidate host. No provider calls.
     const tests = ['scripts/test/herdr-prompts.test.mjs', 'scripts/test/scheduler-delivery.test.mjs',
       'scripts/test/ux-composition.test.mjs', 'packages/pi-agents-context/test/context.test.mjs',
       'packages/pi-unread-navigation/test/extension.test.mjs'].map(file => path.join(repo, file));
     for (const file of tests) if (!fs.existsSync(file)) throw new Error(`Required candidate regression is missing: ${file}`);
     run(runtimeNode, ['--test', ...tests], { env: { ...env, PI_HOST_DIR: host } });
-    return { stage, stageAgent, host, installation, sourceHash };
+    return { stage, stageAgent, host };
   } catch (error) { fs.rmSync(stage, { recursive: true, force: true }); throw error; }
-}
-export function assertNoRunningPi({ output, currentPid = process.pid } = {}) {
-  if (output === undefined) {
-    const ps = spawnSync('ps', ['-axo', 'pid=,comm=,args='], { encoding: 'utf8', timeout: 10000 });
-    if (ps.status !== 0) throw new Error('Cannot establish whether Pi is running; activation postponed without changing the current runtime.');
-    output = ps.stdout;
-  }
-  const running = output.split('\n').filter(line => {
-    const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
-    if (!match || Number(match[1]) === currentPid || Number(match[1]) === process.ppid && Number(process.env.PI_MAINTENANCE_LAUNCH_PID) === process.ppid) return false;
-    return /maintenance-launch\.mjs(?:\s|$)/.test(match[3]) || path.basename(match[2]) === 'pi' || /(?:pi-coding-agent\/(?:dist|bin)\/|(?:^|\s|\/)pi(?:\s|$))/.test(match[3]);
-  });
-  if (running.length) throw Object.assign(new Error('Pi processes are running; candidate remains queued until the next safe start. No process was stopped.'), { code: 'PI_RUNNING', pids: running.map(line => Number(line.trim().split(/\s+/)[0])) });
 }
 export function assertPlainPath(target) {
   for (let dir = path.resolve(target);; dir = path.dirname(dir)) {
-    try { if (fs.lstatSync(dir).isSymbolicLink()) throw new Error(`Refusing symlink activation destination/ancestor: ${dir}`); }
+    try { if (fs.lstatSync(dir).isSymbolicLink()) throw new Error(`Refusing symlink installation destination/ancestor: ${dir}`); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (path.dirname(dir) === dir) break;
   }
 }
-function backupNpm(agentDir, backup) {
-  const source = path.join(agentDir, 'npm');
-  if (!fs.existsSync(source)) return;
-  fs.cpSync(source, path.join(backup, 'npm'), { recursive: true, dereference: false });
+// One-time removal of the retired deferred updater; never installs a new launcher.
+export function removeLegacyMaintenance(repo, agentDir, bin = executable('pi')) {
+  const root = stateRoot(agentDir), hook = legacyLauncher(bin);
+  if (hook && (hook.repo !== repo || hook.agentDir !== agentDir)) throw new Error('Legacy Pi launcher belongs to another checkout; preserve it.');
+  if (hook) bin = hook.bin;
+  const metadata = bin && `${bin}.my-dev-setup.json`;
+  if (hook && !hook.link && createHash('sha256').update(fs.readFileSync(hook.savedFile)).digest('hex') !== hook.originalHash) throw new Error('Original Pi launcher backup changed.');
+  const status = path.join(root, 'status.json');
+  const retired = ['pending.json', 'candidates', 'startup.lock', 'queue.lock', 'maintenance.lock'].filter(name => fs.existsSync(path.join(root, name)));
+  if (fs.existsSync(status) && readJson(status).status === 'queued') retired.push('status.json');
+  if (!hook && !retired.length) return;
+  assertPlainPath(root);
+  for (const name of retired) assertPlainPath(path.join(root, name));
+  const archive = path.join(root, `retired-deferred-${randomUUID()}`);
+  fs.mkdirSync(archive, { recursive: true, mode: 0o700 });
+  if (hook) {
+    const temp = `${bin}.${randomUUID()}.tmp`;
+    try {
+      if (hook.link) fs.symlinkSync(hook.link, temp);
+      else { fs.copyFileSync(hook.savedFile, temp, fs.constants.COPYFILE_EXCL); fs.chmodSync(temp, fs.statSync(hook.savedFile).mode & 0o777); }
+      fs.renameSync(temp, bin);
+      fs.renameSync(metadata, path.join(archive, 'launcher-metadata.json'));
+    } finally { fs.rmSync(temp, { force: true }); }
+  }
+  for (const name of retired) fs.renameSync(path.join(root, name), path.join(archive, name));
+  console.log(`cleanup\tRetired deferred updater archived: ${archive}`);
+  return archive;
 }
-export function runningPi(options) {
-  try { assertNoRunningPi(options); return false; }
-  catch (error) { if (error.code !== 'PI_RUNNING') throw error; return true; }
-}
-export function applyPrepared(options, lock, prepared, { command = run, detect = inspectInstallation, stopped = assertNoRunningPi, hasHerdr = () => Boolean(executable('herdr')) } = {}) {
+export function applyPrepared(options, target, prepared, { command = run, detect = inspectInstallation, hasHerdr = () => Boolean(executable('herdr')) } = {}) {
   const { repo, agentDir } = options;
-  stopped();
   const installation = detect();
   if (installation.kind === 'blocked') throw new Error(installation.reason);
   if (installation.kind === 'brew' && !installation.host) throw new Error('Homebrew Pi has no discoverable SDK; cannot validate/apply host patch. Original install left unchanged.');
   if (!hasHerdr()) throw new Error('Install Herdr before configuring this machine; Pi has not been changed.');
   assertPlainPath(agentDir);
-  for (const target of [path.join(agentDir, 'npm'), path.join(agentDir, 'state/my-dev-setup'), ...lock.remotes.filter(item => item.kind === 'remote-git').map(item => path.join(agentDir, 'git', item.identity))]) assertPlainPath(target);
-  // An early read-only dirty check avoids even acquiring a transaction for custom work.
-  for (const item of lock.remotes.filter(item => item.kind === 'remote-git')) {
-    const target = path.join(agentDir, 'git', item.identity);
-    if (fs.existsSync(target) && command('git', ['-C', target, 'status', '--porcelain'])) throw new Error(`Dirty git package preserved before any install: ${target}`);
+  for (const dir of [path.join(agentDir, 'npm'), stateRoot(agentDir), ...target.remotes.filter(item => item.kind === 'remote-git').map(item => path.join(agentDir, 'git', item.identity))]) assertPlainPath(dir);
+  for (const item of target.remotes.filter(item => item.kind === 'remote-git')) {
+    const dir = path.join(agentDir, 'git', item.identity);
+    if (!fs.existsSync(dir)) continue;
+    if (command('git', ['-C', dir, 'status', '--porcelain'])) throw new Error(`Dirty git package preserved before any install: ${dir}`);
+    command('git', ['-C', dir, 'fetch', 'origin']);
+    command('git', ['-C', dir, 'merge-base', '--is-ancestor', 'HEAD', item.commit]);
   }
   fs.mkdirSync(stateRoot(agentDir), { recursive: true, mode: 0o700 });
-  const guard = path.join(stateRoot(agentDir), 'maintenance.lock');
-  const descriptor = fs.openSync(guard, 'wx', 0o600);
   const backup = path.join(stateRoot(agentDir), `backup-${Date.now()}-${randomUUID()}`);
+  fs.mkdirSync(backup, { mode: 0o700 });
   try {
-    fs.writeFileSync(descriptor, `${process.pid}\n`); fs.mkdirSync(backup, { mode: 0o700 });
-    stopped();
-    for (const item of lock.remotes.filter(item => item.kind === 'remote-git')) {
-      const target = path.join(agentDir, 'git', item.identity);
-      if (!fs.existsSync(target)) continue;
-      if (command('git', ['-C', target, 'status', '--porcelain'])) throw new Error(`Git package changed before installation: ${target}`);
-      command('git', ['-C', target, 'fetch', 'origin']);
-      command('git', ['-C', target, 'merge-base', '--is-ancestor', 'HEAD', item.commit]);
-    }
-    backupNpm(agentDir, backup);
+    const npmDir = path.join(agentDir, 'npm');
+    if (fs.existsSync(npmDir)) fs.cpSync(npmDir, path.join(backup, 'npm'), { recursive: true, dereference: false });
     const hashlineDir = process.env.PI_HASHLINE_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'pi-hashline-edit-pro');
     assertPlainPath(hashlineDir);
     if (fs.existsSync(hashlineDir)) fs.cpSync(hashlineDir, path.join(backup, 'hashline'), { recursive: true, dereference: false });
     if (installation.host) fs.cpSync(installation.host, path.join(backup, 'pi-before-update'), { recursive: true, dereference: false });
-    atomic(path.join(backup, 'receipt.json'), json({ installation, target: lock, status: 'prepared' }));
-    const hook = installation.hook;
-    if (hook) restoreLaunchHook(installation.bin);
-    if (installation.version !== lock.host.version) {
-      const [binary, args] = hostUpdateCommand(installation, lock.host.version);
+    atomic(path.join(backup, 'receipt.json'), json({ installation, target, status: 'prepared' }));
+    console.log('updating\tWriting installed files directly. Current Pi is not restarted; avoid /reload until your next normal start.');
+    if (installation.version !== target.host.version) {
+      const [binary, args] = hostUpdateCommand(installation, target.host.version);
       const env = { ...process.env, PATH: `${path.dirname(installation.node ?? installation.manager ?? installation.bin)}${path.delimiter}${process.env.PATH ?? ''}`,
         ...(installation.kind === 'managed' ? { PI_MANAGED_INSTALL_ROOT: installation.root } : {}) };
       command(binary, args, { env });
     }
     const actual = detect();
     if (actual.kind !== installation.kind || ['prefix', 'root', 'manager', 'node'].some(key => installation[key] && actual[key] !== installation[key])) throw new Error('Pi installation channel/prefix changed during upgrade; refusing configuration.');
-    if (actual.kind === 'blocked' || !actual.host || actual.version !== lock.host.version) throw new Error('Installed Pi does not match validated target (or no SDK available). See backup receipt.');
+    if (actual.kind === 'blocked' || !actual.host || actual.version !== target.host.version) throw new Error('Installed Pi does not match validated target (or no SDK available). See backup receipt.');
     const version = command(actual.bin, ['--version']);
-    if (version !== lock.host.version) throw new Error(`pi --version returned ${version}, expected ${lock.host.version}`);
+    if (version !== target.host.version) throw new Error(`pi --version returned ${version}, expected ${target.host.version}`);
     const runtimeNode = actual.node ?? process.execPath;
     const env = { ...process.env, PATH: `${path.dirname(runtimeNode)}${path.delimiter}${process.env.PATH ?? ''}`,
       PI_CODING_AGENT_DIR: agentDir, PI_HOST_DIR: actual.host };
-    const npmTarget = path.join(agentDir, 'npm');
-    const specs = lock.remotes.filter(item => item.kind === 'remote-npm').map(item => `${item.name}@${item.version}`);
-    if (specs.length) command(executable('npm', env), ['install', '--prefix', npmTarget, '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', ...specs], { env });
-    if (specs.length) for (const item of lock.remotes.filter(item => item.kind === 'remote-npm')) {
-      const installed = readJson(path.join(npmTarget, 'node_modules', item.name, 'package.json'));
-      const resolution = readJson(path.join(npmTarget, 'package-lock.json')).packages[`node_modules/${item.name}`];
+    const specs = target.remotes.filter(item => item.kind === 'remote-npm').map(item => `${item.name}@${item.version}`);
+    if (specs.length) command(executable('npm', env), ['install', '--prefix', npmDir, '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', ...specs], { env });
+    for (const item of target.remotes.filter(item => item.kind === 'remote-npm')) {
+      const installed = readJson(path.join(npmDir, 'node_modules', item.name, 'package.json'));
+      const resolution = readJson(path.join(npmDir, 'package-lock.json')).packages[`node_modules/${item.name}`];
       if (installed.version !== item.version || resolution?.integrity !== item.integrity) throw new Error(`Installed package integrity/version differs: ${item.name}`);
     }
-    for (const item of lock.remotes.filter(item => item.kind === 'remote-git')) {
-      const target = path.join(agentDir, 'git', item.identity);
-      if (fs.existsSync(target)) {
-        if (command('git', ['-C', target, 'status', '--porcelain'])) throw new Error(`Git package changed during update: ${target}`);
-        command('git', ['-C', target, 'merge', '--ff-only', item.commit]);
-        if (fs.existsSync(path.join(target, 'package.json'))) command(executable('npm', env), ['install', '--prefix', target, '--omit=dev', '--no-package-lock', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund'], { env });
+    for (const item of target.remotes.filter(item => item.kind === 'remote-git')) {
+      const dir = path.join(agentDir, 'git', item.identity);
+      if (fs.existsSync(dir)) {
+        if (command('git', ['-C', dir, 'status', '--porcelain'])) throw new Error(`Git package changed during update: ${dir}`);
+        command('git', ['-C', dir, 'merge', '--ff-only', item.commit]);
+        if (fs.existsSync(path.join(dir, 'package.json'))) command(executable('npm', env), ['install', '--prefix', dir, '--omit=dev', '--no-package-lock', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund'], { env });
       } else {
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.cpSync(path.join(prepared.stageAgent, 'git', item.identity), target, { recursive: true });
+        fs.mkdirSync(path.dirname(dir), { recursive: true });
+        fs.cpSync(path.join(prepared.stageAgent, 'git', item.identity), dir, { recursive: true });
       }
     }
     const settingsFile = path.join(prepared.stage, 'resolved-settings.json');
-    atomic(settingsFile, json(resolvedSettings(repo, lock)));
+    atomic(settingsFile, json(resolvedSettings(repo, target)));
     command('/bin/bash', [path.join(repo, 'setup.sh'), '--skip-tool-updates'], { env: { ...env, MY_DEV_SETUP_SETTINGS: settingsFile } });
     command(runtimeNode, [path.join(repo, 'scripts/check-pi-extensions.mjs'), repo, '--host', actual.host, '--agent-dir', agentDir, '--settings', settingsFile], { env });
-    if (hook) installLaunchHook(repo, agentDir, actual);
-    atomic(path.join(backup, 'receipt.json'), json({ installation, target: lock, status: 'applied' }));
-    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: lock.host.version, backup, restartRequired: !options.startup }));
-    console.log(`applied\tPi ${lock.host.version}; ${options.startup ? 'starting the new runtime' : 'new runtime on next Pi start'}. Backup: ${backup}`);
+    atomic(path.join(backup, 'receipt.json'), json({ installation, target, status: 'applied' }));
+    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: target.host.version, backup, restartRequired: true }));
+    console.log(`applied\tPi ${target.host.version} installed; use the new runtime on your next normal Pi start. Backup: ${backup}`);
   } catch (error) {
     atomic(path.join(backup, 'failure.json'), json({ status: 'failed', error: error.message }));
-    // A manager can replace the wrapper before failing. Restore the safety gate for future starts.
-    if (installation.hook) {
-      try { const remaining = detect(); if (remaining.kind !== 'blocked' && remaining.host) installLaunchHook(repo, agentDir, remaining); }
-      catch (hookError) { console.error(`Startup safety hook needs repair: ${hookError.message}`); }
-    }
-    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'failed', targetHost: lock.host.version, backup, error: error.message, restartRequired: true }));
+    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'failed', targetHost: target.host.version, backup, error: error.message, restartRequired: true }));
     throw new Error(`${error.message}\nPartial installation may exist; configuration has its own transaction backup. Package/host backup: ${backup}`);
-  } finally { fs.closeSync(descriptor); fs.unlinkSync(guard); }
+  }
 }
-export function activateQueued(options, { stopped = assertNoRunningPi, detect = inspectInstallation, command = run, apply = applyPrepared } = {}) {
-  const pendingFile = path.join(queueRoot(options.agentDir), 'pending.json');
-  if (!fs.existsSync(pendingFile)) return;
-  try { stopped(); } catch (error) {
-    if (error.code !== 'PI_RUNNING') throw error;
-    console.log('queued\tOther Pi processes are still running; keep using the installed version.'); return;
-  }
-  let artifact, current, prepared;
-  try {
-    artifact = readQueued(options.agentDir);
-    if (artifact.repo !== options.repo) throw new Error('Pending candidate belongs to another repository.');
-    current = detect(); const previous = artifact.installation;
-    if (['kind', 'prefix', 'root', 'manager', 'node', 'version'].some(key => previous[key] && previous[key] !== current[key])) throw new Error('Pi owner/version changed after preparation; ask the agent to prepare again.');
-    prepared = { stage: artifact.stage, stageAgent: path.join(artifact.stage, 'agent'), host: path.join(artifact.stage, 'host/node_modules', PI_PACKAGE) };
-    command(current.node ?? process.execPath, [path.join(options.repo, 'scripts/check-pi-extensions.mjs'), options.repo, '--host', prepared.host,
-      '--agent-dir', prepared.stageAgent, '--settings', path.join(prepared.stageAgent, 'settings.json')]);
-  } catch (error) {
-    console.error(`queued\tActivation postponed before installation: ${error.message}`); return;
-  }
-  // Activation must use the exact recorded direct versions, not a fresh latest lookup.
-  try { apply({ ...options, startup: true }, artifact.lock, prepared); }
-  catch (error) {
-    const statusFile = path.join(queueRoot(options.agentDir), 'status.json');
-    if (fs.existsSync(statusFile) && readJson(statusFile).status === 'failed') throw error;
-    console.error(`queued\tInstallation did not start: ${error.message}`); return;
-  }
-  // Do not consume a newer candidate published by a concurrent agent.
-  if (readJson(pendingFile).stage === artifact.stage) fs.unlinkSync(pendingFile);
-}
-export function installationNeedsUpdate(repo, agentDir, lock, installation) {
-  if (installation.version !== lock.host.version) return true;
-  for (const item of lock.remotes) {
-    if (item.kind === 'remote-npm') {
-      try { if (readJson(path.join(agentDir, 'npm/node_modules', item.name, 'package.json')).version !== item.version) return true; } catch { return true; }
-    } else {
-      const result = spawnSync('git', ['-C', path.join(agentDir, 'git', item.identity), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
-      if (result.status !== 0 || result.stdout.trim() !== item.commit) return true;
-    }
-  }
-  const stage = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-maintenance-drift-')));
-  try {
-    const settingsFile = path.join(stage, 'settings.json'); atomic(settingsFile, json(resolvedSettings(repo, lock)));
-    return buildPlan({ repo, agentDir, host: installation.host, settingsFile,
-      hashlineDir: process.env.PI_HASHLINE_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'pi-hashline-edit-pro') }).changes.length > 0;
-  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
-}
-export async function main(options) {
+export async function main(options, { detect = inspectInstallation, resolve = resolveLatest, validate = prepare, apply = applyPrepared, retire = removeLegacyMaintenance } = {}) {
   if (options.command === 'status') {
     const file = path.join(stateRoot(options.agentDir), 'status.json');
-    console.log(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 'No maintenance has been applied on this machine.'); return;
+    console.log(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 'No maintenance receipt on this machine.'); return;
   }
-  if (options.command === 'activate') return activateQueued(options);
-  const installation = inspectInstallation();
+  if (options.command === 'bootstrap' && options.apply) retire(options.repo, options.agentDir);
+  const installation = detect();
   console.log(`host\t${installation.kind}\t${installation.version ?? 'not installed'}${installation.reason ? ` · ${installation.reason}` : ''}`);
-  const lock = await resolveLatest(options.repo);
-  for (const item of classifyDrift(options.repo, lock)) console.log(`${item.kind}\t${item.source}\t${item.target}`);
-  console.log(`target\tPi ${lock.host.version}`);
+  const target = await resolve(options.repo);
+  for (const item of classifyDrift(options.repo, target)) console.log(`${item.kind}\t${item.source}\t${item.target}`);
+  console.log(`target\tPi ${target.host.version}`);
   if (options.command === 'check') return;
   if (installation.kind === 'blocked') throw new Error(installation.reason);
-  const needsUpdate = options.apply ? installationNeedsUpdate(options.repo, options.agentDir, lock, installation) : true;
-  const prepared = await prepare(options.repo, options.agentDir, lock, installation);
+  const prepared = await validate(options.repo, options.agentDir, target, installation);
   try {
-    if (repositoryDigest(options.repo) !== prepared.sourceHash) throw new Error('Repository changed during validation; prepare again before queuing/installing.');
-    const artifact = { ...lock, validation: { level: 'factory-host-patch-and-synthetic-sdk', nodeMajor: Number(process.versions.node.split('.')[0]), platform: process.platform, arch: process.arch } };
-    atomic(path.join(options.repo, 'maintenance.lock.json'), json(artifact));
-    console.log('validated\tmaintenance.lock.json updated; repository-only packages were not merged or replaced.');
-    if (options.command === 'bootstrap' && options.apply) {
-      if (!needsUpdate) {
-        installLaunchHook(options.repo, options.agentDir, inspectInstallation());
-        console.log('current\tLatest installed composition validated; automatic startup hook ready. Current Pi continues unchanged.'); return;
-      }
-      if (runningPi()) {
-        queuePrepared(options, lock, prepared, inspectInstallation());
-        console.log(`queued\tPi ${lock.host.version} and plugins validated. Current Pi continues unchanged; automatic activation on the next safe start.`);
-      } else applyPrepared(options, lock, prepared);
-    } else console.log('prepared\tNo active installation/configuration changed. Ask the Pi agent to update to queue automatic activation.');
+    console.log('validated\tTemporary validation passed; repository-only packages were not merged or replaced.');
+    if (options.command === 'bootstrap' && options.apply) apply(options, target, prepared);
+    else console.log('prepared\tValidation only; no installation or configuration applied.');
   } finally { fs.rmSync(prepared.stage, { recursive: true, force: true }); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

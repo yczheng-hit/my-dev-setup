@@ -48,7 +48,7 @@ function fixture() {
 }
 test('activation uses original installer, backs up data, deploys exact settings and marks applied only at the end', () => {
   const f = fixture(); try {
-    applyPrepared(f, f.lock, f.prepared, { detect: f.detect, command: f.command, stopped() {}, hasHerdr: () => true });
+    applyPrepared(f, f.lock, f.prepared, { detect: f.detect, command: f.command, hasHerdr: () => true });
     const global = f.calls.find(call => call.args.includes('--global'));
     assert.equal(global.binary, f.detect().manager); assert.ok(global.args.includes('@earendil-works/pi-coding-agent@1.5.0'));
     const setup = f.calls.find(call => call.binary === '/bin/bash');
@@ -58,6 +58,9 @@ test('activation uses original installer, backs up data, deploys exact settings 
     assert.ok(settings.packages.includes('repo:packages/pi-scheduler'));
     const status = JSON.parse(fs.readFileSync(path.join(f.agentDir, 'state/my-dev-setup/status.json')));
     assert.equal(status.status, 'applied'); assert.equal(fs.statSync(status.backup).mode & 0o777, 0o700);
+    assert.equal(status.restartRequired, true);
+    const state = path.dirname(path.join(f.agentDir, 'state/my-dev-setup/status.json'));
+    assert.equal(fs.readdirSync(state).some(name => name.endsWith('.lock') || name === 'pending.json' || name === 'candidates'), false);
     assert.equal(fs.readFileSync(path.join(status.backup, 'hashline/hash-store.sqlite'), 'utf8'), 'synthetic undo');
     assert.equal(fs.readFileSync(path.join(status.backup, 'npm/old'), 'utf8'), 'old npm');
     assert.equal(fs.readFileSync(path.join(status.backup, 'pi-before-update/sentinel'), 'utf8'), 'old host');
@@ -66,7 +69,7 @@ test('activation uses original installer, backs up data, deploys exact settings 
 });
 test('installer failure leaves a failure receipt and never invokes setup or claims applied', () => {
   const f = fixture(); try {
-    assert.throws(() => applyPrepared(f, f.lock, f.prepared, { detect: f.detect, stopped() {}, hasHerdr: () => true,
+    assert.throws(() => applyPrepared(f, f.lock, f.prepared, { detect: f.detect, hasHerdr: () => true,
       command(binary, args, options) { if (args.includes('--global')) throw new Error('synthetic install failure'); return f.command(binary, args, options); },
     }), /Partial installation may exist/);
     const state = path.join(f.agentDir, 'state/my-dev-setup');
@@ -78,12 +81,11 @@ test('installer failure leaves a failure receipt and never invokes setup or clai
   } finally { f.close(); }
 });
 
-for (const scenario of ['running', 'missing-herdr', 'unknown-owner', 'nested-symlink', 'channel-drift', 'integrity', 'setup-failure']) {
+for (const scenario of ['missing-herdr', 'unknown-owner', 'nested-symlink', 'channel-drift', 'integrity', 'setup-failure']) {
   test(`activation fails closed: ${scenario}`, () => {
     const f = fixture(); try {
-      const hooks = { detect: f.detect, command: f.command, stopped() {}, hasHerdr: () => true };
+      const hooks = { detect: f.detect, command: f.command, hasHerdr: () => true };
       let expected;
-      if (scenario === 'running') { hooks.stopped = () => { throw new Error('Pi processes are running'); }; expected = /Pi processes/; }
       if (scenario === 'missing-herdr') { hooks.hasHerdr = () => false; expected = /Install Herdr/; }
       if (scenario === 'unknown-owner') { hooks.detect = () => ({ kind: 'blocked', reason: 'unknown owner' }); expected = /unknown owner/; }
       if (scenario === 'nested-symlink') {
@@ -105,7 +107,7 @@ for (const scenario of ['running', 'missing-herdr', 'unknown-owner', 'nested-sym
         expected = scenario === 'integrity' ? /integrity\/version differs/ : /synthetic setup failure/;
       }
       assert.throws(() => applyPrepared(f, f.lock, f.prepared, hooks), expected);
-      if (['running', 'missing-herdr', 'unknown-owner', 'nested-symlink'].includes(scenario)) assert.equal(f.calls.length, 0);
+      if (['missing-herdr', 'unknown-owner', 'nested-symlink'].includes(scenario)) assert.equal(f.calls.length, 0);
       else {
         const status = JSON.parse(fs.readFileSync(path.join(f.agentDir, 'state/my-dev-setup/status.json')));
         assert.equal(status.status, 'failed'); assert.equal(fs.existsSync(path.join(f.agentDir, 'state/my-dev-setup/maintenance.lock')), false);

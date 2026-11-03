@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectInstallation, hostUpdateCommand, inventory, resolveLatest, resolvedSettings, PI_PACKAGE } from '../maintenance-policy.mjs';
-import { parseArgs, assertNoRunningPi, assertPlainPath, applyPrepared, ensureRepositoryTools, ensureNativeDependencies } from '../maintain.mjs';
+import { parseArgs, assertPlainPath, applyPrepared, main, ensureRepositoryTools, ensureNativeDependencies } from '../maintain.mjs';
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'maintenance-test-')));
@@ -92,12 +92,6 @@ test('Nix is blocked and a missing Pi uses only current Node npm', () => {
     assert.equal(install.missing, true); assert.equal(install.manager, npm);
   } finally { f.close(); }
 });
-test('running Pi including argv[0] without options blocks activation', () => {
-  for (const line of ['123 pi pi', '123 node node /x/pi-coding-agent/dist/bundle/cli.js', '123 node /x/bin/pi']) {
-    assert.throws(() => assertNoRunningPi({ output: line, currentPid: 456 }), /Pi processes are running/);
-  }
-  assert.doesNotThrow(() => assertNoRunningPi({ output: '456 node node scripts/maintain.mjs\n123 cat cat /tmp/log', currentPid: 456 }));
-});
 test('symlink destination is refused', () => {
   const f = fixture(); try {
     const dir = path.join(f.root, 'target'); fs.mkdirSync(dir); fs.symlinkSync(dir, path.join(f.root, 'agent'));
@@ -109,13 +103,14 @@ test('dirty remote git blocks before host/npm writes', () => {
     const agentDir = path.join(f.root, 'agent'); fs.mkdirSync(path.join(agentDir, 'git/github.com/example/plugin'), { recursive: true });
     const calls = [];
     assert.throws(() => applyPrepared({ repo, agentDir }, { host: { version: '1.5.0' }, remotes: [{ kind: 'remote-git', identity: 'github.com/example/plugin', commit: 'a'.repeat(40) }] }, {}, {
-      detect: () => ({ kind: 'npm', version: '1.4.0' }), stopped() {}, hasHerdr: () => true,
+      detect: () => ({ kind: 'npm', version: '1.4.0' }), hasHerdr: () => true,
       command: (cmd, args) => { calls.push([cmd, args]); return '?? local-file'; },
     }), /Dirty git package preserved before any install/);
     assert.equal(calls.length, 1); assert.equal(calls[0][0], 'git');
     assert.equal(fs.existsSync(path.join(agentDir, 'state')), false);
   } finally { f.close(); }
 });
+
 test('repository-owned tool checkout mismatch never invokes pull/merge/reset', () => {
   const f = fixture(); try {
     fs.cpSync(path.join(repo, 'maintenance.json'), path.join(f.root, 'maintenance.json'));
@@ -167,4 +162,44 @@ test('native recovery rebuilds only a declared repairable addon using the owner 
     assert.throws(() => ensureNativeDependencies(repo, dir, node, { probe: () => ({ status: 1, stdout: 'fail\tordinary\tother\tnot repairable\n' }), command: (...args) => calls.push(args) }), /no unsafe broad rebuild/);
     assert.equal(calls.length, 0);
   } finally { f.close(); }
+});
+
+for (const mode of ['check', 'update', 'bootstrap']) {
+  test(`${mode} has no persistent candidate or version lock; apply is immediate and temp validation is cleaned`, async () => {
+    const f = fixture(); try {
+      const stage = path.join(f.root, 'temporary'); fs.mkdirSync(stage);
+      const fakeRepo = path.join(f.root, 'repo'); fs.mkdirSync(fakeRepo);
+      for (const file of ['maintenance.json', 'pi/settings.json']) {
+        const dest = path.join(fakeRepo, file); fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(path.join(repo, file), dest);
+      }
+      const target = { host: { version: '1.5.0' }, remotes: [] };
+      let validated = 0, applied = 0;
+      await main({ command: mode, apply: mode === 'bootstrap', repo: fakeRepo, agentDir: path.join(f.root, 'agent') }, {
+        detect: () => ({ kind: 'npm', version: '1.4.0' }), retire() {}, resolve: async () => target,
+        validate: async () => { validated++; return { stage }; },
+        apply: (options, actual, prepared) => { applied++; assert.equal(actual, target); assert.equal(prepared.stage, stage); assert.ok(fs.existsSync(stage)); },
+      });
+      assert.equal(validated, mode === 'check' ? 0 : 1);
+      assert.equal(applied, mode === 'bootstrap' ? 1 : 0);
+      assert.equal(fs.existsSync(stage), mode === 'check');
+      assert.deepEqual(fs.readdirSync(fakeRepo).sort(), ['maintenance.json', 'pi']);
+      assert.equal(fs.existsSync(path.join(f.root, 'agent')), false);
+    } finally { f.close(); }
+  });
+}
+
+test('temporary validation is removed even if direct installation fails', async () => {
+  const f = fixture(); try {
+    const stage = path.join(f.root, 'temporary'); fs.mkdirSync(stage);
+    await assert.rejects(main({ command: 'bootstrap', apply: true, repo, agentDir: path.join(f.root, 'agent') }, {
+      detect: () => ({ kind: 'npm', version: '1.4.0' }), retire() {}, resolve: async () => ({ host: { version: '1.5.0' }, remotes: [] }),
+      validate: async () => ({ stage }), apply: () => { throw new Error('direct install failed'); },
+    }), /direct install failed/);
+    assert.equal(fs.existsSync(stage), false);
+  } finally { f.close(); }
+});
+
+test('retired activation command is rejected', () => {
+  assert.throws(() => parseArgs(['activate']), /usage:/);
 });

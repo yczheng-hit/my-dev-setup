@@ -1,74 +1,44 @@
-# AI 自动更新与本机配置
+# 配置与更新
 
-把仓库链接交给 Pi agent，要求“按照仓库说明配置/更新本机”。agent 读取根目录 `AGENTS.md` 并执行入口。**用户不需要另开终端、手动执行维护脚本，或为了更新退出当前 Pi。**
+让 Pi agent 按仓库说明更新即可。agent 运行 `./bootstrap.sh`：
 
-## 当前进程不中断
+1. 检查原安装渠道，查询 Pi 和普通远程插件的最新稳定版。
+2. 在临时目录验证宿主补丁、扩展加载和合成回归。
+3. 备份后直接更新磁盘安装及配置，清理临时目录。
 
-agent 在自己的 shell 工具中运行 `./bootstrap.sh`：
+**不保存候选、不排队、不安装启动钩子，也不使用维护锁或仓库版本锁文件。** 每次更新重新查询版本；同一次操作使用刚验证的精确版本，实际版本写入本机 settings 和备份收据。不要同时运行多次维护。
 
-1. 查询最新 stable、识别原安装渠道，隔离安装并验证候选。
-2. **有 Pi 进程运行**：候选保存到本机私有目录，标记 `queued`；当前宿主、插件目录、配置与 hashline 数据继续使用原版。安装一个带 ownership/hash 校验的启动钩子，只影响未来启动。
-3. **下次自然启动 Pi**：钩子先检查其他 Pi 进程；全部旧进程已经自然结束时，按已验证的精确版本自动安装、部署并启动新版。仍有其他 Pi 时，本次继续启动旧版，候选保持排队。无需用户运行另一条维护命令。
-4. **无运行中 Pi 的首次 setup**：直接沿原渠道安装并配置。
+当前 Pi 不会被 kill、重启或自动 `/reload`；新版核心在下次正常启动时使用。直接更新不是运行中进程的隔离：旧会话可能延迟加载新版插件或访问新版共享数据，尤其是 hashline 的 undo/snapshot 存储。此方案接受这些风险来保持流程简单；更新后避免 `/reload`，不承诺当前会话完全不受磁盘变更影响。
 
-Pi 核心不能通过 `/reload` 替换，不能把“已下载”报告为“当前进程已升级”。本流程选择**整套组合延迟激活**，包括扩展：避免原生 ESM 缓存、适配器与 hashline 数据迁移混用新旧代码。已有普通源码修改仍可按 Pi 原生规则 reload，但维护不会对任意第三方包承诺安全热更新，也不会自动中断当前会话、kill、restart 或 reload。
-
-启动钩子保留原 executable/link、管理器与 Node prefix。未来启动经同 PID `execve` 交接，没有常驻 supervisor。`pi --version`、help、package/auth 等非会话命令不触发激活。外部包管理器可能替换钩子；下一次由 agent 更新时会重新检查，不抢回未知启动器。
-
-启动前再次校验候选内容、仓库来源指纹、安装 owner/version，并重跑 loader。源码/候选已变、另一个 Pi 正在运行等安装前条件不满足时，保留排队并继续旧版；**安装开始后失败**则保留收据并停止这次新启动，避免启动混合版本。现有 Pi 不受影响。让 agent 检查 `status` 即可，不自动强行重试或覆盖本地改动。
-
-## agent 使用的入口
+## 入口
 
 ```sh
-./bootstrap.sh                 # 默认：有 Pi 则持久排队，无 Pi 则安装配置
-./bootstrap.sh --prepare       # 只在临时目录准备验证，不安装启动钩子/不排队
-./bootstrap.sh --check         # 只读查询最新版、渠道和类型
-node scripts/maintain.mjs status
+./bootstrap.sh                         # 临时验证后直接安装、配置
+./bootstrap.sh --check                 # 只读检查，不下载或修改
+./bootstrap.sh --prepare               # 仅临时验证，不安装配置
+node scripts/maintain.mjs status        # 最近一次本机维护收据
 ```
 
-`--dry-run` 是 `--check` 的别名。`check` 不安装、不写 lock。`--prepare` 和默认更新可以补齐 repo-owned checkout、缺失 runtime dependencies；npm 禁用 lifecycle scripts，只对已声明可修复的原生 addon 定点编译。源码不变；活动目录的依赖修复仍应由 agent 明确报告。
+`--dry-run` 等于 `--check`。验证可初始化缺失的自有工具 checkout、安装缺失运行依赖；npm 禁 lifecycle scripts，只对声明可修复的原生 addon 定点编译。依赖修复会影响 checkout，agent 应明确报告。
 
-需要 git、Node >=22.19/npm；部署还需已有的 Herdr，monitor 需 Python >=3.11。Node/Herdr/系统软件不在自动升级范围。macOS/Linux Bash 与 Node execve 受支持；Windows 原生环境不支持此启动钩子。路径无写权限时停止，不自动 sudo 或另装 Pi。
+需要 macOS/Linux、git、Node >=22.19/npm、Herdr；monitor 还需 Python >=3.11。沿用原 npm/fnm/nvm、pnpm、Bun、官方 installer 或 Homebrew 渠道，不自动换 Node、sudo 或另装第二份 Pi。Nix/custom/归属不明、Homebrew 缺 SDK 或目标版本时停止并报告。
 
-## 更新类型：本地 hack 以仓库为准
+## 来源策略
 
-唯一插件清单是 `pi/settings.json`，保留顺序、对象过滤（例如 subagents 的 `extensions: []`）。`maintenance.json` 补充本地分类和自有 checkout pins。
+`pi/settings.json` 是唯一加载清单，`maintenance.json` 记录分类与自有工具 commit：
 
-| 类型 | 更新行为 |
-| --- | --- |
-| `remote-npm` / `remote-git` | 查询 latest stable / 配置 ref 的 commit，验证精确候选，按精确版本部署 |
-| `patched` | permission、Codex compat、HUD footer、scheduler 只使用本仓库源码，不查询或合并第三方上游 |
-| `owned` / `adapter` | 使用本仓库代码，与新版远程依赖一起验证 |
-| `owned-checkout` | BTW、monitor 使用自有仓库固定 commit；已有不同 HEAD 或工作区修改保留，不自动 merge/reset |
+- **远程 npm/git**：查询最新稳定版／配置 ref，验证后更新；Git 有本地修改则保留并报告，不 reset/clean。
+- **本地补丁、自有扩展和适配器**：使用本 checkout，不查询、merge 或替换原第三方上游。
+- **BTW、monitor**：缺失时按自有仓库固定 commit 初始化；已有不同版本或本地修改时停止自动处理，保留现场。
 
-需要更新本地 hack 时显式更新本仓库；`patches/` 记录既有基线，不是自动追上游入口。
+不调用宽泛的 `pi update --extensions`，避免触及本地维护包或重置 Git 工作区。npm 自己的 `package-lock.json` 属包管理器产物，不是额外的仓库维护锁。
 
-## Pi 安装来源
+更新保留本机 `defaultProvider`、`defaultModel`、`defaultThinkingLevel`、`externalEditor`；缺失时才采用仓库默认，不引入强制模型思考级别覆盖。权限配置只在缺失时初始化，已有文件保持原样；特殊规则和 schema 调整交给各机器上的 AI 按需处理，不复制进仓库。
 
-- npm：使用原 prefix 的 npm/Node，保留 fnm/nvm，不另装第二份。
-- pnpm / Bun：验证全局归属后沿同一管理器。
-- 官方 managed installer：验证 marker/release/launcher，使用其 `pi update --self`。
-- Homebrew：原 brew/formula；缺 SDK 或没有候选目标版本时阻塞。
-- Nix、自定义二进制、无法证明归属：交回原渠道，不使用 npm fallback。
-- 尚未安装 Pi：使用当前 Node 对应 npm。
+## 验证与备份
 
-自动激活后再次核对安装 owner、实际版本、`pi --version`。AGENTS-only patch 同时验证 SDK 与 bundled CLI，不支持新布局时停止。
+验证覆盖 npm 版本/完整性、Git SHA、宿主 SDK/bundled patch、完整 factory/shutdown 和合成 SDK/UI 回归；不调用真实模型，不证明 provider、OAuth 或完整 UI 可用，也不承诺完整间接依赖复现。
 
-## 验证与状态
+安装前的 Pi、npm 和 hashline 备份及维护收据保存在 `<agent-dir>/state/my-dev-setup/backup-*/`；配置备份位于 `~/.my-dev-setup-backups/`。失败直接报告部分变更和备份，不自动重试或在未来启动时接续。保留自定义文件与哈希冲突检查，不承诺全机器原子回滚。恢复方法见 [部署安全](deployment-safety.md)。
 
-候选验证包括直接 npm version/integrity、Git SHA、原生依赖可加载、宿主 patch/语法、真实完整 factory/shutdown（含保留 custom 扩展）、候选宿主上的 scheduler/AGENTS/unread/跨功能合成回归。`maintenance.lock.json` 是直接版本与验证环境记录，**不是完整 transitive lock，也不是 live provider/OAuth/UI 验收**。启动激活会重新安装精确直接依赖，间接依赖可能重新解析。
-
-分别报告：`latest discovered`、`candidate validated`、`queued / next-safe-start`、`installed`、`current runtime`。`status: queued` 不等于安装完成；核心新版仅新进程生效。已有完整匹配的安装不重复排队。
-
-## 备份与失败
-
-`<agent-dir>/state/my-dev-setup/`：
-- `candidates/<uuid>/`（0700）保存持久候选；不含凭据、真实会话或日志。被替代候选保留，不盲删正在使用的目录。
-- `pending.json` 保存待激活指针与校验；仓库源码、候选内容变化须重新准备。
-- `backup-*/` 保存升级前 Pi、npm、hashline 数据及安装收据；配置事务另存 `~/.my-dev-setup-backups/`。
-
-Hashline 跨代可更换锚点并迁移 undo/snapshot 存储，所以整套激活只在所有旧 Pi 自然结束后进行。激活后重新读取文件取得新锚点。
-
-部署只处理清单内远程包，不调用宽泛 `pi update --extensions` 或 reset/clean Git。未跟踪 npm lock 等本地文件先报告，由 agent 获授权后备份移出，不能静默删除。配置沿用 `managed-deploy.mjs` ownership/hash 事务。
-
-多阶段安装不承诺全机器 crash-atomic 或跨包管理器自动回滚。失败报告备份路径与部分变更；恢复前检查冲突，不强盖。凭据、真实 session 不读写；下载依赖、启动器备份和机器路径留本机，不提交。commit/push 仅按用户要求。
+从旧版延迟更新机制迁移时，更新入口会恢复原启动器，并将旧候选与旧锁标记归档；不再自动激活。

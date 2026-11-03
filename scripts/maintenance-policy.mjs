@@ -2,7 +2,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readLaunchHook } from './maintenance-queue.mjs';
+import { createHash } from 'node:crypto';
+// Read old wrappers only so bootstrap can retire them, including PATH symlink aliases.
+export function legacyLauncher(bin) {
+  if (!bin || !fs.existsSync(bin)) return;
+  const target = fs.realpathSync(bin), metadata = `${target}.my-dev-setup.json`;
+  if (!fs.existsSync(metadata)) return;
+  const wrapper = fs.readFileSync(target, 'utf8');
+  if (!wrapper.includes('# my-dev-setup: deferred maintenance v1')) return;
+  const hook = JSON.parse(fs.readFileSync(metadata, 'utf8'));
+  if (hook.version !== 1 || hook.bin !== target || !hook.original?.host || !hook.original?.node
+    || hook.wrapperHash !== createHash('sha256').update(wrapper).digest('hex')) throw new Error('Modified legacy Pi launcher preserved; inspect before removal.');
+  return hook;
+}
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 export const sourceOf = entry => typeof entry === 'string' ? entry : entry.source;
@@ -23,14 +35,8 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
     if (!fs.existsSync(npm)) return { kind: 'blocked', reason: 'Pi absent; install Node/npm first (no automatic system/Node installation).' };
     return { kind: 'npm', missing: true, manager: npm, node, prefix: path.dirname(path.dirname(node)), bin: path.join(path.dirname(node), 'pi') };
   }
-  const hook = readLaunchHook(bin);
-  if (hook) {
-    const owned = hook.original;
-    try {
-      if (readJson(path.join(owned.host, 'package.json')).name !== PI_PACKAGE || !fs.existsSync(owned.node) || !fs.existsSync(owned.manager ?? owned.real)) throw new Error('Missing owner');
-      return { ...owned, bin, version: readJson(path.join(owned.host, 'package.json')).version, hook };
-    } catch { return { kind: 'blocked', bin, reason: 'Maintenance hook owner changed; refusing installation migration.' }; }
-  }
+  const hook = legacyLauncher(bin);
+  if (hook) return { ...hook.original, bin: hook.bin, version: readJson(path.join(hook.original.host, 'package.json')).version };
   const real = realpath(bin);
   // pnpm can expose a shell shim rather than a symlink into package code.
   const pnpmShim = executable('pnpm', env);
@@ -65,7 +71,7 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
         if (!script.includes('PI_MANAGED_INSTALL_ROOT=$pi_agent_dir/install') || !script.includes('exec "$pi_release_bin" "$@"')) throw new Error('Unknown launcher');
       }
       const bundledNode = path.join(env.XDG_DATA_HOME ?? path.join(env.HOME ?? process.env.HOME ?? process.cwd(), '.local/share'), 'pi-node/current/bin/node');
-      return { kind: 'managed', bin, real, host, root, version: readJson(path.join(host, 'package.json')).version,
+      return { kind: 'managed', bin: fs.existsSync(launcher) ? launcher : bin, real, host, root, version: readJson(path.join(host, 'package.json')).version,
         node: fs.existsSync(bundledNode) ? bundledNode : node };
     } catch { return { kind: 'blocked', bin, real, reason: 'Invalid official managed installation marker/launcher; rerun its installer to repair.' }; }
   }
@@ -170,12 +176,12 @@ export async function resolveLatest(repo, { metadata, gitHead } = {}) {
   }));
   return { version: 1, host: { package: data.policy.host.package, version: host.version, integrity: host.dist?.integrity }, remotes };
 }
-export function resolvedSettings(repo, lock) {
+export function resolvedSettings(repo, target) {
   const { settings } = inventory(repo);
-  const resolved = new Map(lock.remotes.map(item => [item.source, item.resolved]));
+  const resolved = new Map(target.remotes.map(item => [item.source, item.resolved]));
   return { ...settings, packages: settings.packages.map(entry => {
     const source = sourceOf(entry);
-    if (!source.startsWith('repo:') && !resolved.has(source)) throw new Error(`Lock omits configured remote: ${source}`);
+    if (!source.startsWith('repo:') && !resolved.has(source)) throw new Error(`Resolved target omits configured remote: ${source}`);
     return withSource(entry, resolved.get(source) ?? source);
   }) };
 }

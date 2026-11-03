@@ -15,7 +15,7 @@ function fixture() {
   fs.copyFileSync(path.join(repo, 'setup.sh'), path.join(copy, 'setup.sh'));
   fs.cpSync(path.join(repo, 'pi'), path.join(copy, 'pi'), { recursive: true });
   fs.cpSync(path.join(repo, 'herdr'), path.join(copy, 'herdr'), { recursive: true });
-  for (const name of ['managed-deploy.mjs', 'agents-only.mjs', 'maintenance-queue.mjs']) fs.copyFileSync(path.join(repo, 'scripts', name), path.join(copy, 'scripts', name));
+  for (const name of ['managed-deploy.mjs', 'agents-only.mjs']) fs.copyFileSync(path.join(repo, 'scripts', name), path.join(copy, 'scripts', name));
   fs.writeFileSync(path.join(copy, 'scripts/check-pi-extensions.mjs'), 'console.log("fail\\tfixture\\tintentional loader failure"); process.exit(1);');
   fs.writeFileSync(path.join(copy, 'tools.tsv'), '');
   fs.mkdirSync(path.join(fakeHost, 'dist/core'), { recursive: true });

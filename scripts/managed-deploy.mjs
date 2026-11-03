@@ -114,22 +114,34 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     desired.set(target, { target, data, kind });
   };
   const source = (name) => fs.readFileSync(name === 'settings.json' && settingsFile ? settingsFile : path.join(repo, 'pi', name));
-  const merge = (name, target, transform = (value) => value) => add(target, json({ ...readObject(target), ...transform(JSON.parse(source(name))) }));
-  merge('settings.json', path.join(agentDir, 'settings.json'), (settings) => ({ ...settings,
-    packages: (settings.packages ?? []).map((entry) => {
-      const expand = (value) => value.startsWith('repo:') ? path.resolve(repo, value.slice(5)) : value;
-      return typeof entry === 'string' ? expand(entry) : { ...entry, source: expand(entry.source) };
-    }),
-  }));
+  const merge = (name, target, transform = value => value) => add(target, json({ ...readObject(target), ...transform(JSON.parse(source(name))) }));
+  const settingsPath = path.join(agentDir, 'settings.json'), localSettings = readObject(settingsPath);
+  const settings = { ...localSettings, ...JSON.parse(source('settings.json')) };
+  for (const key of ['defaultProvider', 'defaultModel', 'defaultThinkingLevel', 'externalEditor']) {
+    if (Object.hasOwn(localSettings, key)) settings[key] = localSettings[key];
+  }
+  settings.packages = (settings.packages ?? []).map(entry => {
+    const expand = value => value.startsWith('repo:') ? path.resolve(repo, value.slice(5)) : value;
+    return typeof entry === 'string' ? expand(entry) : { ...entry, source: expand(entry.source) };
+  });
+  add(settingsPath, json(settings));
+  // Machine-specific policy is initialized once; later changes belong to the local operator.
+  const seedConfig = (target, bytes, kind) => {
+    if (!exists(target)) return add(target, bytes, kind);
+    const old = previous.get(target);
+    if (old) preserved.set(target, old);
+  };
   for (const name of ['AGENTS.md', 'keybindings.json', 'pi-cc-extensions.json', 'WATCHDOG.yml']) add(path.join(agentDir, name), source(name));
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
-  add(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'));
+  seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');
   merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'));
   merge('pi-hashline-edit-pro.json', path.join(hashlineDir, 'config.json'));
   for (const file of walk(path.join(repo, 'pi/extensions'))) {
     const relative = path.relative(path.join(repo, 'pi/extensions'), file);
     if (relative === 'claude-rules.ts') continue;
-    add(path.join(agentDir, 'extensions', relative), fs.readFileSync(file), relative.endsWith('.json') ? 'extension-config' : 'extension');
+    const target = path.join(agentDir, 'extensions', relative), bytes = fs.readFileSync(file);
+    if (relative === 'picc-permission-modes/config.json') seedConfig(target, bytes, 'extension-config');
+    else add(target, bytes, relative.endsWith('.json') ? 'extension-config' : 'extension');
   }
   let herdr = fs.readFileSync(path.join(repo, 'herdr/config.toml'));
   if (!fs.existsSync('/bin/zsh')) {
@@ -170,59 +182,38 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
 function assertCurrent(changes, key) {
   for (const item of changes) if (hashAt(item.target) !== item[key]) throw new Error(`Changed since plan/backup; refusing all writes: ${item.target}`);
 }
-function withDeploymentLock(agentDir, operation) {
-  const lock = path.join(agentDir, '.my-dev-setup-deploy.lock');
-  plainPath(lock);
-  fs.mkdirSync(agentDir, { recursive: true });
-  const token = `${process.pid}:${randomUUID()}\n`;
-  let owned = false;
-  try {
-    fs.writeFileSync(lock, token, { flag: 'wx', mode: 0o600 }); owned = true;
-    return operation();
-  } catch (error) {
-    if (error.code === 'EEXIST' && !owned) throw new Error(`Deployment lock exists; check its PID before manual recovery: ${lock}`);
-    throw error;
-  } finally {
-    if (owned && fs.readFileSync(lock, 'utf8') === token) fs.unlinkSync(lock);
-  }
-}
 export function applyPlan(plan, backupRoot) {
-  // Validate every mutation before creating a backup directory or writing any destination.
+  // Run deployments sequentially. Hash checks still protect edits made after planning.
   assertCurrent(plan.changes, 'beforeHash');
   for (const item of plan.changes) writable(item.target);
   if (!plan.changes.length) return null;
-  return withDeploymentLock(plan.agentDir, () => {
-    // Another setup may have completed while this process acquired the lock.
-    assertCurrent(plan.changes, 'beforeHash');
-    const backup = path.resolve(backupRoot, `transaction-${randomUUID()}`);
-    plainPath(path.join(backup, 'transaction.json'));
-    fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
-    const records = plan.changes.map((item, index) => {
-      const blob = item.before === null ? null : `before-${index}`;
-      if (blob) fs.writeFileSync(path.join(backup, blob), item.before, { flag: 'wx', mode: 0o600 });
-      return { target: item.target, beforeHash: item.beforeHash, afterHash: item.afterHash, blob, mode: item.mode, kind: item.kind };
-    });
-    const record = { version: 1, status: 'prepared', repo: plan.repo, agentDir: plan.agentDir, files: records };
-    atomic(path.join(backup, 'transaction.json'), json(record));
-    const applied = [];
-    try {
-      for (const item of plan.changes) {
-        // Narrow TOCTOU window; no async calls or external operations during the transaction.
-        assertCurrent([item], 'beforeHash');
-        if (item.data === null) fs.unlinkSync(item.target); else atomic(item.target, item.data, item.mode);
-        applied.push(item);
-      }
-      record.status = 'applied'; atomic(path.join(backup, 'transaction.json'), json(record));
-      return backup;
-    } catch (error) {
-      for (const item of applied.reverse()) {
-        if (hashAt(item.target) !== item.afterHash) continue; // don't clobber a concurrent custom edit
-        if (item.before === null) fs.unlinkSync(item.target); else atomic(item.target, item.before, item.mode);
-      }
-      record.status = 'failed'; atomic(path.join(backup, 'transaction.json'), json(record));
-      throw error;
-    }
+  const backup = path.resolve(backupRoot, `transaction-${randomUUID()}`);
+  plainPath(path.join(backup, 'transaction.json'));
+  fs.mkdirSync(backup, { recursive: true, mode: 0o700 });
+  const records = plan.changes.map((item, index) => {
+    const blob = item.before === null ? null : `before-${index}`;
+    if (blob) fs.writeFileSync(path.join(backup, blob), item.before, { flag: 'wx', mode: 0o600 });
+    return { target: item.target, beforeHash: item.beforeHash, afterHash: item.afterHash, blob, mode: item.mode, kind: item.kind };
   });
+  const record = { version: 1, status: 'prepared', repo: plan.repo, agentDir: plan.agentDir, files: records };
+  atomic(path.join(backup, 'transaction.json'), json(record));
+  const applied = [];
+  try {
+    for (const item of plan.changes) {
+      assertCurrent([item], 'beforeHash');
+      if (item.data === null) fs.unlinkSync(item.target); else atomic(item.target, item.data, item.mode);
+      applied.push(item);
+    }
+    record.status = 'applied'; atomic(path.join(backup, 'transaction.json'), json(record));
+    return backup;
+  } catch (error) {
+    for (const item of applied.reverse()) {
+      if (hashAt(item.target) !== item.afterHash) continue;
+      if (item.before === null) fs.unlinkSync(item.target); else atomic(item.target, item.before, item.mode);
+    }
+    record.status = 'failed'; atomic(path.join(backup, 'transaction.json'), json(record));
+    throw error;
+  }
 }
 export function restoreBackup(backup, apply = false) {
   backup = path.resolve(backup);
@@ -243,25 +234,22 @@ export function restoreBackup(backup, apply = false) {
   });
   assertCurrent(changes, 'afterHash'); // validate ALL first, never partial restore on ordinary conflicts
   if (apply) {
-    withDeploymentLock(record.agentDir, () => {
-      assertCurrent(changes, 'afterHash');
-      const restored = [];
-      try {
-        for (const item of changes.toReversed()) {
-          assertCurrent([item], 'afterHash');
-          const deployed = bytesAt(item.target);
-          if (item.data === null) fs.unlinkSync(item.target); else atomic(item.target, item.data, item.mode);
-          restored.push({ ...item, deployed });
-        }
-        record.status = 'restored'; atomic(file, json(record));
-      } catch (error) {
-        for (const item of restored.reverse()) {
-          if (hashAt(item.target) !== item.beforeHash) continue;
-          if (item.deployed === null) fs.unlinkSync(item.target); else atomic(item.target, item.deployed, item.mode);
-        }
-        throw error;
+    const restored = [];
+    try {
+      for (const item of changes.toReversed()) {
+        assertCurrent([item], 'afterHash');
+        const deployed = bytesAt(item.target);
+        if (item.data === null) fs.unlinkSync(item.target); else atomic(item.target, item.data, item.mode);
+        restored.push({ ...item, deployed });
       }
-    });
+      record.status = 'restored'; atomic(file, json(record));
+    } catch (error) {
+      for (const item of restored.reverse()) {
+        if (hashAt(item.target) !== item.beforeHash) continue;
+        if (item.deployed === null) fs.unlinkSync(item.target); else atomic(item.target, item.deployed, item.mode);
+      }
+      throw error;
+    }
   }
   return changes;
 }
