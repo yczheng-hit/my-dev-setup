@@ -13,13 +13,15 @@ HERDR_DIR="$HOME/.config/herdr"
 BACKUP_DIR="$HOME/.my-dev-setup-backups/$(date +%Y%m%d-%H%M%S)"
 DRY_RUN=0
 NO_REBUILD=0
+SKIP_TOOL_UPDATES=0
 problems=0   # anything that leaves a plugin broken: reported at the end, exit status 1
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n) DRY_RUN=1 ;;
     --no-rebuild) NO_REBUILD=1 ;;
-    *) echo "usage: $0 [--dry-run] [--no-rebuild]" >&2; exit 2 ;;
+    --skip-tool-updates) SKIP_TOOL_UPDATES=1 ;;
+    *) echo "usage: $0 [--dry-run] [--no-rebuild] [--skip-tool-updates]" >&2; exit 2 ;;
   esac
 done
 
@@ -49,6 +51,7 @@ PI_HOST_DIR="${PI_HOST_DIR:-$(node --input-type=module -e 'const {findHost}=awai
 export PI_HOST_DIR
 hashline_dir="${PI_HASHLINE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/pi-hashline-edit-pro}"
 deploy_args=(--repo "$REPO" --agent-dir "$PI_DIR" --home "$HOME" --herdr-dir "$HERDR_DIR" --hashline-dir "$hashline_dir" --host "$PI_HOST_DIR")
+[ -z "${MY_DEV_SETUP_SETTINGS:-}" ] || deploy_args+=(--settings "$MY_DEV_SETUP_SETTINGS")
 node "$REPO/scripts/managed-deploy.mjs" "${deploy_args[@]}" --check
 
 # ---------------------------------------------------------------- tool repos
@@ -61,7 +64,7 @@ while IFS=$'\t' read -r name url branch; do
   case "$name" in ''|'#'*) continue ;; esac
   dir="$REPO/tools/$name"
   # A submodule checkout has a .git file and a detached HEAD: move it onto the branch.
-  if [ -f "$dir/.git" ] && [ -z "$(git -C "$dir" status --porcelain)" ] \
+  if [ "$SKIP_TOOL_UPDATES" = 0 ] && [ -f "$dir/.git" ] && [ -z "$(git -C "$dir" status --porcelain)" ] \
      && ! git -C "$dir" symbolic-ref -q HEAD >/dev/null; then
     run git -C "$dir" checkout --quiet "$branch"
   fi
@@ -73,6 +76,10 @@ while IFS=$'\t' read -r name url branch; do
       git clone --quiet --branch "$branch" "$url" "$dir"
       log "cloned     $name ($(git -C "$dir" rev-parse --short HEAD))"
     fi
+    continue
+  fi
+  if [ "$SKIP_TOOL_UPDATES" = 1 ]; then
+    log "kept       $name (repository-owned checkout; no upstream merge)"
     continue
   fi
   if [ -n "$(git -C "$dir" status --porcelain)" ]; then
@@ -182,7 +189,7 @@ if [ "$DRY_RUN" = 1 ]; then
   log "[dry-run] skipped (dependencies may not be installed yet)"
 else
   ext_status=0
-  ext_out="$(node "$REPO/scripts/check-pi-extensions.mjs" "$REPO" --agent-dir "$PI_DIR" 2>&1)" || ext_status=$?
+  ext_out="$(node "$REPO/scripts/check-pi-extensions.mjs" "$REPO" --agent-dir "$PI_DIR" --settings "${MY_DEV_SETUP_SETTINGS:-$REPO/pi/settings.json}" 2>&1)" || ext_status=$?
   while IFS=$'\t' read -r kind pkg_name detail; do
     case "$kind" in
       ok)      log "loads      $pkg_name ($detail)" ;;

@@ -38,6 +38,15 @@ test('plan is read-only; apply is idempotent, inventory-backed and exact restore
     assert.throws(() => restoreBackup(backup, true), /not an applied/);
   } finally { f.cleanup(); }
 });
+test('resolved settings override pins remotes while preserving object filters and local paths', () => {
+  const f = fixture(); try {
+    const settingsFile = path.join(f.root, 'resolved.json');
+    f.put(settingsFile, JSON.stringify({ packages: [{ source: 'npm:pi-subagents@0.84.0', extensions: [] }, 'repo:packages/pi-scheduler'] }));
+    const plan = f.plan({ settingsFile });
+    const settings = JSON.parse(plan.changes.find(item => item.target === path.join(f.agentDir, 'settings.json')).data);
+    assert.deepEqual(settings.packages, [{ source: 'npm:pi-subagents@0.84.0', extensions: [] }, path.join(f.repo, 'packages/pi-scheduler')]);
+  } finally { f.cleanup(); }
+});
 test('prospective extension tree matches managed apply, prune and retained edits without live config', () => {
   const f = fixture(); try {
     f.apply(f.plan());

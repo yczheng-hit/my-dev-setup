@@ -93,7 +93,7 @@ export function planExtensionTree(repo, agentDir) {
   return files;
 }
 export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path.join(home, '.config/herdr'),
-  hashlineDir = path.join(home, '.config/pi-hashline-edit-pro'), host, agentsOnly = true }) {
+  hashlineDir = path.join(home, '.config/pi-hashline-edit-pro'), host, agentsOnly = true, settingsFile }) {
   repo = path.resolve(repo); agentDir = path.resolve(agentDir); herdrDir = path.resolve(herdrDir); hashlineDir = path.resolve(hashlineDir);
   const manifestPath = path.join(agentDir, MANIFEST);
   const prior = readObject(manifestPath, { version: 1, repo, agentDir, files: [] });
@@ -113,7 +113,7 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     }
     desired.set(target, { target, data, kind });
   };
-  const source = (name) => fs.readFileSync(path.join(repo, 'pi', name));
+  const source = (name) => fs.readFileSync(name === 'settings.json' && settingsFile ? settingsFile : path.join(repo, 'pi', name));
   const merge = (name, target, transform = (value) => value) => add(target, json({ ...readObject(target), ...transform(JSON.parse(source(name))) }));
   merge('settings.json', path.join(agentDir, 'settings.json'), (settings) => ({ ...settings,
     packages: (settings.packages ?? []).map((entry) => {
@@ -271,7 +271,7 @@ function argsOf(args) {
   for (let index = 0; index < args.length; index++) {
     const name = args[index];
     if (['--apply', '--check', '--dry-run'].includes(name)) options[name.slice(2)] = true;
-    else if (['--repo', '--agent-dir', '--home', '--herdr-dir', '--hashline-dir', '--host', '--backup', '--restore'].includes(name) && args[index + 1]) options[name.slice(2)] = args[++index];
+    else if (['--settings', '--repo', '--agent-dir', '--home', '--herdr-dir', '--hashline-dir', '--host', '--backup', '--restore'].includes(name) && args[index + 1]) options[name.slice(2)] = args[++index];
     else throw new Error(`Unknown/missing argument: ${name}`);
   }
   return options;
@@ -284,7 +284,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     } else {
       if (!args.repo || !args['agent-dir']) throw new Error('Required: --repo <dir> --agent-dir <dir> [--apply --backup <dir>]');
       const plan = buildPlan({ repo: args.repo, agentDir: args['agent-dir'], home: args.home,
-        herdrDir: args['herdr-dir'], hashlineDir: args['hashline-dir'], host: args.host ?? process.env.PI_HOST_DIR });
+        herdrDir: args['herdr-dir'], hashlineDir: args['hashline-dir'], settingsFile: args.settings, host: args.host ?? process.env.PI_HOST_DIR });
       for (const warning of plan.warnings) console.warn(`warning\t${warning}`);
       for (const item of plan.changes) console.log(`${args.apply ? 'apply' : 'plan'}\t${item.kind}\t${item.target}`);
       if (args.apply) {

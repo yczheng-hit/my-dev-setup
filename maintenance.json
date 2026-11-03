@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "host": {
+    "package": "@earendil-works/pi-coding-agent",
+    "channel": "latest",
+    "installation": "preserve",
+    "missingInstallation": "npm-current-node"
+  },
+  "remote": {
+    "npmChannel": "latest",
+    "gitRef": "HEAD"
+  },
+  "toolCheckouts": {
+    "pi-btw-split": { "commit": "f55c6927b19296f4459f1a20a0dbf6a452d9dc8c", "policy": "repository-only" },
+    "herdr-monitor": { "commit": "285210694a51e5982e2426fe1f394a8c2f32af7f", "policy": "repository-only" }
+  },
+  "repositoryPackages": {
+    "packages/picc-permission-modes": { "kind": "patched", "upstream": "@ladbabynpm/picc-permission-modes", "policy": "repository-only" },
+    "packages/pi-openai-codex-compat": { "kind": "patched", "upstream": "pi-openai-codex-compat", "policy": "repository-only" },
+    "packages/pi-hud-footer": { "kind": "patched", "upstream": "pi-hud-footer", "policy": "repository-only" },
+    "packages/pi-scheduler": { "kind": "patched", "upstream": "@jl1990/pi-scheduler", "policy": "repository-only" },
+    "packages/pi-agents-context": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-agent-summary-time": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-fork-save": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-gpt-codex": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-unread-navigation": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-subagent-hud": { "kind": "adapter", "policy": "repository-only", "against": "npm:pi-subagents" },
+    "packages/pi-subagents-herdr-labels": { "kind": "adapter", "policy": "repository-only", "against": "npm:pi-subagents" },
+    "tools/pi-btw-split": { "kind": "owned-checkout", "policy": "owner-repository-only" }
+  }
+}

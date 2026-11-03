@@ -89,23 +89,32 @@ test('actual SDK and CLI loader patch is idempotent and excludes CLAUDE before r
     fs.rmSync(context, { recursive: true, force: true });
   }
 }));
-test('deployment fixture: dry-run, backups, idempotence and unsupported version refusal', () => fixture(dir => {
+for (const alreadyPatched of [false, true]) test(`deployment fixture (${alreadyPatched ? 'prepatched' : 'as-installed'}): dry-run, backups, idempotence and unsupported version refusal`, () => fixture(dir => {
   const copy = path.join(dir, 'host'), agent = path.join(dir, 'agent'), backup = path.join(dir, 'backups');
-  const source = fs.readFileSync(path.join(host, 'dist/core/resource-loader.js'), 'utf8');
+  const actualSource = fs.readFileSync(path.join(host, 'dist/core/resource-loader.js'), 'utf8');
+  const source = alreadyPatched ? patchResourceLoader(actualSource) : actualSource;
   put(copy, 'dist/core/resource-loader.js', source);
   const cliSource = 'import{statSync as statSync7}from"node:fs";function loadContextFileFromDir(dir){let candidates=["AGENTS.override.md","AGENTS.md","AGENTS.MD","CLAUDE.md","CLAUDE.MD"];for(let filename of candidates){let filePath=join15(dir,filename);if(existsSync13(filePath))try{if(!statSync7(filePath).isFile())continue;return {path:filePath}}catch{}}return null}';
-  put(copy, 'dist/bundle/chunks/context.js', cliSource);
+  put(copy, 'dist/bundle/chunks/context.js', alreadyPatched ? patchResourceLoader(cliSource) : cliSource);
   put(agent, 'extensions/claude-rules.ts', '// Retired: .agents/rules is provided by repo:packages/pi-agents-context.');
   applyAgentsOnly(copy, agent, backup, true);
   assert.equal(fs.readFileSync(path.join(copy, 'dist/core/resource-loader.js'), 'utf8'), source);
   assert.equal(fs.existsSync(backup), false);
 
   applyAgentsOnly(copy, agent, backup);
-  assert.ok(fs.existsSync(path.join(backup, 'pi-host/dist/core/resource-loader.js')));
+  const sdkBackup = path.join(backup, 'pi-host/dist/core/resource-loader.js');
+  const sdkChanged = patchResourceLoader(source) !== source;
+  assert.equal(fs.existsSync(sdkBackup), sdkChanged);
+  if (sdkChanged) assert.equal(fs.readFileSync(sdkBackup, 'utf8'), source);
+  const cliBackup = path.join(backup, 'pi-host/dist/bundle/chunks/context.js');
+  assert.equal(fs.existsSync(cliBackup), !alreadyPatched);
+  if (!alreadyPatched) assert.equal(fs.readFileSync(cliBackup, 'utf8'), cliSource);
   assert.ok(fs.existsSync(path.join(backup, 'retired/claude-rules.ts')));
   assert.equal(fs.existsSync(path.join(agent, 'extensions/claude-rules.ts')), false);
   applyAgentsOnly(copy, agent, backup);
-  assert.equal(fs.readFileSync(path.join(backup, 'pi-host/dist/core/resource-loader.js'), 'utf8'), source);
+  assert.equal(fs.existsSync(sdkBackup), sdkChanged);
+  if (sdkChanged) assert.equal(fs.readFileSync(sdkBackup, 'utf8'), source);
+  assert.equal(fs.existsSync(cliBackup), !alreadyPatched);
   assert.throws(() => patchResourceLoader('new unsupported loader'), /Unsupported/);
   put(copy, 'dist/core/resource-loader.js', source);
   put(copy, 'dist/bundle/chunks/context.js', 'function loadContextFileFromDir(dir){throw new Error("UNSUPPORTED_VERSION")}');

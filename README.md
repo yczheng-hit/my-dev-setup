@@ -18,11 +18,11 @@
 
 - scheduler 不再抢未提交 steer：草稿、排队消息、模型回合和弹窗期间，默认 shell 执行及结果唤醒等待；可显式允许后台 shell，但结果仍排在 scheduler 自有可取消队列。`/scheduler pause|resume|run|status`；`/schedules`、无参数 `/schedule-cancel` 提供可搜索的有界选择器，名称/完整或短 ID 歧义不猜，旧选择 revision 失效会拒绝。
 - 新增 `packages/pi-unread-navigation`：fullscreen 中人工“返回最新”优先定位最早未读最终回复正文开头，再次明确跳底；保留程序内部自动跟随。只按稳定可见范围近似计已读，分支/会话隔离，普通 scrollback 原生降级。
-- 完整 loader 预检保留 npm/git/本地包过滤，同时加载 standalone；真实 Pi 1.4 当前组合 **23 包 / 28 factories / 0 缺失 / 0 错误**。Node 权限限制临时目录写入，禁用 JS 网络与子进程，不触发真实会话或模型；原生 addon 检查仍要求信任扩展。
+- 完整 loader 预检保留 npm/git/本地包过滤，同时加载 standalone；真实 Pi 1.4 当前组合 **23 包 / 29 factories / 0 缺失 / 0 错误**。Node 权限限制临时目录写入，禁用 JS 网络与子进程，不触发真实会话或模型；原生 addon 检查仍要求信任扩展。
 - `setup.sh` 写配置前校验全部配置/宿主补丁，再检查完整加载组合。新的 managed inventory 只清理未修改的已管理旧扩展/主题，自定义代码保留；哈希匹配的事务备份可预览/恢复。**本轮没有运行真实 setup。**
 - scheduler/HUD 使用原生自定义 agent-dir；子任务 HUD 按终端列宽处理 CJK/emoji；Herdr bridge 保留嵌套 prompt 阻塞。性能先测量：50k 合成 entries 的 250 帧统计由每帧遍历变为 1 次；同 socket 10 路 pane-id 事件由 30 次 CLI 合并为 3 次（测试 fixture，不是生产延迟保证）。
 - 真实 Pi 1.4 的离线合成会话已验证 AGENTS、独立 auto reviewer、BTW factory、scheduler、未读导航和 HUD 共存；factory 预检之外还覆盖草稿阻塞、取消待交付结果、单次安全唤醒与导航清理。不等于真实审核服务/OAuth 或用户 UI 的线上验收。
-- 详细状态、已验与未验边界见 [UX 方案](docs/pi-ux-roadmap.md)、[预检/清单/恢复](docs/deployment-safety.md)。本地 BTW 修复在独立 checkout，尚未提交/推送/远端激活。
+- 详细状态、已验与未验边界见 [UX 方案](docs/pi-ux-roadmap.md)、[预检/清单/恢复](docs/deployment-safety.md)。本地 BTW 修复已提交推送；远端实际激活与线上使用仍需单独验收。
 
 ### 2026-10-28
 
@@ -89,13 +89,14 @@
 
 ## 使用
 
-机器上需要已经安装 **git、herdr、pi、Node.js / npm**；使用 herdr-monitor 还需要 **Python 3.11+**（缺少时只跳过 monitor）。工具本身的安装不在本仓库脚本中自动执行。
+推荐把本仓库链接交给 AI，要求“按仓库说明配置或更新本机”。根目录 `AGENTS.md` 和 `bootstrap.sh` 是统一入口：沿原安装方式更新 Pi、验证并安装最新远程插件，再配置环境；本地 hack 只使用仓库代码，不主动 merge 上游。需要已有 **git、Herdr、Node.js >=22.19 / npm**；Pi 缺失时使用当前 Node 对应 npm 安装。monitor 另需 Python 3.11+。详见 [自动维护](docs/maintenance.md)。
 
 ```bash
 git clone https://github.com/yczheng-hit/my-dev-setup.git ~/tools/my-dev-setup
 cd ~/tools/my-dev-setup
-./setup.sh --dry-run     # 预览，不修改环境
-./setup.sh               # 应用配置
+./bootstrap.sh --check    # 只读检查最新版、安装方式和插件类型
+./bootstrap.sh --prepare  # 隔离准备/验证；Pi 会话中使用
+./bootstrap.sh            # 外部终端：升级并配置本机（运行中 Pi 会阻塞）
 ```
 
 以后更新：
@@ -103,7 +104,7 @@ cd ~/tools/my-dev-setup
 ```bash
 cd ~/tools/my-dev-setup
 git pull --ff-only
-./setup.sh
+./bootstrap.sh
 ```
 
 仅扩展/资源改动可在运行中的 Pi 执行 `/reload`；若更新宿主或 AGENTS-only 补丁，必须重新启动 Pi。herdr 配置会尝试热加载，不会自动重启进程。本机 settings 若直接引用仓库源码，新启动或 `/reload` 即可能加载修改，**未运行 setup 不代表源码尚未生效**；setup 负责同步受管配置与宿主补丁。
@@ -119,10 +120,10 @@ git pull --ff-only
 - 本地插件仅安装必要的 runtime dependencies，不安装宿主 pi 的另一份副本。
 - 安装后会真正加载每个本地包里的原生扩展（tree-sitter、node-pty 等）。预编译文件因系统 libstdc++ 过老、Node ABI 不符等原因加载失败时，只针对那一个依赖用本机编译器重编译（`scripts/rebuild-native.mjs`，Linux 上静态链接 libstdc++），其他包仍然不运行安装脚本；`--no-rebuild` 只报告不编译。
 - 写配置前用 Pi 自己的资源加载器检查所有 repo/已安装 npm/git/standalone 扩展组合。加载失败停止配置写入；缺包明确标记 incomplete，部署安装清单后需再次检查。
-- npm 插件按清单由 pi 在下一次启动时自动安装。版本未锁定，更新插件另行执行 `pi update --extensions`。
+- `bootstrap.sh` 每次解析最新 stable 并隔离验证，通过后将远程来源固定为精确版本/commit；`maintenance.lock.json` 记录验证结果。`setup.sh` 仍可独立做旧式配置部署，但不负责更新 Pi。不要用宽泛的 `pi update --extensions` 替代分类型维护。
 - 默认 agent-dir 的官方 Herdr integration 用 `herdr integration install pi` 管理，不搬运生成文件；custom agent-dir 不偷偷写默认目录，需单独配置集成。
 - 同一个 herdr 插件 ID 如果已注册到另一个目录，保留原注册并警告，不偷偷替换。
-- 不读写 `auth.json`、`models.json`、`models-store.json`、session、日志、缓存。**部署配置与插件不需要登录或密钥**；只有实际使用需要认证的模型、联网服务时，才另行配置对应账号/凭据。
+- 不读写 `auth.json`、`models.json`、`models-store.json` 或真实 session/日志，不清全局缓存。维护会在本机私有目录备份包安装及 hashline 的 undo/snapshot 数据；候选使用临时缓存。**部署配置与插件不需要登录或密钥**；只有实际使用需要认证的模型、联网服务时，才另行配置对应账号/凭据。
 
 > **配置的实际内容包含默认模型和权限规则。** 默认模型仅保存 ID，不保存 key；在没有这些模型的机器上，可以删除 `defaultProvider`、`defaultModel`、`enabledModels` 这几个字段，沿用本机选择。权限规则包含 SSH/SCP 的 allowlist，见 `pi/permissions.json` 与 `pi/extensions/picc-permission-modes/config.json`；不需要时应先删除对应项。
 >
@@ -304,12 +305,9 @@ cp -R packages/pi-hud-footer/extensions/. "$tmp/package/extensions/"
 
 ### 升级第三方包
 
-上游发布新版本后：下载新版 → 套用 `patches/` 里的 patch → 处理冲突 → 替换 `packages/<name>/` → 重新生成 patch 并改文件名里的版本号 → 跑测试后部署。
+普通远程插件由 `./bootstrap.sh` 跟踪最新并验证；`maintenance.json` 中 `patched` 包以仓库源码为权威，自动维护**不查询、不 merge 第三方上游**。需要更新这些 hack 时显式修改仓库代码、测试和对应 patch，不能拿上游原版覆盖。独立自有工具按仓库记录的 commit 初始化，已有不同 checkout 保留并报告，不自动 pull/merge。
 
-```bash
-tmp=$(mktemp -d) && (cd "$tmp" && npm pack pi-hud-footer@<新版本> --silent && tar xzf *.tgz)
-(cd "$tmp/package" && patch -p1 < "$OLDPWD/patches/pi-hud-footer/0.8.0-local.patch")
-```
+维护类型、安装渠道、迁移与备份边界见 [docs/maintenance.md](docs/maintenance.md)。
 
 如果先在工具里调了配置，再把对应白名单文件复制回仓库。`pi/settings.json` 不要整份回拷（会带入 deviceId 和本机路径）；只把要维护的字段改回源文件。
 
