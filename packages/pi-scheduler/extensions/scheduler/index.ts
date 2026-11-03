@@ -139,6 +139,26 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	let unsubscribeInput: (() => void) | undefined;
 	let deliveryRunning = false;
 	const runningCommands = new Map<string, AbortController>();
+	const wakeReceipts = new Map<string, { taskId: string; content: string; generation: number }>();
+	pi.on("message_start", async (event, ctx) => {
+		if (event.message.role !== "user") return;
+		const text = typeof event.message.content === "string" ? event.message.content
+			: event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+		const receipt = [...wakeReceipts].find(([, value]) => value.generation === sessionGeneration && value.content === text);
+		if (!receipt || !isSessionActive(ctx)) return;
+		const [wakeId, sent] = receipt;
+		await transactTasks(current => {
+			const task = current.find(task => task.id === sent.taskId), wake = task?.pendingWake;
+			if (!task || !isSessionActive(ctx, sent.generation) || wake?.id !== wakeId || wake.ownerPid !== process.pid
+				|| wake.sessionFile !== currentSessionFile(ctx) || !["dispatching", "uncertain"].includes(wake.state)) return;
+			if (task.result?.attemptId === wakeId) task.result.wakeDisposition = "delivered";
+			const history = task.history?.find((entry: any) => entry.attemptId === wakeId);
+			if (history) history.wakeDisposition = "delivered";
+			delete task.pendingWake;
+		});
+		wakeReceipts.delete(wakeId);
+		rescheduleAll();
+	});
 	/** Persist before dispatch; ambiguous crash windows are never automatically replayed. */
 	async function flushWakes(ctx: ExtensionContext, generation = sessionGeneration): Promise<void> {
 		if (deliveryRunning || !isSessionActive(ctx, generation) || foreground.reason(ctx)) { updateStatus(ctx); return; }
@@ -163,12 +183,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				if (!isSessionActive(ctx, generation) || foreground.reason(ctx)) { wake.state = "queued"; return; }
 				// No await between the final foreground/ownership check and dispatch. Do not queue followUp.
 				try {
+					// ExtensionAPI is fire-and-forget. Only native message_start is a receipt.
+					wakeReceipts.set(wake.id, { taskId: task.id, content: wake.content, generation });
 					pi.sendUserMessage(wake.content);
 					foreground.touch();
-					if (task.result?.attemptId === wake.id) task.result.wakeDisposition = "delivered";
-					const history = task.history?.find((entry: any) => entry.attemptId === wake.id);
-					if (history) history.wakeDisposition = "delivered";
-					delete task.pendingWake;
+					wake.state = "uncertain"; // retain content; a rejected async send cannot be observed here
 				} catch (error: any) {
 					wake.state = "uncertain"; // retry might duplicate an accepted message
 					if (task.result?.attemptId === wake.id) { task.result.wakeDisposition = "failed"; task.result.wakeError = String(error?.message ?? error).slice(0, 1000); }
@@ -334,7 +353,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		if (task.pendingWake) return; // retain one result until delivered/cancelled; no catch-up burst
 		clearHandle(task.id);
 
-		if (task.type === "cron") {
+		if (task.type === "cron" && (task.foregroundDeferredAt !== task.nextRun || Date.parse(task.nextRun) > Date.now())) {
 			try {
 				const cron = new Cron(task.schedule, () => {
 					runInBackground(() => fireTask(task.id, ctx, generation), ctx, generation, `Scheduled task ${task.id} failed`);
@@ -377,6 +396,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	function rescheduleAll(generation = sessionGeneration): void {
 		const ctx = activeCtx;
 		if (!ctx || !isSessionActive(ctx, generation)) return;
+		for (const [wakeId, receipt] of wakeReceipts) {
+			if (!tasks.some(task => task.id === receipt.taskId && task.pendingWake?.id === wakeId)) wakeReceipts.delete(wakeId);
+		}
 		rescheduleAfterRefresh = false;
 		clearTimers();
 		for (const task of core.pendingTasks(tasks)) scheduleTaskHandle(task, ctx, generation);
@@ -552,7 +574,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				if (!candidate || candidate.enabled === false || candidate.status !== "pending") return undefined;
 				if (!taskBelongsToSession(candidate, ctx)) return undefined;
 				if (candidate.pendingWake) return undefined;
-				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) return undefined;
+				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) {
+					if (candidate.type === "cron" && Date.parse(candidate.nextRun) <= Date.now()) candidate.foregroundDeferredAt = candidate.nextRun;
+					return undefined;
+				}
 				const persistedNextRun = candidate.nextRun ?? candidate.dueAt;
 				if (claimOptions?.expectedNextRun && persistedNextRun !== claimOptions.expectedNextRun) return undefined;
 				const dueAt = Date.parse(claimOptions?.occurrence ?? persistedNextRun ?? "");
@@ -566,6 +591,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 					candidate.nextRun = claimOptions.occurrence;
 					candidate.dueAt = claimOptions.occurrence;
 				}
+				delete candidate.foregroundDeferredAt;
 				core.markScheduledTaskRunning(current, candidate.id, claimedAt, {
 					runOwner: { pid: process.pid, attemptId, sessionFile: currentSessionFile(ctx) },
 				});
@@ -582,6 +608,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 					persisted.status = "pending";
 					persisted.lastStatus = "error";
 					persisted.lastError = "Scheduled task start was cancelled because the session or foreground state changed";
+					if (persisted.type === "cron") persisted.foregroundDeferredAt = persisted.nextRun;
 					delete persisted.runOwner;
 					delete persisted.startedAt;
 				});
@@ -748,6 +775,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		activeCtx = ctx;
 		foreground.reset();
+		wakeReceipts.clear();
 		unsubscribeInput?.(); unsubscribeInput = ctx.hasUI ? ctx.ui.onTerminalInput?.(() => { foreground.touch(); }) : undefined;
 		if (foregroundTimer) clearInterval(foregroundTimer);
 		if (ctx.hasUI) {
@@ -777,6 +805,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		++sessionGeneration;
+		wakeReceipts.clear();
 		clearTimers();
 		refreshLoop.stop();
 		if (foregroundTimer) clearInterval(foregroundTimer);

@@ -52,7 +52,10 @@ async function harness(root, exec, sandboxOverrides = {}) {
     registerCommand: (name, command) => commands[name] = command,
     registerMessageRenderer: () => {}, registerEntryRenderer: () => {},
     appendEntry: (customType, data) => entries.push({customType, data}),
-    sendUserMessage: (text, options) => wakes.push({text, options}),
+    sendUserMessage: (text, options) => {
+      wakes.push({text, options});
+      if (sandboxOverrides.acknowledgeWakes !== false) queueMicrotask(() => track(events.message_start?.({ message: { role: 'user', content: [{ type: 'text', text }] } }, context)));
+    },
     sendMessage: (message, options) => messages.push({message, options}),
     exec,
   };

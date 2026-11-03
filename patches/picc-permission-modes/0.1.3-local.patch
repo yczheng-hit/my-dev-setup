@@ -1929,7 +1929,7 @@ index 53408dd..7414e3a 100644
 +}
  export { OPTIONS_TUI, OPTIONS_HEADLESS };
 diff --git a/index.ts b/index.ts
-index 90abc3a..f0f17ee 100644
+index 90abc3a..ac028c7 100644
 --- a/index.ts
 +++ b/index.ts
 @@ -7,7 +7,7 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
@@ -2005,7 +2005,7 @@ index 90abc3a..f0f17ee 100644
  export function loadSubagentModeConfig(
    configPath: string,
  ): PermissionMode | undefined {
-@@ -386,11 +429,13 @@ export function setInteractiveModeForTests(mode: PermissionMode | undefined): vo
+@@ -386,11 +429,14 @@ export function setInteractiveModeForTests(mode: PermissionMode | undefined): vo
  export default function permissionModesExtension(pi: ExtensionAPI): void {
    initializeAutoMode();
    const resolvedConfigPath = resolveAutoModeConfigPath();
@@ -2019,12 +2019,13 @@ index 90abc3a..f0f17ee 100644
 +    : ensurePermissionModesConfig(resolvedConfigPath);
 +  const subagentModeOverride = loadSubagentModeConfig(permissionModesConfigPath);
 +  const agentCanEnterPlanMode = loadAgentCanEnterPlanModeConfig(permissionModesConfigPath);
++  const configuredReviewer = { ...getAutoMode()!.classifierConfig() };
 +  // local patch: startup mode from `permissions.defaultMode`.
 +  const defaultMode = loadDefaultModeConfig(permissionModesConfigPath);
    const state = emptyState();
    const userPermissions = loadUserPermissions();
    function applyUserPermissions(
-@@ -421,7 +466,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -421,7 +467,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        state.ctx.alwaysAskRules.localSettings = [...repoPerms.ask];
      }
    }
@@ -2034,7 +2035,7 @@ index 90abc3a..f0f17ee 100644
    // Headless / SDK hosts (e.g. picc-claude-shim driven by T3) build their pi
    // session via `createAgentSession` directly and never call `bindExtensions`,
    // so pi never fires `session_start` for them. That means `applyFlagOverride`
-@@ -436,8 +482,70 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -436,8 +483,70 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     *  `persistState` to record the session's plan-file slug so `/resume`
     *  reuses the same plan file. */
    let currentSessionId: string = "";
@@ -2105,7 +2106,7 @@ index 90abc3a..f0f17ee 100644
    }
    function persistState(): void {
      const entry: ModesPersistedEntry = {
-@@ -514,6 +622,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -514,6 +623,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      ctx: ExtensionContext,
      opts: { fromPlan?: boolean; prePlanMode?: PermissionMode } = {},
    ): Promise<void> {
@@ -2113,7 +2114,7 @@ index 90abc3a..f0f17ee 100644
      const previous = currentMode;
      currentMode = next;
      publishMode(ctx);
-@@ -545,13 +654,48 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -545,13 +655,48 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      "acceptEdits",
      "plan",
      "bypassPermissions",
@@ -2163,7 +2164,7 @@ index 90abc3a..f0f17ee 100644
    pi.registerCommand("mode", {
      description:
        "Show or set the permission mode (default | acceptEdits | plan | bypassPermissions | auto)",
-@@ -603,16 +747,19 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -603,16 +748,19 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        "Start in a permission mode: default, acceptEdits, plan, bypassPermissions (or 'auto')",
      type: "string",
    });
@@ -2187,7 +2188,7 @@ index 90abc3a..f0f17ee 100644
        },
        onDeclinePlanMode: () => {},
      }),
-@@ -638,8 +785,21 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -638,8 +786,21 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      return { ...state.ctx, shouldAvoidPermissionPrompts: true };
    }
    pi.on("tool_call", async (event, ctx): Promise<{ block: true; reason: string } | undefined> => {
@@ -2210,7 +2211,7 @@ index 90abc3a..f0f17ee 100644
      if (tool === "edit" || tool === "write") {
        const target = extractToolPath(input);
        const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
-@@ -648,38 +808,27 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -648,38 +809,27 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        }
      }
      if (currentMode === "auto") {
@@ -2256,7 +2257,7 @@ index 90abc3a..f0f17ee 100644
      }
      if (currentMode === "bypassPermissions") {
        return applyBypassGate(tool, input, ctx);
-@@ -689,11 +838,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -689,11 +839,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      if (decision.behavior === "deny") {
        return { block: true, reason: decision.message };
      }
@@ -2269,7 +2270,7 @@ index 90abc3a..f0f17ee 100644
    pi.on("tool_result", async (event, ctx) => {
      if (event.toolName === "EnterPlanMode") {
        const details = (event as { details?: { entered?: boolean } }).details;
-@@ -839,6 +985,15 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -839,6 +986,15 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
            suggestions: pathCheck.suggestions ?? [],
          };
        }
@@ -2285,7 +2286,7 @@ index 90abc3a..f0f17ee 100644
        if (currentMode === "acceptEdits") {
          if (isReadOnly) {
            return {
-@@ -859,15 +1014,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -859,15 +1015,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
            decisionReason: { type: "other", reason: "read-only command" },
          };
        }
@@ -2301,7 +2302,7 @@ index 90abc3a..f0f17ee 100644
        const allowRule = matchingBashRule(cmd, "allow", ctx);
        if (allowRule) {
          return {
-@@ -918,10 +1064,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -918,10 +1065,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        }
        return checkReadPermissionForTool(tool, path, ctx, cwd);
      }
@@ -2315,7 +2316,7 @@ index 90abc3a..f0f17ee 100644
    }
    function applyBypassGate(
      tool: string,
-@@ -953,8 +1098,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -953,8 +1099,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      input: Record<string, unknown>,
      ctx: ExtensionContext,
    ): Promise<{ block: true; reason: string } | undefined> {
@@ -2326,7 +2327,7 @@ index 90abc3a..f0f17ee 100644
      }
      const orchestrator = getAutoMode();
      if (!orchestrator) {
-@@ -977,10 +1123,13 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -977,10 +1124,13 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
          sessionMessages: collectSessionMessages(ctx),
          ctx,
        });
@@ -2342,7 +2343,7 @@ index 90abc3a..f0f17ee 100644
          return askUserPermission(
            {
              behavior: "ask",
-@@ -996,7 +1145,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -996,7 +1146,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
            ctx,
          );
        }
@@ -2351,7 +2352,7 @@ index 90abc3a..f0f17ee 100644
          return askUserPermission(
            {
              behavior: "ask",
-@@ -1012,7 +1161,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1012,7 +1162,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
            ctx,
          );
        }
@@ -2360,7 +2361,7 @@ index 90abc3a..f0f17ee 100644
          rememberClassifierDecision(toolCallId, {
            kind: "block",
            via: result.via,
-@@ -1032,9 +1181,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1032,9 +1182,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        });
        return undefined;
      } catch (error) {
@@ -2373,7 +2374,7 @@ index 90abc3a..f0f17ee 100644
        rememberClassifierDecision(toolCallId, {
          kind: "block",
          via: "classify",
-@@ -1047,16 +1196,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1047,16 +1197,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
    }
    function collectSessionMessages(ctx: ExtensionContext): unknown[] {
@@ -2391,7 +2392,7 @@ index 90abc3a..f0f17ee 100644
    }
    async function askUserPermission(
      decision: PermissionResult,
-@@ -1064,6 +1204,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1064,6 +1205,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      input: Record<string, unknown>,
      ctx: ExtensionContext,
    ): Promise<{ block: true; reason: string } | undefined> {
@@ -2399,7 +2400,7 @@ index 90abc3a..f0f17ee 100644
      if (!ctx.hasUI) {
        const reason =
          decision.decisionReason?.type === "asyncAgent"
-@@ -1078,10 +1219,10 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1078,10 +1220,10 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      if (filePath) {
        const isRead =
          tool === "read" || tool === "grep" || tool === "find" || tool === "ls";
@@ -2412,7 +2413,7 @@ index 90abc3a..f0f17ee 100644
          "Yes",
          `Yes, and don't ask again for: ${base} *`,
          "No",
-@@ -1160,6 +1301,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1160,6 +1302,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
          overlayOptions: { anchor: "bottom-center", width: "100%" },
        },
      );
@@ -2420,7 +2421,7 @@ index 90abc3a..f0f17ee 100644
      if (!choice) return { block: true, reason: "user dismissed dialog" };
      if (choice === "Allow" || choice === "Yes") return undefined;
      if (isBashPrompt && choice.startsWith("Yes, and don't ask again for: ")) {
-@@ -1244,32 +1386,11 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1244,32 +1387,11 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
      persistState();
    }
@@ -2454,7 +2455,7 @@ index 90abc3a..f0f17ee 100644
    }
    pi.registerTool(
      makeExitPlanModeTool({
-@@ -1277,9 +1398,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1277,9 +1399,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
        applyExit: async (ctx, { mode, plan, allowedPrompts }) => {
          await applyPlanExit(mode, plan, ctx, allowedPrompts);
        },
@@ -2464,7 +2465,7 @@ index 90abc3a..f0f17ee 100644
      }),
    );
    pi.on("before_agent_start", async (event, ctx) => {
-@@ -1327,117 +1445,15 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1327,117 +1446,16 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
      return undefined;
    });
@@ -2583,11 +2584,12 @@ index 90abc3a..f0f17ee 100644
      ctx: ExtensionContext,
    ): Promise<void> {
 -    lastCtx = ctx;
++    getAutoMode()?.configure({ ...configuredReviewer });
 +    invalidateReviews(ctx, true);
      state.originalCwd = ctx.cwd;
      currentSessionId = ctx.sessionManager.getSessionId();
      const reason = event?.reason;
-@@ -1519,7 +1535,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1519,7 +1537,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      _event: unknown,
      ctx: ExtensionContext,
    ): Promise<void> {
@@ -2596,7 +2598,7 @@ index 90abc3a..f0f17ee 100644
      await refreshSessionContext(ctx);
    }
    function applyFlagOverride(): void {
-@@ -1581,6 +1597,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1581,6 +1599,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
      }
      ensurePlansDir();
      if (ctx.hasUI) {
@@ -2604,7 +2606,7 @@ index 90abc3a..f0f17ee 100644
        installFooter(ctx);
        updateStatus(ctx);
      }
-@@ -1588,7 +1605,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
+@@ -1588,7 +1607,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
    }
    pi.on("session_start", onSessionStart);
    pi.on("session_tree", onSessionTree);

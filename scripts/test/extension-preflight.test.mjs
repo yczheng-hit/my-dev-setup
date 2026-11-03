@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const host = process.env.PI_HOST_DIR;
 const script = fileURLToPath(new URL('../check-pi-extensions.mjs', import.meta.url));
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'extension-preflight-test-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'extension-preflight-test-')));
   const repo = path.join(root, 'repo'); const agent = path.join(root, 'installed');
   fs.mkdirSync(path.join(repo, 'pi/extensions'), { recursive: true });
   fs.mkdirSync(agent);
@@ -80,5 +80,43 @@ test('pinned npm mismatch is incomplete rather than silently testing another ver
     assert.equal(result.status, 2, result.stdout + result.stderr);
     assert.match(result.stdout, /does not satisfy configured source/);
     assert.match(result.stdout, /loaded=0 missing=1 failed=0/);
+  } finally { f.cleanup(); }
+});
+
+test('preflight loads preserved custom standalone code rather than the repository replacement', opts, () => {
+  const f = fixture(); try {
+    f.put('repo/pi/extensions/question.ts', 'export default () => {};');
+    f.put('installed/extensions/question.ts', 'throw new Error("PRESERVED_CUSTOM_FAILS");');
+    const result = f.run([]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /PRESERVED_CUSTOM_FAILS/);
+  } finally { f.cleanup(); }
+});
+test('preflight also includes unknown retained standalone extensions', opts, () => {
+  const f = fixture(); try {
+    f.put('installed/extensions/custom.ts', 'throw new Error("UNKNOWN_CUSTOM_FAILS");');
+    const result = f.run([]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /UNKNOWN_CUSTOM_FAILS/);
+  } finally { f.cleanup(); }
+});
+test('preflight retains explicit local extension paths inherited by settings merge', opts, () => {
+  const f = fixture(); try {
+    f.put('installed/settings.json', JSON.stringify({ extensions: ['./external.ts'] }));
+    f.put('installed/external.ts', 'throw new Error("RETAINED_EXPLICIT_FAILS");');
+    const result = f.run([]);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /RETAINED_EXPLICIT_FAILS/);
+  } finally { f.cleanup(); }
+});
+test('preflight excludes known retired Claude rules and rejects unknown legacy ownership', opts, () => {
+  const f = fixture(); try {
+    f.put('installed/extensions/claude-rules.ts', '// Retired: .agents/rules is provided by repo:packages/pi-agents-context.\nthrow new Error("RETIRED_RAN");');
+    const known = f.run([]);
+    assert.equal(known.status, 0, known.stdout + known.stderr);
+    assert.match(known.stdout, /loaded=0 missing=0 failed=0/);
+    f.put('installed/extensions/claude-rules.ts', 'throw new Error("CUSTOM_LEGACY");');
+    const unknown = f.run([]);
+    assert.equal(unknown.status, 1); assert.match(unknown.stdout + unknown.stderr, /Custom legacy extension preserved/);
   } finally { f.cleanup(); }
 });

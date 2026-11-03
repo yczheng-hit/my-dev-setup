@@ -2,7 +2,7 @@
 
 ## 范围与状态
 
-用户已通过“开始处理，完成这个方案”授权完整本地方案：AGENTS-only、独立 auto reviewer、BTW reload、前台优先 scheduler、易取消任务、未读最终回复导航，以及部署前检查/inventory、CJK HUD、Herdr 提示与有测量依据的性能修复。**不运行 setup、不部署配置、不修改活动 Pi 安装、不把默认 bypass 改成 auto、不改远端或 Herdr-managed integration、不伪造身份、不读取真实会话正文。**
+用户已授权完整本地方案及提交、普通推送与确认问题的补修：AGENTS-only、独立 auto reviewer、BTW reload、前台优先 scheduler、易取消任务、未读最终回复导航，以及预检/inventory、CJK HUD、Herdr 提示与测量后性能修复。**不运行真实 setup、不写活动配置或 Pi 安装、不把默认 bypass 改成 auto、不做远端部署/发布、不改 Herdr-managed integration、不伪造身份、不读取真实会话正文。**
 
 | 工作 | 当前状态 | 下一步 |
 | --- | --- | --- |
@@ -10,11 +10,11 @@
 | 独立 auto reviewer | 运行代码、命令、安全门、离线集成测试完成 | 实际审核 provider 可用性、UI 和部署验收 |
 | BTW native 依赖 reload | 本地修复；双版本回归与真实 bundled TUI 多次改源 reload 通过 | 远端激活另获授权，身份缺失根因仍单列 |
 | 返回底部优先定位未读最终回复 | 独立包本地实现；20 项真实 TUI 组件/布局回归、严格类型检查通过 | 完整加载与合成跨功能会话通过；实际目标会话启用需另授权 |
-| scheduler 不打断 steer | 本地前台 gate + durable pending wake；含 live 的全套 **150/150** 通过 | 部署/目标会话启用另授权 |
-| scheduler 易于辨认和取消 | 原生可搜索有界选择器、名称/完整 ID/短 ID 消歧、revision 重验、uncertain 不重放、显式本机终止 | 部署/目标会话启用另授权 |
+| scheduler 不打断 steer | 本地前台 gate + durable pending wake；含 live 的全套 **154/154** 通过 | 实际配置同步/目标 UI 验收另授权 |
+| scheduler 易于辨认和取消 | 原生可搜索有界选择器、名称/完整 ID/短 ID 消歧、revision 重验、uncertain 不重放、显式本机终止 | 实际配置同步/目标 UI 验收另授权 |
 | 部署前支持项 | 完整 loader、inventory/restore、自定义 agent-dir、嵌套提示、CJK 和测量后性能修复本地通过；真实 Pi 合成跨功能会话通过 | 实际 provider、实际 UI 和部署验收另授权 |
 
-支持项已纳入授权范围，但不把未完成项混报为通过。性能优化先测量；任何激活、安装更新、远端操作均另获授权。
+支持项已纳入授权范围，但不把未完成项混报为通过。性能优化先测量。本机 settings 直接引用部分仓库 package，新启动或 `/reload` 可直接加载源码，**未 setup 不等于未启用新版代码**；配置同步和宿主补丁仍未执行，不能由此推断活动会话的具体已加载版本。
 
 ## 0. BTW 交接修复：先解决已证实的 reload 缓存
 
@@ -52,7 +52,7 @@
 
 ### 验证证据
 
-- 权限全套：**581 passed / 6 skipped / 0 failed**（21 suites）。
+- 权限全套：**584 passed / 6 skipped / 0 failed**（21 suites）。
 - AGENTS/宿主副本测试：**5 passed**；覆盖 SDK 与 bundled CLI、实际补丁语法、拒读跟踪、worktree shadow、trust、Claude symlink、dry-run、backup、幂等和不支持布局拒绝。
 - 真实 Pi ModelRuntime/ModelRegistry + 内存 provider：审核 key/header 隔离、无工具、主模型不变，通过。
 - 真实 SessionManager 压缩投影：旧消息省略、摘要证据不冒充新用户授权，通过。
@@ -63,8 +63,8 @@
 ### 不能据此宣称的内容
 
 - 没有调用真实外部审核服务，未验证真实 OAuth refresh、账户额度、审核判断质量/误报率和端到端延迟。
-- 已通过新的完整 factory 组合加载/清理：23 个配置包（包含全部已安装 npm/git 与 BTW）、28 factories，missing=0、failed=0；这仍不等于所有第三方扩展的完整交互/模型端到端验收。
-- 新增包/HUD/scheduler/AGENTS 已用 TypeScript 6 对 Pi 1.4 严格检查；permission 全包仍以 581/6 skip 测试、离线 registry/model-turn 为证据，没有声称完整宿主 tsc。没有应用宿主补丁/部署设置；当前运行中的 Pi 仍保留旧发现行为。
+- 已通过新的完整 factory 组合加载/清理：23 个配置包（包含全部已安装 npm/git 与 BTW）、29 factories（包含保留本机扩展、排除退休 Claude rules），missing=0、failed=0；这仍不等于所有第三方扩展的完整交互/模型端到端验收。
+- 新增包/HUD/scheduler/AGENTS 已用 TypeScript 6 对 Pi 1.4 严格检查；permission 全包仍以 584/6 skip 测试、离线 registry/model-turn 为证据，没有声称完整宿主 tsc。没有应用宿主补丁/部署设置；当前运行中的 Pi 仍保留旧发现行为。
 - auto 是应用层权限闸，不是 OS sandbox；文本 hardDeny 是审核指引，不等于确定性系统拦截。
 
 **结论：核心实现与离线安全回归通过，可以进入部署前验收；不是“线上已启用且万无一失”。默认仍为 bypassPermissions。**
@@ -137,13 +137,14 @@ scheduled → due → waiting-for-foreground → running
 
 ## 5. 部署支持项：本地实现与边界
 
-- 完整 loader：Pi 原生资源解析 + 保留 package filters，已安装 npm/git 只读定位，standalone 一起加载。独立 HOME/cwd/agent-dir、Node 写权限限制、JS 网络/子进程阻止；真实 runner/空 SessionManager 清理，不读取真实会话。当前 23 包/28 factories 全部加载。原生 addon 仍需信任，不声称安全执行恶意代码。
+- 完整 loader：Pi 原生资源解析 + 保留 package filters，已安装 npm/git 只读定位，standalone 一起加载。独立 HOME/cwd/agent-dir、Node 写权限限制、JS 网络/子进程阻止；真实 runner/空 SessionManager 清理，不读取真实会话。当前 23 包/29 factories（含保留的本机扩展，排除退休 Claude rules）全部加载。原生 addon 仍需信任，不声称安全执行恶意代码。
 - managed deployment：写入前整体验证、配置/宿主同一哈希备份、排他锁、原子 rename、普通 I/O 故障回滚；只 prune 未修改的已管理旧 extensions/themes，custom/official integration 保留。默认预览恢复，所有后态哈希和原 blob 一致才执行。断电/强杀不具备跨文件 crash-atomic 保证。
 - scheduler/HUD 跟随 `getAgentDir()`；custom dir 不偷写默认官方集成。嵌套 Herdr prompt 不因内层关闭提前清空 blocked；不修改 managed integration。
 - CJK/emoji：HUD 按真实终端列宽截断，包括极小预算和 lead 前缀。
 - 性能：先测 50k entries × 250 frames 的分支遍历；缓存从每帧复制改为稳定 leaf/scope 下 1 次，append/切支/全 session 无 count 保守 fallback 有回归。同 socket pane-id 10 并发事件从 10 scans/30 CLI 改为 1 scan/3 CLI；async exec 保留 lock heartbeat，持锁期间新请求继续 drain；不运行常驻 daemon。
 - 跨功能真实 Pi 1.4 合成会话：AGENTS 与 `.agents/rules` 进入 provider context；auto 使用独立 reviewer key/header、无 tools、不改主模型；BTW 已注册；HUD editor/footer 与未读 widget 共存，人工回最新显示答案开头；草稿期间后台 shell 结果不唤醒模型且可按名称取消；清空草稿/resume 后只唤醒一次，shutdown 清理导航实例包装与 HUD editor。仍未使用真实凭据或用户会话。
-- 最终回归：scheduler **150/150**（含 live）；support/navigation/HUD/AGENTS/scripts **86/86**（含新增 pane symlink 防护与跨功能会话）；permission **581 passed / 6 skipped**；GPT 5、fork-save 10、summary-time 4、BTW 40；完整加载 23 包/28 factories；严格类型检查 16 root files；三份 runtime patch 与 npm 基线一致。
+- 最终回归：scheduler **154/154**（含 live）；support/navigation/HUD/AGENTS/scripts **93/93**（含新增边界与真实 SDK 回归）；permission **584 passed / 6 skipped**；GPT 5、fork-save 10、summary-time 4、BTW 40；严格类型检查 16 root files。
+- 推送后边界补修：cron foreground deferral 持久保留 due occurrence、长 wake 不再被 16k 存储过滤静默清除、原生 message_start 确认交付（异步拒绝保留 uncertain，绝不自动重发）；`/auto model` 临时选择在新建/恢复/fork session 恢复配置值；预检加载 prospective 保留代码树及继承的显式路径。新增真实 SDK 无凭据异步拒绝与成功确认回归。
 - 详细使用与恢复范围见 [deployment-safety.md](deployment-safety.md)。没有运行真实 setup、修改活动宿主或执行远端激活。
 
 ## 本地实施完成；激活另行授权

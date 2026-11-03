@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildPlan, applyPlan, restoreBackup } from '../managed-deploy.mjs';
+import { planExtensionTree, buildPlan, applyPlan, restoreBackup } from '../managed-deploy.mjs';
 
 const original = fileURLToPath(new URL('../..', import.meta.url));
 function fixture() {
@@ -36,6 +36,23 @@ test('plan is read-only; apply is idempotent, inventory-backed and exact restore
     assert.deepEqual(fs.readFileSync(path.join(f.agentDir, 'settings.json')), before);
     assert.equal(fs.existsSync(path.join(f.agentDir, '.my-dev-setup-manifest.json')), false);
     assert.throws(() => restoreBackup(backup, true), /not an applied/);
+  } finally { f.cleanup(); }
+});
+test('prospective extension tree matches managed apply, prune and retained edits without live config', () => {
+  const f = fixture(); try {
+    f.apply(f.plan());
+    const dir = path.join(f.agentDir, 'extensions');
+    f.put(path.join(dir, 'question.ts'), 'custom same path');
+    f.put(path.join(dir, 'custom.ts'), 'unknown extension');
+    f.put(path.join(dir, 'local-secret.json'), '{"doNotCopy":"SYNTHETIC_SECRET"}');
+    fs.unlinkSync(path.join(f.repo, 'pi/extensions/todo.ts'));
+    const tree = planExtensionTree(f.repo, f.agentDir);
+    assert.equal(tree.get('question.ts').toString(), 'custom same path');
+    assert.equal(tree.get('custom.ts').toString(), 'unknown extension');
+    assert.equal(tree.has('todo.ts'), false); assert.equal(tree.has('local-secret.json'), false);
+    f.apply(f.plan());
+    assert.equal(fs.existsSync(path.join(dir, 'todo.ts')), false);
+    for (const [relative, bytes] of tree) assert.deepEqual(fs.readFileSync(path.join(dir, relative)), bytes);
   } finally { f.cleanup(); }
 });
 test('prune only unchanged owned stale resources; preserve modified and unknown extensions', () => {

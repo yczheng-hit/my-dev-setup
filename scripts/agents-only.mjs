@@ -22,7 +22,7 @@ export function patchResourceLoader(source) {
   after = exactlyOne(after, /if\s*\(\s*!statSync\d*\(filePath\)\.isFile\(\)\s*\)/, (match) => match.replace('!', '__agentsOnlyForbidden(filePath)||!'));
   return HELPER + after;
 }
-function legacyTarget(agentDir) {
+export function legacyTarget(agentDir) {
   const target = path.join(agentDir, 'extensions/claude-rules.ts');
   if (!fs.existsSync(target)) return;
   const source = fs.readFileSync(target, 'utf8');

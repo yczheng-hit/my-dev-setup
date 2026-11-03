@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { planAgentsOnly } from './agents-only.mjs';
+import { planAgentsOnly, legacyTarget } from './agents-only.mjs';
 
 const MANIFEST = '.my-dev-setup-manifest.json';
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -61,6 +61,37 @@ function validateManifest(manifest, agentDir, repo) {
     seen.add(item.target);
   }
 }
+function preserveCustomExtension(target, data, old) {
+  const current = bytesAt(target);
+  return current !== null && digest(current) !== digest(data) && (!old || digest(current) !== old.hash);
+}
+// The same ownership/pruning rules as buildPlan, but only standalone resources.
+// Return prospective bytes without applying a deployment or reading auth/session data.
+export function planExtensionTree(repo, agentDir) {
+  repo = path.resolve(repo); agentDir = path.resolve(agentDir);
+  const prior = readObject(path.join(agentDir, MANIFEST), { version: 1, repo, agentDir, files: [] });
+  validateManifest(prior, agentDir, repo);
+  const previous = new Map(prior.files.map(item => [item.target, item]));
+  const root = path.join(agentDir, 'extensions'); const desired = new Set();
+  // Never copy live extension JSON/config, logs or credential-like ancillary files.
+  const files = new Map(walk(root).filter(file => /\.(?:[cm]?[jt]s|tsx|jsx)$/.test(file) || path.basename(file) === 'package.json')
+    .map(file => [path.relative(root, file), bytesAt(file)]));
+  for (const file of walk(path.join(repo, 'pi/extensions'))) {
+    const relative = path.relative(path.join(repo, 'pi/extensions'), file);
+    if (relative === 'claude-rules.ts') continue;
+    desired.add(relative);
+    const data = fs.readFileSync(file), target = path.join(root, relative);
+    if (relative.endsWith('.json') || !preserveCustomExtension(target, data, previous.get(target))) files.set(relative, data);
+  }
+  for (const old of prior.files) {
+    const relative = path.relative(root, old.target);
+    if (relative.startsWith('..') || path.isAbsolute(relative) || desired.has(relative) || relative === 'herdr-agent-state.ts') continue;
+    if (hashAt(old.target) === old.hash) files.delete(relative);
+  }
+  const retired = legacyTarget(agentDir);
+  if (retired) files.delete(path.relative(root, retired));
+  return files;
+}
 export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path.join(home, '.config/herdr'),
   hashlineDir = path.join(home, '.config/pi-hashline-edit-pro'), host, agentsOnly = true }) {
   repo = path.resolve(repo); agentDir = path.resolve(agentDir); herdrDir = path.resolve(herdrDir); hashlineDir = path.resolve(hashlineDir);
@@ -73,8 +104,8 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     target = path.resolve(target); const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
     if (target.endsWith('.json')) JSON.parse(data.toString('utf8'));
     if (desired.has(target)) throw new Error(`Duplicate deployment target: ${target}`);
-    const current = bytesAt(target); const old = previous.get(target);
-    if (kind === 'extension' && current !== null && digest(current) !== digest(data) && (!old || digest(current) !== old.hash)) {
+    const old = previous.get(target);
+    if (kind === 'extension' && preserveCustomExtension(target, data, old)) {
       // No ownership evidence: never overwrite a user's extension, even at a desired path.
       warnings.push(`preserved custom extension: ${target}`);
       if (old) preserved.set(target, old);

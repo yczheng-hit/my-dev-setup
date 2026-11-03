@@ -182,7 +182,7 @@ if [ "$DRY_RUN" = 1 ]; then
   log "[dry-run] skipped (dependencies may not be installed yet)"
 else
   ext_status=0
-  ext_out="$(node "$REPO/scripts/check-pi-extensions.mjs" "$REPO" 2>&1)" || ext_status=$?
+  ext_out="$(node "$REPO/scripts/check-pi-extensions.mjs" "$REPO" --agent-dir "$PI_DIR" 2>&1)" || ext_status=$?
   while IFS=$'\t' read -r kind pkg_name detail; do
     case "$kind" in
       ok)      log "loads      $pkg_name ($detail)" ;;
@@ -304,6 +304,7 @@ if [ "$problems" != 0 ]; then
   warn "$problems problem(s) above: configuration was applied, but some plugins will not load."
 fi
 log "npm: packages are installed by pi on its next start."
-log "running pi sessions: run /reload to pick up changes."
+log "running pi sessions: restart Pi after host/AGENTS-only patches; /reload only reloads extensions/resources."
+log "local package sources can already be active before setup; setup synchronizes managed configuration."
 log "herdr-monitor: run ./monitor.sh inside a herdr pane."
 [ "$problems" = 0 ] || exit 1

@@ -80,16 +80,21 @@ async function worker(options) {
     packages.push(typeof entry === 'string' ? installed : { ...entry, source: installed });
     console.log(`ok\t${source}\tresolved read-only${typeof entry === 'object' ? ' (filters preserved)' : ''}`);
   }
-  const extensionSource = path.join(repo, 'pi/extensions');
-  if (fs.existsSync(extensionSource)) fs.cpSync(extensionSource, path.join(agentDir, 'extensions'), {
-    recursive: true, filter: (source) => source !== path.join(extensionSource, 'claude-rules.ts'),
-  });
+  const { planExtensionTree } = await import('./managed-deploy.mjs');
+  for (const [relative, bytes] of planExtensionTree(repo, sourceAgent)) {
+    const target = path.join(agentDir, 'extensions', relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, bytes);
+  }
   // Only desired repository config; never copy live user config, auth, sessions, or project data.
   for (const name of ['pi-cc-extensions.json', 'openai-codex-compat.json']) {
     const source = path.join(repo, 'pi', name);
     if (fs.existsSync(source)) fs.copyFileSync(source, path.join(agentDir, name));
   }
-  const extensions = (desired.extensions ?? []).map((entry) => {
+  // setup shallow-merges settings: a local extensions list survives when absent from desired.
+  const liveSettings = path.join(sourceAgent, 'settings.json');
+  const retainedExtensions = desired.extensions === undefined && fs.existsSync(liveSettings)
+    ? JSON.parse(fs.readFileSync(liveSettings, 'utf8')).extensions ?? [] : [];
+  const extensions = (desired.extensions ?? retainedExtensions).map((entry) => {
     const prefix = /^[!+-]/.test(entry) ? entry[0] : '';
     const source = entry.slice(prefix.length);
     return prefix + (source.startsWith('repo:') ? path.resolve(repo, source.slice(5)) : path.resolve(sourceAgent, source));

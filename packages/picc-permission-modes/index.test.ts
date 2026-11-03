@@ -3124,6 +3124,25 @@ describe("auto mode: user rules precede the classifier", () => {
     await pi.simulateCommand("auto", "model active", ctx);
     expect(getAutoMode()!.classifierConfig().mode).toBe("active");
   });
+  it.each(["new", "resume", "fork"])("temporary reviewer resets on %s session", async reason => {
+    writeLocalConfig({});
+    writeFileSync(process.env.PICC_PERMISSION_MODES_CONFIG_PATH!, JSON.stringify({
+      permissions: { allow: [], deny: [], ask: [] },
+      autoMode: { classifier: { mode: "fixed", provider: "configured", model: "reviewer" } },
+    }));
+    permissionModesExtension(makeFakePiForExtension(pi));
+    await pi.simulateSessionStart(cwd);
+    const ctx = pi.fakeCtxFor({ cwd });
+    ctx.model = { provider: "main", id: "unchanged" };
+    ctx.modelRegistry.find = (provider: string, id: string) => ({ provider, id });
+    const baseline = { ...getAutoMode()!.classifierConfig() };
+    await pi.simulateCommand("auto", "model other/temporary", ctx);
+    expect(getAutoMode()!.label(ctx)).toBe("other/temporary");
+    await pi.simulateSessionStart(cwd, undefined, reason);
+    expect(getAutoMode()!.classifierConfig()).toEqual(baseline);
+    expect(baseline).toMatchObject({ mode: "fixed", provider: "configured", model: "reviewer" });
+    expect(ctx.model).toEqual({ provider: "main", id: "unchanged" });
+  });
 });
 describe("Auto-mode classifier note: pre-LLM context strip", () => {
   let pi: FakePi;

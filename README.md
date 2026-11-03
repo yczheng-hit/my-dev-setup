@@ -106,7 +106,7 @@ git pull --ff-only
 ./setup.sh
 ```
 
-运行中的 pi 执行 `/reload`；herdr 配置会尝试热加载，不会自动重启进程。
+仅扩展/资源改动可在运行中的 Pi 执行 `/reload`；若更新宿主或 AGENTS-only 补丁，必须重新启动 Pi。herdr 配置会尝试热加载，不会自动重启进程。本机 settings 若直接引用仓库源码，新启动或 `/reload` 即可能加载修改，**未运行 setup 不代表源码尚未生效**；setup 负责同步受管配置与宿主补丁。
 
 ### 脚本行为
 

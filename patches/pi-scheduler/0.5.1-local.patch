@@ -32,7 +32,7 @@ index 0000000..67dd70c
 +}
 +module.exports = { createForegroundGate };
 diff --git a/extensions/scheduler/index.ts b/extensions/scheduler/index.ts
-index 0485891..3aa7c63 100644
+index 0485891..02a9008 100644
 --- a/extensions/scheduler/index.ts
 +++ b/extensions/scheduler/index.ts
 @@ -3,14 +3,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
@@ -188,7 +188,7 @@ index 0485891..3aa7c63 100644
  export default function schedulerExtension(pi: ExtensionAPI) {
  	let tasks: ScheduledTask[] = [];
  	let handles = new Map<string, TimerHandle>();
-@@ -130,6 +134,90 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -130,6 +134,109 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	const abandonedAttempts = new Set<string>();
  	const store = createTaskStore({ stateFile: STATE_FILE, sanitize: core.sanitizeTasks });
 
@@ -197,6 +197,26 @@ index 0485891..3aa7c63 100644
 +	let unsubscribeInput: (() => void) | undefined;
 +	let deliveryRunning = false;
 +	const runningCommands = new Map<string, AbortController>();
++	const wakeReceipts = new Map<string, { taskId: string; content: string; generation: number }>();
++	pi.on("message_start", async (event, ctx) => {
++		if (event.message.role !== "user") return;
++		const text = typeof event.message.content === "string" ? event.message.content
++			: event.message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
++		const receipt = [...wakeReceipts].find(([, value]) => value.generation === sessionGeneration && value.content === text);
++		if (!receipt || !isSessionActive(ctx)) return;
++		const [wakeId, sent] = receipt;
++		await transactTasks(current => {
++			const task = current.find(task => task.id === sent.taskId), wake = task?.pendingWake;
++			if (!task || !isSessionActive(ctx, sent.generation) || wake?.id !== wakeId || wake.ownerPid !== process.pid
++				|| wake.sessionFile !== currentSessionFile(ctx) || !["dispatching", "uncertain"].includes(wake.state)) return;
++			if (task.result?.attemptId === wakeId) task.result.wakeDisposition = "delivered";
++			const history = task.history?.find((entry: any) => entry.attemptId === wakeId);
++			if (history) history.wakeDisposition = "delivered";
++			delete task.pendingWake;
++		});
++		wakeReceipts.delete(wakeId);
++		rescheduleAll();
++	});
 +	/** Persist before dispatch; ambiguous crash windows are never automatically replayed. */
 +	async function flushWakes(ctx: ExtensionContext, generation = sessionGeneration): Promise<void> {
 +		if (deliveryRunning || !isSessionActive(ctx, generation) || foreground.reason(ctx)) { updateStatus(ctx); return; }
@@ -221,12 +241,11 @@ index 0485891..3aa7c63 100644
 +				if (!isSessionActive(ctx, generation) || foreground.reason(ctx)) { wake.state = "queued"; return; }
 +				// No await between the final foreground/ownership check and dispatch. Do not queue followUp.
 +				try {
++					// ExtensionAPI is fire-and-forget. Only native message_start is a receipt.
++					wakeReceipts.set(wake.id, { taskId: task.id, content: wake.content, generation });
 +					pi.sendUserMessage(wake.content);
 +					foreground.touch();
-+					if (task.result?.attemptId === wake.id) task.result.wakeDisposition = "delivered";
-+					const history = task.history?.find((entry: any) => entry.attemptId === wake.id);
-+					if (history) history.wakeDisposition = "delivered";
-+					delete task.pendingWake;
++					wake.state = "uncertain"; // retain content; a rejected async send cannot be observed here
 +				} catch (error: any) {
 +					wake.state = "uncertain"; // retry might duplicate an accepted message
 +					if (task.result?.attemptId === wake.id) { task.result.wakeDisposition = "failed"; task.result.wakeError = String(error?.message ?? error).slice(0, 1000); }
@@ -279,7 +298,7 @@ index 0485891..3aa7c63 100644
  	function isOwnerActive(owner: Record<string, any> | undefined): boolean {
  		return !(owner?.pid === process.pid && abandonedAttempts.has(owner?.attemptId)) && isRunOwnerActive(owner);
  	}
-@@ -219,13 +307,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -219,13 +326,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  			return;
  		}
 
@@ -299,7 +318,7 @@ index 0485891..3aa7c63 100644
  		}
  		ctx.ui.setWidget("scheduler", lines, { placement: "belowEditor" });
  	}
-@@ -233,7 +321,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -233,7 +340,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	function updateStatus(ctx = activeCtx): void {
  		if (!ctx?.hasUI) return;
  		const count = core.pendingTasks(visibleTasks(ctx)).length;
@@ -310,15 +329,19 @@ index 0485891..3aa7c63 100644
  		updateWidget(ctx);
  	}
 
-@@ -241,6 +331,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -241,9 +350,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		if (!isSessionActive(ctx, generation)) return;
  		if (task.enabled === false || task.status !== "pending") return;
  		if (!taskBelongsToSession(task, ctx)) return;
 +		if (task.pendingWake) return; // retain one result until delivered/cancelled; no catch-up burst
  		clearHandle(task.id);
 
- 		if (task.type === "cron") {
-@@ -266,7 +357,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+-		if (task.type === "cron") {
++		if (task.type === "cron" && (task.foregroundDeferredAt !== task.nextRun || Date.parse(task.nextRun) > Date.now())) {
+ 			try {
+ 				const cron = new Cron(task.schedule, () => {
+ 					runInBackground(() => fireTask(task.id, ctx, generation), ctx, generation, `Scheduled task ${task.id} failed`);
+@@ -266,7 +376,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		const dueAt = Date.parse(task.nextRun ?? task.dueAt);
  		if (!Number.isFinite(dueAt)) return;
  		const delay = Math.max(0, dueAt - Date.now());
@@ -328,7 +351,17 @@ index 0485891..3aa7c63 100644
 
  		const timer = setTimeout(() => {
  			runInBackground(async () => {
-@@ -316,6 +408,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -285,6 +396,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 	function rescheduleAll(generation = sessionGeneration): void {
+ 		const ctx = activeCtx;
+ 		if (!ctx || !isSessionActive(ctx, generation)) return;
++		for (const [wakeId, receipt] of wakeReceipts) {
++			if (!tasks.some(task => task.id === receipt.taskId && task.pendingWake?.id === wakeId)) wakeReceipts.delete(wakeId);
++		}
+ 		rescheduleAfterRefresh = false;
+ 		clearTimers();
+ 		for (const task of core.pendingTasks(tasks)) scheduleTaskHandle(task, ctx, generation);
+@@ -316,6 +430,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		for (const attemptId of abandonedAttempts) {
  			if (!tasks.some((task) => task.status === "running" && task.runOwner?.attemptId === attemptId)) abandonedAttempts.delete(attemptId);
  		}
@@ -336,7 +369,7 @@ index 0485891..3aa7c63 100644
  	}
 
  	const refreshLoop = coordination.createRefreshLoop({
-@@ -356,6 +449,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -356,6 +471,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		}
  	}
 
@@ -344,7 +377,7 @@ index 0485891..3aa7c63 100644
  	function recordMessage(content: string, details?: Record<string, any>, triggerTurn = false): void {
  		pi.sendMessage(
  			{
-@@ -368,6 +462,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -368,6 +484,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		);
  	}
 
@@ -356,7 +389,7 @@ index 0485891..3aa7c63 100644
  	async function executeTask(
  		task: ScheduledTask,
  		ctx: ExtensionContext,
-@@ -375,29 +474,30 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -375,29 +496,30 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	): Promise<Record<string, any>> {
  		if (task.action === "notify") {
  			const message = task.message ?? "Scheduled reminder";
@@ -402,7 +435,7 @@ index 0485891..3aa7c63 100644
  			const wakeOnChangeFingerprint = core.shellResultFingerprint({
  				stdout: result.stdout ?? "",
  				stderr: result.stderr ?? "",
-@@ -411,6 +511,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -411,6 +533,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  				timeoutMs: timeout,
  				code: result.code,
  				killed: result.killed,
@@ -410,7 +443,7 @@ index 0485891..3aa7c63 100644
  				wakeOnChangeFingerprint,
  				stdout: truncateMiddle(result.stdout ?? "", MAX_STORED_OUTPUT_CHARS),
  				stderr: truncateMiddle(result.stderr ?? "", MAX_STORED_OUTPUT_CHARS),
-@@ -418,12 +519,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -418,12 +541,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 
  			if (!isActive()) return { ...shellResult, outputSuppressed: true, wakeReason: task.wakeOn ?? "never", wakeDisposition: "session-suppressed" };
 
@@ -424,16 +457,26 @@ index 0485891..3aa7c63 100644
  			shellResult.wakeReason = task.wakeOn ?? "never";
  			shellResult.wakeDisposition = "suppressed";
 
-@@ -455,6 +551,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -455,6 +573,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  				const candidate = current.find((item) => item.id === taskId);
  				if (!candidate || candidate.enabled === false || candidate.status !== "pending") return undefined;
  				if (!taskBelongsToSession(candidate, ctx)) return undefined;
 +				if (candidate.pendingWake) return undefined;
-+				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) return undefined;
++				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) {
++					if (candidate.type === "cron" && Date.parse(candidate.nextRun) <= Date.now()) candidate.foregroundDeferredAt = candidate.nextRun;
++					return undefined;
++				}
  				const persistedNextRun = candidate.nextRun ?? candidate.dueAt;
  				if (claimOptions?.expectedNextRun && persistedNextRun !== claimOptions.expectedNextRun) return undefined;
  				const dueAt = Date.parse(claimOptions?.occurrence ?? persistedNextRun ?? "");
-@@ -474,14 +572,16 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -468,20 +591,24 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+ 					candidate.nextRun = claimOptions.occurrence;
+ 					candidate.dueAt = claimOptions.occurrence;
+ 				}
++				delete candidate.foregroundDeferredAt;
+ 				core.markScheduledTaskRunning(current, candidate.id, claimedAt, {
+ 					runOwner: { pid: process.pid, attemptId, sessionFile: currentSessionFile(ctx) },
+ 				});
  				return { ...candidate, runOwner: { ...candidate.runOwner } };
  			});
  			if (!task) return;
@@ -449,10 +492,11 @@ index 0485891..3aa7c63 100644
  					persisted.lastStatus = "error";
 -					persisted.lastError = "Scheduled task start was cancelled because the Pi session changed";
 +					persisted.lastError = "Scheduled task start was cancelled because the session or foreground state changed";
++					if (persisted.type === "cron") persisted.foregroundDeferredAt = persisted.nextRun;
  					delete persisted.runOwner;
  					delete persisted.startedAt;
  				});
-@@ -517,35 +617,27 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -517,35 +644,27 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  						wakeTask = { ...persisted };
  					}
  				}
@@ -507,7 +551,7 @@ index 0485891..3aa7c63 100644
  			}
  		} catch (error: any) {
  			// If even failure persistence fails, the background boundary will
-@@ -563,9 +655,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -563,9 +682,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  			});
  			rescheduleImmediately = true;
  			if (failedTask && isSessionActive(ctx, generation)) {
@@ -519,7 +563,7 @@ index 0485891..3aa7c63 100644
  			}
  		} finally {
  			firing.delete(taskId);
-@@ -644,10 +735,28 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -644,10 +762,29 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		return new Text(text, 0, 0);
  	});
 
@@ -536,6 +580,7 @@ index 0485891..3aa7c63 100644
  	pi.on("session_start", async (_event, ctx) => {
  		activeCtx = ctx;
 +		foreground.reset();
++		wakeReceipts.clear();
 +		unsubscribeInput?.(); unsubscribeInput = ctx.hasUI ? ctx.ui.onTerminalInput?.(() => { foreground.touch(); }) : undefined;
 +		if (foregroundTimer) clearInterval(foregroundTimer);
 +		if (ctx.hasUI) {
@@ -548,8 +593,11 @@ index 0485891..3aa7c63 100644
  			core.expireOverdueTasks(current, new Date());
  			return core.recoverInterruptedTasks(current, new Date(), { isOwnerActive });
  		});
-@@ -670,6 +779,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -668,8 +805,12 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+
+ 	pi.on("session_shutdown", async (_event, ctx) => {
  		++sessionGeneration;
++		wakeReceipts.clear();
  		clearTimers();
  		refreshLoop.stop();
 +		if (foregroundTimer) clearInterval(foregroundTimer);
@@ -558,7 +606,7 @@ index 0485891..3aa7c63 100644
  		if (ctx.hasUI) {
  			ctx.ui.setStatus("scheduler", undefined);
  			ctx.ui.setWidget("scheduler", undefined);
-@@ -686,8 +798,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -686,8 +827,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  			}
  			try {
  				const task = await createAndSchedule(parseCommandTask(args, ctx), ctx);
@@ -568,7 +616,7 @@ index 0485891..3aa7c63 100644
  			} catch (error: any) {
  				ctx.ui.notify(error?.message ?? String(error), "error");
  			}
-@@ -707,8 +818,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -707,8 +847,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  					{ action: "notify", type: parsed.type, schedule: parsed.schedule, message: parsed.payload, cwd: ctx.cwd },
  					ctx,
  				);
@@ -578,7 +626,7 @@ index 0485891..3aa7c63 100644
  			} catch (error: any) {
  				ctx.ui.notify(error?.message ?? String(error), "error");
  			}
-@@ -716,30 +826,44 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -716,30 +855,44 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	});
 
  	pi.registerCommand("schedules", {
@@ -640,7 +688,7 @@ index 0485891..3aa7c63 100644
  			} catch (error: any) {
  				ctx.ui.notify(error?.message ?? String(error), "error");
  			}
-@@ -812,61 +936,53 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -812,61 +965,53 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  			ctx.ui.notify(`Schedule widget ${widgetEnabled ? "enabled" : "disabled"}`, "info");
  		},
  	});
@@ -741,7 +789,7 @@ index 0485891..3aa7c63 100644
  			if (!args || typeof args !== "object") return args;
  			const input = args as Record<string, any>;
  			if (input.schedule === undefined && input.when === undefined && typeof input.whenText === "string") {
-@@ -883,7 +999,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -883,7 +1028,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  		},
  		renderCall(args, theme) {
  			return new Text(
@@ -750,7 +798,7 @@ index 0485891..3aa7c63 100644
  				0,
  				0,
  			);
-@@ -897,20 +1013,19 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -897,20 +1042,19 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	pi.registerTool({
  		name: "list_scheduled_tasks",
  		label: "List Scheduled Tasks",
@@ -778,7 +826,7 @@ index 0485891..3aa7c63 100644
  			}
  			const text = core.formatTaskList(visible, new Date(), { includeAll: Boolean(params.includeAll || params.id || params.includeHistory), includeHistory: Boolean(params.includeHistory) });
  			updateStatus(ctx);
-@@ -921,15 +1036,14 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -921,15 +1065,14 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	pi.registerTool({
  		name: "cancel_scheduled_task",
  		label: "Cancel Scheduled Task",
@@ -797,7 +845,7 @@ index 0485891..3aa7c63 100644
  				details: { task, pending: core.pendingTasks(tasks) },
  			};
  		},
-@@ -938,35 +1052,23 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -938,35 +1081,23 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  	pi.registerTool({
  		name: "manage_scheduled_task",
  		label: "Manage Scheduled Task",
@@ -841,7 +889,7 @@ index 0485891..3aa7c63 100644
  			}
 
  			if (!params.id) throw new Error("id is required for this management action");
-@@ -997,7 +1099,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
+@@ -997,7 +1128,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
  			if (params.action === "remove") clearHandle(task.id);
  			rescheduleAll();
  			return {
@@ -893,7 +941,7 @@ index 0000000..61b1ea4
 +  };
 +}
 diff --git a/extensions/scheduler/scheduler-core.cjs b/extensions/scheduler/scheduler-core.cjs
-index 887dbb0..65301fc 100644
+index 887dbb0..ebc0c7f 100644
 --- a/extensions/scheduler/scheduler-core.cjs
 +++ b/extensions/scheduler/scheduler-core.cjs
 @@ -394,6 +394,7 @@ function createScheduledTask(input, nowValue = new Date(), idFn = generateId) {
@@ -910,7 +958,7 @@ index 887dbb0..65301fc 100644
 
 +	if (migrated.pendingWake) {
 +		const wake = migrated.pendingWake;
-+		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || wake.content.length > 16000 || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
++		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
 +	}
  	return migrated;
  }
@@ -960,18 +1008,19 @@ index 887dbb0..65301fc 100644
  	const validated = validateTaskSchedule(task.type ?? "once", task.schedule ?? task.whenText ?? task.dueAt, nowValue);
  	task.type = validated.type;
  	task.schedule = validated.schedule;
-@@ -745,6 +763,10 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
+@@ -745,6 +763,11 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
  			delete task.expiredAt;
  		}
  	}
 +	// Any explicit edit invalidates not-yet-delivered work and stale management selections.
 +	task.managementRevision = randomUUID();
++	delete task.foregroundDeferredAt;
 +	delete task.pendingWake;
 +	if (updates.backgroundExecution !== undefined) task.backgroundExecution = updates.backgroundExecution === true;
  	if (updates.name !== undefined) task.name = compactSpaces(updates.name);
  	if (updates.title !== undefined) task.title = compactSpaces(updates.title);
  	if (updates.description !== undefined) task.description = compactSpaces(updates.description);
-@@ -1053,28 +1075,94 @@ function formatSchedule(task) {
+@@ -1053,28 +1076,94 @@ function formatSchedule(task) {
  	return task.schedule ?? task.whenText ?? task.dueAt;
  }
 
@@ -1077,7 +1126,7 @@ index 887dbb0..65301fc 100644
 
  module.exports = {
  	VALID_ACTIONS,
-@@ -1110,6 +1198,8 @@ module.exports = {
+@@ -1110,6 +1199,8 @@ module.exports = {
  	selectCatchUpCronTasks,
  	recoverInterruptedTasks,
  	shellResultFingerprint,
@@ -1086,7 +1135,7 @@ index 887dbb0..65301fc 100644
  	cancelScheduledTask,
  	disableScheduledTask,
  	enableScheduledTask,
-@@ -1125,5 +1215,8 @@ module.exports = {
+@@ -1125,5 +1216,8 @@ module.exports = {
  	formatRelativeTime,
  	formatTaskLine,
  	formatTaskList,

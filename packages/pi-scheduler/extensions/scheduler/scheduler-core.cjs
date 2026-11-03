@@ -549,7 +549,7 @@ function normalizeTask(task, nowValue = new Date()) {
 
 	if (migrated.pendingWake) {
 		const wake = migrated.pendingWake;
-		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || wake.content.length > 16000 || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
+		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
 	}
 	return migrated;
 }
@@ -765,6 +765,7 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 	}
 	// Any explicit edit invalidates not-yet-delivered work and stale management selections.
 	task.managementRevision = randomUUID();
+	delete task.foregroundDeferredAt;
 	delete task.pendingWake;
 	if (updates.backgroundExecution !== undefined) task.backgroundExecution = updates.backgroundExecution === true;
 	if (updates.name !== undefined) task.name = compactSpaces(updates.name);

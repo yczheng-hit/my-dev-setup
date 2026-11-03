@@ -434,6 +434,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     : ensurePermissionModesConfig(resolvedConfigPath);
   const subagentModeOverride = loadSubagentModeConfig(permissionModesConfigPath);
   const agentCanEnterPlanMode = loadAgentCanEnterPlanModeConfig(permissionModesConfigPath);
+  const configuredReviewer = { ...getAutoMode()!.classifierConfig() };
   // local patch: startup mode from `permissions.defaultMode`.
   const defaultMode = loadDefaultModeConfig(permissionModesConfigPath);
   const state = emptyState();
@@ -1453,6 +1454,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     event: { reason?: string; previousSessionFile?: string } | undefined,
     ctx: ExtensionContext,
   ): Promise<void> {
+    getAutoMode()?.configure({ ...configuredReviewer });
     invalidateReviews(ctx, true);
     state.originalCwd = ctx.cwd;
     currentSessionId = ctx.sessionManager.getSessionId();

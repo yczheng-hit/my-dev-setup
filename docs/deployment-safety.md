@@ -2,6 +2,8 @@
 
 这些脚本已实现并在临时目录验证；本轮没有运行真实 `setup.sh`、写入活动设置、修改活动 Pi 安装或 reload 用户会话。默认权限模式仍为 `bypassPermissions`。
 
+本机 settings 可直接引用本地仓库 package；新启动或 `/reload` 可能直接加载当前源码。没有运行 setup 只说明未同步受管配置/宿主事务，不能据此断言新版代码未启用。宿主补丁仍须重启 Pi。
+
 ## 只读扩展组合预检
 
 ```sh
@@ -10,11 +12,11 @@ PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent" \
 ```
 
 - 用 Pi `DefaultPackageManager.getInstalledPath` 定位现有 npm/git 包，`repo:`/本地路径转绝对路径；保留对象形式的资源过滤（特别是 `pi-subagents` 的 `extensions: []`）。不执行安装、更新或 git fetch。
-- `DefaultResourceLoader` 同时加载所有包和仓库 standalone 扩展，检测真实工具/flag 冲突。Pi 1.4 会为重复命令自动加 `:1`、`:2`；预检提示，不把正常命名空间当成失败。
-- 复制的是仓库配置，不复制真实设置、凭据、session 或日志。独立 cwd/HOME/agent-dir，清除凭据与 Herdr 身份变量，禁用 Jiti 磁盘缓存；不触发 session_start、模型或工具。真实 runner + 空的内存 SessionManager 负责 shutdown 清理。
+- `DefaultResourceLoader` 同时加载所有包，以及按 managed deployment 的同一 ownership/prune 规则构造的 **prospective standalone tree**：保留同路径 custom/modified 和额外本机扩展，移除未修改的旧受管代码，加入仓库新代码；继承设置 merge 会保留的显式 extension 路径。自定义 agent-dir 与 setup 保持一致。检测真实工具/flag 冲突；Pi 1.4 重复命令的 `:1`、`:2` 是正常命名空间，仅提示。
+- 保留扩展只复制代码和 package manifest，配置仅使用仓库版本，不复制真实扩展 JSON、凭据、session 或日志；显式路径只供只读加载。独立 cwd/HOME/agent-dir，清除凭据与 Herdr 身份变量，禁用 Jiti 磁盘缓存；不触发 session_start、模型或工具。真实 runner + 空的内存 SessionManager 负责 shutdown 清理。因此验证的是部署后代码组合，不代表真实配置/provider 可用性。
 - Node 24 permission model 只允许写临时目录，禁止子进程；显式阻止常用 JS 网络入口。为检查真实 tree-sitter 等原生依赖保留 `--allow-addons`，所以**这不是运行恶意扩展的安全沙箱**；原生代码可能绕过 Node 权限。只检查你已信任的配置包。
 - 返回码：`0` 完整通过；`1` 加载/清理/冲突失败；`2` 缺包或配置版本不满足，组合不完整；`3` 找不到兼容 Pi host。缺失不当作通过，且绝不静默安装。
-- 这证明 factory 初始化与清理组合，不证明真实 provider、OAuth、完整交互 UI 或业务行为端到端正确。当前 Pi 1.4 本机组合：23 配置包、28 factories、missing=0、failed=0。
+- 这证明 factory 初始化与清理组合，不证明真实 provider、OAuth、完整交互 UI 或业务行为端到端正确。当前 Pi 1.4 本机组合：23 配置包、29 factories（含保留的本机扩展，移除受管 legacy Claude rules）、missing=0、failed=0。
 
 ## 配置事务与 ownership inventory
 
