@@ -14,7 +14,8 @@ import registerRemoteCompaction, { remoteCompactionApi } from "./remote-compacti
 import registerCodexRequestOptions from "./request-options.ts";
 import registerCodexSettings, { loadSessionConfig } from "./settings-pane.ts";
 import registerCodexThreadLineage, { codexThreadLineageApi } from "./codex-thread-lineage.ts";
-import registerCodexTools, { syncCodexTools } from "./tools.ts";
+import registerCodexTools, { syncCodexTools, CODEX_TOOL_NAMES } from "./tools.ts";
+import registerToolRecovery from "./tool-recovery.ts";
 
 export {
   closeOpenAICodexWebSocketSessions,
@@ -63,6 +64,7 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
   registerOutputLimitContinuation(outputLimitContinuationApi(pi));
   registerRemoteCompaction(remoteCompactionApi(pi), codexProvider, resolveConfig);
   registerCodexModelPolicy(modelPolicy, resolveConfig, commandTools);
+  registerToolRecovery(pi, CODEX_TOOL_NAMES);
   registerCodexSettings(pi, {
     getConfig: resolveConfig,
     hasPersistentSessions: commandTools.hasPersistentSessions,

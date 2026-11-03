@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const [name, original, ...flags] = process.argv.slice(2);
-if (!['pi-scheduler', 'pi-hud-footer'].includes(name) || !original) throw new Error('usage: runtime-patch.mjs pi-scheduler|pi-hud-footer <unpacked-release> [--check] [--output=<temp-file>]');
+if (!['pi-scheduler', 'pi-hud-footer', 'pi-openai-codex-compat'].includes(name) || !original) throw new Error('usage: runtime-patch.mjs pi-scheduler|pi-hud-footer|pi-openai-codex-compat <unpacked-release> [--check] [--output=<temp-file>]');
 const local = path.join(root, 'packages', name);
 const manifest = JSON.parse(fs.readFileSync(path.join(local, 'package.json')));
 const upstream = JSON.parse(fs.readFileSync(path.join(original, 'package.json')));

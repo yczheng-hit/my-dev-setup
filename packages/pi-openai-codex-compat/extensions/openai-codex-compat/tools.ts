@@ -29,6 +29,7 @@ const CODEX_EXTENSION_TOOLS = [
   IMAGE_GENERATION_TOOL_NAME,
   WEB_RUN_TOOL_NAME,
 ] as const;
+export const CODEX_TOOL_NAMES = [...CODEX_COMMAND_TOOLS, ...CODEX_EXTENSION_TOOLS] as const;
 export type CodexToolActivationApi = Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">;
 export type CodexToolsApi = CodexToolActivationApi &
   ApplyPatchApi &
