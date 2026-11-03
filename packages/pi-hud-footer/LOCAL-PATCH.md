@@ -11,6 +11,13 @@
 - 原生 `session_info_changed` 事件请求重绘 HUD；显示按需读取当前名称，不缓存上个会话的名称。
 - `display.all.sessionName` 默认显示，也支持 `display.classic` / `display.border` 覆盖。名称在 HUD 中最多显示 32 个终端列，完整名称保持不变；最终渲染仍受窗口宽度约束。
 
+
+### 本轮追加（本地实现，尚未部署）
+
+- 全局 HUD 配置改用 Pi `getAgentDir()`，兼容 `PI_CODING_AGENT_DIR`，不再硬编码 `~/.pi/agent`；临时/内存文件系统用例验证不会读写真实用户配置。
+- `collectStats` 先看 native session identity / leaf ID（session scope 另看可选 entry count）再取分支/entries。统计缓存绑定 manager，不因每次 render 的 ctx 包装对象改变失效；没有 entry count 的旧宿主对全会话统计保守回退。
+- 先测再改：5 万条合成 entries、250 次稳定 branch 刷新，旧实现 251 次 branch copy / 11.056ms；本地一次测量优化后 branch 1 次 / 0.061ms，session 1 次 branch + 1 次 entries / 0.121ms。时间不是跨机器性能保证；计数回归才是确定性标准。追加、切分支、off-branch append 和 scope 切换验证 totals 正确。
+- HUD footer 当前 **18 tests passed**。独立 subagent HUD 使用 TUI `visibleWidth` / `truncateToWidth`，含前缀的 0/1 列极小宽度和 CJK/emoji 预算 **16 tests passed**。
 Pi 会延迟写入还没有用户消息的会话。只在这种会话里改名时，名称只在本次运行中显示；首次发送消息后，Pi 会把名称和会话内容一起保存。插件沿用这一原生行为，不强制创建空会话文件。
 
 ## 验证

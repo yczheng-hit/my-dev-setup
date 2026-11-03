@@ -1,0 +1,3 @@
+# Unified-diff context lines have a required leading space before source indentation.
+# Keep tab-indented runtime patches byte-exact; still check all other whitespace errors.
+patches/**/*.patch whitespace=-space-before-tab

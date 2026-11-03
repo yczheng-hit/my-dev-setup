@@ -3,14 +3,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Cron } from "croner";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { createTaskPicker } from "./picker";
 
 // Keep the scheduler logic testable from plain node --test.
 const core = require("./scheduler-core.cjs");
 const lifecycle = require("./scheduler-lifecycle.cjs");
 const coordination = require("./scheduler-coordination.cjs");
+const { createForegroundGate } = require("./foreground.cjs");
 const { createTaskStore } = require("./task-store.cjs");
 
 const ACTIONS = ["notify", "prompt", "shell", "message"] as const;
@@ -20,7 +22,7 @@ const WAKE_ON = ["always", "failure", "success", "never", "change"] as const;
 const STOP_ON = ["success", "failure", "never"] as const;
 const MANAGE_ACTIONS = ["enable", "disable", "remove", "update", "cleanup"] as const;
 
-const STATE_FILE = process.env.PI_SCHEDULER_STATE_FILE || join(homedir(), ".pi", "agent", "state", "scheduler", "tasks.json");
+const STATE_FILE = process.env.PI_SCHEDULER_STATE_FILE || join(getAgentDir(), "state", "scheduler", "tasks.json");
 const MAX_TIMER_DELAY_MS = 2_147_483_647; // setTimeout's practical max (~24.8 days)
 const STATE_REFRESH_INTERVAL_MS = 5_000;
 const DEFAULT_SHELL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -65,13 +67,6 @@ function isRunOwnerActive(owner: Record<string, any> | undefined): boolean {
 	}
 }
 
-function sendAgentPrompt(pi: ExtensionAPI, ctx: ExtensionContext, prompt: string): void {
-	if (ctx.isIdle()) {
-		pi.sendUserMessage(prompt);
-	} else {
-		pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-	}
-}
 
 // local patch: compact Chinese wake/log text instead of the upstream field dump.
 function taskTitle(task: ScheduledTask): string {
@@ -139,6 +134,90 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	const abandonedAttempts = new Set<string>();
 	const store = createTaskStore({ stateFile: STATE_FILE, sanitize: core.sanitizeTasks });
 
+	const foreground = createForegroundGate();
+	let foregroundTimer: NodeJS.Timeout | undefined;
+	let unsubscribeInput: (() => void) | undefined;
+	let deliveryRunning = false;
+	const runningCommands = new Map<string, AbortController>();
+	/** Persist before dispatch; ambiguous crash windows are never automatically replayed. */
+	async function flushWakes(ctx: ExtensionContext, generation = sessionGeneration): Promise<void> {
+		if (deliveryRunning || !isSessionActive(ctx, generation) || foreground.reason(ctx)) { updateStatus(ctx); return; }
+		if (!tasks.some(task => task.pendingWake?.state === "queued" && task.pendingWake.sessionFile === currentSessionFile(ctx))) return;
+		deliveryRunning = true;
+		try {
+			const claimed = await transactTasks(current => {
+				if (!isSessionActive(ctx, generation) || foreground.reason(ctx)) return undefined;
+				const task = current.find(task => task.pendingWake?.state === "queued" && taskBelongsToSession(task, ctx)
+					&& task.pendingWake.sessionFile === currentSessionFile(ctx)
+					&& (task.pendingWake.ownerPid === process.pid || !isRunOwnerActive({ pid: task.pendingWake.ownerPid })));
+				if (!task) return undefined;
+				if (task.status === "cancelled" || task.expiresAt && Date.parse(task.expiresAt) <= Date.now()) { delete task.pendingWake; return undefined; }
+				task.pendingWake.state = "dispatching";
+				task.pendingWake.ownerPid = process.pid;
+				return { taskId: task.id, wakeId: task.pendingWake.id };
+			});
+			if (!claimed) return;
+			await transactTasks(current => {
+				const task = current.find(task => task.id === claimed.taskId), wake = task?.pendingWake;
+				if (!wake || wake.id !== claimed.wakeId || wake.state !== "dispatching") return;
+				if (!isSessionActive(ctx, generation) || foreground.reason(ctx)) { wake.state = "queued"; return; }
+				// No await between the final foreground/ownership check and dispatch. Do not queue followUp.
+				try {
+					pi.sendUserMessage(wake.content);
+					foreground.touch();
+					if (task.result?.attemptId === wake.id) task.result.wakeDisposition = "delivered";
+					const history = task.history?.find((entry: any) => entry.attemptId === wake.id);
+					if (history) history.wakeDisposition = "delivered";
+					delete task.pendingWake;
+				} catch (error: any) {
+					wake.state = "uncertain"; // retry might duplicate an accepted message
+					if (task.result?.attemptId === wake.id) { task.result.wakeDisposition = "failed"; task.result.wakeError = String(error?.message ?? error).slice(0, 1000); }
+					const history = task.history?.find((entry: any) => entry.attemptId === wake.id);
+					if (history) { history.wakeDisposition = "failed"; history.wakeError = String(error?.message ?? error).slice(0, 1000); }
+				}
+			});
+			rescheduleAll(generation);
+		} finally { deliveryRunning = false; updateStatus(ctx); }
+	}
+
+	function managementIdentity(task: ScheduledTask): string {
+		return JSON.stringify([task.id, task.managementRevision, task.executionRevision, task.status, task.enabled, task.runCount, task.nextRun, task.runOwner?.attemptId, task.pendingWake?.id]);
+	}
+	function taskChoice(task: ScheduledTask): string {
+		return `${taskLabel(task)} · ${task.pendingWake ? `待交付/${task.pendingWake.state}` : task.enabled === false ? "已停用" : task.status} · ${core.describeTask(task)} · ${task.scope} · ${task.cwd ?? ""} · #${core.shortTaskId(task.id)} · ${task.id}`;
+	}
+	async function chooseTask(ctx: ExtensionContext, query = ""): Promise<{ id: string; identity: string } | undefined> {
+		await loadTasks();
+		const visible = visibleTasks(ctx);
+		if (query) {
+			try { const task = core.findTask(visible, query); if (task) return { id: task.id, identity: managementIdentity(task) }; }
+			catch (error) { if (!ctx.hasUI) throw error; }
+		}
+		if (!ctx.hasUI) throw new Error("Task id/name required without UI; list_scheduled_tasks shows candidates");
+		const options = visible.filter(task => task.status !== "cancelled" && (task.status === "pending" || task.enabled || task.pendingWake || task.status === "running"))
+			.filter(task => !query || taskChoice(task).toLowerCase().includes(query.toLowerCase()));
+		if (!options.length) { ctx.ui.notify("没有匹配的可管理任务", "info"); return; }
+		const labels = options.map(taskChoice);
+		const id = ctx.ui.custom
+			? await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => createTaskPicker(options.map(task => ({
+				value: task.id, label: `${taskLabel(task)} · #${core.shortTaskId(task.id)}`, description: taskChoice(task),
+			})), theme, done, () => tui.requestRender()))
+			: options[labels.indexOf(await ctx.ui.select("选择任务（名称 / 命令 / ID）", labels) ?? "")]?.id;
+		const task = options.find(task => task.id === id);
+		return task ? { id: task.id, identity: managementIdentity(task) } : undefined;
+	}
+	async function selectedAction(ctx: ExtensionContext, selection: { id: string; identity: string }, action: string): Promise<ScheduledTask> {
+		const task = await transactTasks(current => {
+			const visible = current.filter(task => taskBelongsToSession(task, ctx));
+			const task = core.findTask(visible, selection.id);
+			if (!task || managementIdentity(task) !== selection.identity) throw new Error("任务已变化，请重新选择；没有修改其他任务");
+			if (action === "cancel") return core.cancelScheduledTask(visible, task.id);
+			if (action === "disable") return core.disableScheduledTask(visible, task.id);
+			if (action === "enable") return core.enableScheduledTask(visible, task.id);
+			return core.removeScheduledTask(current, task.id);
+		});
+		rescheduleAll(); return task;
+	}
 	function isOwnerActive(owner: Record<string, any> | undefined): boolean {
 		return !(owner?.pid === process.pid && abandonedAttempts.has(owner?.attemptId)) && isRunOwnerActive(owner);
 	}
@@ -242,7 +321,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	function updateStatus(ctx = activeCtx): void {
 		if (!ctx?.hasUI) return;
 		const count = core.pendingTasks(visibleTasks(ctx)).length;
-		ctx.ui.setStatus("scheduler", count ? `⏰ ${count} 个定时任务` : undefined); // local patch
+		const pending = visibleTasks(ctx).filter(task => task.pendingWake).length;
+		const reason = foreground.reason(ctx);
+		ctx.ui.setStatus("scheduler", count || pending ? `⏰ ${count} 个任务${pending ? ` · ${pending} 待交付` : ""}${reason ? ` · ${reason}` : ""}` : undefined);
 		updateWidget(ctx);
 	}
 
@@ -250,6 +331,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		if (!isSessionActive(ctx, generation)) return;
 		if (task.enabled === false || task.status !== "pending") return;
 		if (!taskBelongsToSession(task, ctx)) return;
+		if (task.pendingWake) return; // retain one result until delivered/cancelled; no catch-up burst
 		clearHandle(task.id);
 
 		if (task.type === "cron") {
@@ -275,7 +357,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		const dueAt = Date.parse(task.nextRun ?? task.dueAt);
 		if (!Number.isFinite(dueAt)) return;
 		const delay = Math.max(0, dueAt - Date.now());
-		const timerDelay = Math.min(delay, MAX_TIMER_DELAY_MS);
+		const blocked = delay === 0 && task.action !== "notify" && !(task.action === "shell" && task.backgroundExecution === true) && foreground.reason(ctx);
+		const timerDelay = blocked ? 500 : Math.min(delay, MAX_TIMER_DELAY_MS);
 
 		const timer = setTimeout(() => {
 			runInBackground(async () => {
@@ -325,6 +408,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		for (const attemptId of abandonedAttempts) {
 			if (!tasks.some((task) => task.status === "running" && task.runOwner?.attemptId === attemptId)) abandonedAttempts.delete(attemptId);
 		}
+		await flushWakes(ctx, generation);
 	}
 
 	const refreshLoop = coordination.createRefreshLoop({
@@ -395,16 +479,12 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			return { ok: true, delivered: "notify", wakeReason: "notify", wakeDisposition: "not-requested" };
 		}
 
-		if (task.action === "prompt") {
-			const prompt = `${scheduledPromptHeader(task)}\n${task.prompt}`; // local patch
-			sendAgentPrompt(pi, ctx, prompt);
-			return { ok: true, delivered: "prompt", wakeReason: "prompt", wakeDisposition: "delivered" };
-		}
-
-		if (task.action === "message") {
-			const message = task.message ?? "Scheduled message";
-			recordMessage(`⏰ ${message}`, { task }, task.triggerTurn !== false);
-			return { ok: true, delivered: "message", triggerTurn: task.triggerTurn !== false, wakeReason: "message", wakeDisposition: task.triggerTurn !== false ? "delivered" : "not-requested" };
+		if (task.action === "prompt" || task.action === "message") {
+			if (task.action === "message" && task.triggerTurn === false) {
+				recordMessage(`⏰ ${task.message}`, { task }, false);
+				return { ok: true, wakeDisposition: "not-requested" };
+			}
+			return { ok: true, wakeReason: task.action, wakeDisposition: "pending" };
 		}
 
 		if (task.action === "shell") {
@@ -412,7 +492,11 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			const timeout = task.timeoutMs ?? DEFAULT_SHELL_TIMEOUT_MS;
 			// local patch: no "Running scheduled command" toast; time the run for the wake/log line.
 			const startedAt = Date.now();
-			const result = await pi.exec("bash", ["-lc", task.command], { cwd, timeout });
+			const controller = new AbortController();
+			runningCommands.set(task.id, controller);
+			let result;
+			try { result = await pi.exec("bash", ["-lc", task.command], { cwd, timeout, signal: controller.signal }); }
+			finally { if (runningCommands.get(task.id) === controller) runningCommands.delete(task.id); }
 			const durationMs = Date.now() - startedAt;
 			const wakeOnChangeFingerprint = core.shellResultFingerprint({
 				stdout: result.stdout ?? "",
@@ -467,6 +551,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				const candidate = current.find((item) => item.id === taskId);
 				if (!candidate || candidate.enabled === false || candidate.status !== "pending") return undefined;
 				if (!taskBelongsToSession(candidate, ctx)) return undefined;
+				if (candidate.pendingWake) return undefined;
+				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) return undefined;
 				const persistedNextRun = candidate.nextRun ?? candidate.dueAt;
 				if (claimOptions?.expectedNextRun && persistedNextRun !== claimOptions.expectedNextRun) return undefined;
 				const dueAt = Date.parse(claimOptions?.occurrence ?? persistedNextRun ?? "");
@@ -486,14 +572,16 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				return { ...candidate, runOwner: { ...candidate.runOwner } };
 			});
 			if (!task) return;
+			const permitted = await transactTasks(current => current.find(item => item.id === taskId)?.status === "running");
+			if (!permitted) return;
 
-			if (!isSessionActive(ctx, generation)) {
+			if (!isSessionActive(ctx, generation) || task.action !== "notify" && !(task.action === "shell" && task.backgroundExecution === true) && foreground.reason(ctx)) {
 				await transactTasks((current) => {
 					const persisted = current.find((candidate) => candidate.id === taskId);
 					if (persisted?.runOwner?.attemptId !== attemptId) return;
 					persisted.status = "pending";
 					persisted.lastStatus = "error";
-					persisted.lastError = "Scheduled task start was cancelled because the Pi session changed";
+					persisted.lastError = "Scheduled task start was cancelled because the session or foreground state changed";
 					delete persisted.runOwner;
 					delete persisted.startedAt;
 				});
@@ -529,38 +617,20 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 						wakeTask = { ...persisted };
 					}
 				}
+				if (!isSessionActive(ctx, generation) && result.wakeDisposition === "pending") result.wakeDisposition = "session-suppressed";
 				core.markScheduledTaskCompleted(current, persisted.id, new Date(), result, { ok: result.ok !== false });
-			});
-			if (wakeRequested && wakeTask) {
-				result.wakeDisposition = "session-suppressed";
-				if (isSessionActive(ctx, generation)) {
-					const instruction = core.selectShellFollowUpPrompt(wakeTask, result);
-					result.wakeDisposition = "no-followup";
-					if (instruction) {
-						try {
-							sendAgentPrompt(pi, ctx, shellResultPrompt(wakeTask, result, instruction, fallbackCwd));
-							result.wakeDisposition = "delivered";
-						} catch (error: any) {
-							result.wakeDisposition = "failed";
-							result.wakeError = String(error?.message ?? error).slice(0, 1000);
-						}
-					}
+				if (persisted.status !== "cancelled" && !result.superseded && isSessionActive(ctx, generation)) {
+					const instruction = task?.action === "shell" && wakeTask ? core.selectShellFollowUpPrompt(wakeTask, result) : undefined;
+					const content = instruction ? shellResultPrompt(wakeTask!, result, instruction, fallbackCwd)
+						: task?.action === "prompt" ? `${scheduledPromptHeader(task)}\n${task.prompt}`
+						: task?.action === "message" && task.triggerTurn !== false ? `⏰ ${task.message}` : undefined;
+					if (content) persisted.pendingWake = { id: attemptId, content, sessionFile: currentSessionFile(ctx), ownerPid: process.pid, state: "queued", createdAt: new Date().toISOString() };
 				}
-				await transactTasks((current) => {
-					const persisted = current.find((candidate) => candidate.id === taskId);
-					const historyEntry = persisted?.history?.find((entry: any) => entry.attemptId === attemptId);
-					if (historyEntry) {
-						historyEntry.wakeDisposition = result.wakeDisposition;
-						if (result.wakeError) historyEntry.wakeError = result.wakeError;
-					}
-					if (persisted?.result?.attemptId === attemptId) {
-						persisted.result.wakeDisposition = result.wakeDisposition;
-						if (result.wakeError) persisted.result.wakeError = result.wakeError;
-					}
-				});
-			}
+			});
+			await flushWakes(ctx, generation);
+			result.wakeDisposition = tasks.find(item => item.id === taskId)?.result?.wakeDisposition ?? result.wakeDisposition;
 			// local patch: when the agent was not woken, leave one display-only line in the chat.
-			if (task.action === "shell" && !result.outputSuppressed && result.wakeDisposition !== "delivered"
+			if (task.action === "shell" && !result.outputSuppressed && !["delivered", "pending"].includes(result.wakeDisposition)
 				&& isSessionActive(ctx, generation)) {
 				const output = [result.stdout, result.stderr].map((text) => text?.trimEnd()).filter(Boolean).join("\n");
 				logEntry(
@@ -677,8 +747,16 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		activeCtx = ctx;
+		foreground.reset();
+		unsubscribeInput?.(); unsubscribeInput = ctx.hasUI ? ctx.ui.onTerminalInput?.(() => { foreground.touch(); }) : undefined;
+		if (foregroundTimer) clearInterval(foregroundTimer);
+		if (ctx.hasUI) {
+			foregroundTimer = setInterval(() => runInBackground(() => flushWakes(ctx), ctx, sessionGeneration, "Scheduler delivery failed"), 250);
+			foregroundTimer.unref?.();
+		}
 		const generation = ++sessionGeneration;
 		const interrupted = await transactTasks((current) => {
+			for (const task of current) if (task.pendingWake?.state === "dispatching" && (task.pendingWake.ownerPid === process.pid || !isRunOwnerActive({ pid: task.pendingWake.ownerPid }))) task.pendingWake.state = "uncertain";
 			core.expireOverdueTasks(current, new Date());
 			return core.recoverInterruptedTasks(current, new Date(), { isOwnerActive });
 		});
@@ -701,6 +779,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		++sessionGeneration;
 		clearTimers();
 		refreshLoop.stop();
+		if (foregroundTimer) clearInterval(foregroundTimer);
+		foregroundTimer = undefined; unsubscribeInput?.(); unsubscribeInput = undefined;
+		foreground.reset();
 		if (ctx.hasUI) {
 			ctx.ui.setStatus("scheduler", undefined);
 			ctx.ui.setWidget("scheduler", undefined);
@@ -745,29 +826,44 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("schedules", {
-		description: "List scheduled tasks; pass 'all' to include inactive tasks or 'history' for run history",
+		description: "Search and manage scheduled tasks; pass 'all' to include inactive tasks or 'history' for run history",
 		handler: async (args, ctx) => {
-			await loadTasks();
-			const view = args.trim().toLowerCase();
-			const includeAll = view === "all" || view === "history";
-			const includeHistory = view === "history";
-			const visible = visibleTasks(ctx);
-			logEntry(core.formatTaskList(visible, new Date(), { includeAll, includeHistory })); // local patch
-			updateStatus(ctx);
+			try {
+				await loadTasks();
+				if (!args.trim() && ctx.hasUI) {
+					const selection = await chooseTask(ctx);
+					if (!selection) return;
+					const action = await ctx.ui.select("任务操作", ["取消调度和待交付结果", "停用", "启用", "删除", "终止本机正在运行的命令"]);
+					if (action === "终止本机正在运行的命令") {
+						const controller = runningCommands.get(selection.id);
+						if (!controller) { ctx.ui.notify("当前进程不拥有此命令，未终止任何进程", "warning"); return; }
+						await selectedAction(ctx, selection, "cancel"); controller.abort();
+						ctx.ui.notify("已取消后续调度并请求终止该后台命令；未中止前台会话", "info"); return;
+					}
+					const mapped = ({ "取消调度和待交付结果": "cancel", "停用": "disable", "启用": "enable", "删除": "remove" } as Record<string, string>)[action ?? ""];
+					if (mapped) { const task = await selectedAction(ctx, selection, mapped); ctx.ui.notify(`${taskTitle(task)}：已${action}`, "info"); }
+					return;
+				}
+				const view = args.trim().toLowerCase();
+				const includeAll = view === "all" || view === "history";
+				const includeHistory = view === "history";
+				const visible = visibleTasks(ctx);
+				logEntry(core.formatTaskList(visible, new Date(), { includeAll, includeHistory })); // local patch
+				updateStatus(ctx);
+			} catch (error: any) {
+				ctx.ui.notify(error?.message ?? String(error), "error");
+			}
 		},
 	});
 
 	pi.registerCommand("schedule-cancel", {
-		description: "Cancel a scheduled task by id or id prefix",
+		description: "Cancel by unique name, id or short id; omit to select",
 		handler: async (args, ctx) => {
-			const id = args.trim();
-			if (!id) {
-				ctx.ui.notify("Usage: /schedule-cancel <id>", "warning");
-				return;
-			}
 			try {
-				const task = await mutateVisibleTask(ctx, id, (visible) => core.cancelScheduledTask(visible, id, new Date()));
-				logEntry(`已取消定时任务 ${taskTitle(task)}`); // local patch
+				const selection = await chooseTask(ctx, args.trim());
+				if (!selection) return;
+				const task = await selectedAction(ctx, selection, "cancel");
+				logEntry(`已取消 ${taskTitle(task)}；未交付结果已撤销${task.runOwner ? "；本次命令仍在运行，未终止前台" : ""}`);
 			} catch (error: any) {
 				ctx.ui.notify(error?.message ?? String(error), "error");
 			}
@@ -840,6 +936,21 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(`Schedule widget ${widgetEnabled ? "enabled" : "disabled"}`, "info");
 		},
 	});
+	pi.on("ui_prompt_start", () => foreground.prompt(true));
+	pi.on("ui_prompt_end", () => foreground.prompt(false));
+	pi.on("input", event => { if (event.source !== "extension") foreground.touch(); });
+	pi.on("agent_start", () => foreground.touch());
+	pi.on("agent_settled", () => foreground.touch());
+	pi.registerCommand("scheduler", {
+		description: "Scheduler pause | resume | run | status (foreground always has priority)",
+		handler: async (args, ctx) => {
+			const action = args.trim() || "status";
+			if (action === "pause") foreground.pause(true);
+			else if (action === "resume" || action === "run") { foreground.pause(false); rescheduleAll(); await flushWakes(ctx); }
+			else if (action !== "status") { ctx.ui.notify("Usage: /scheduler pause|resume|run|status", "warning"); return; }
+			updateStatus(ctx); ctx.ui.notify(`${visibleTasks(ctx).filter(task => task.pendingWake).length} 个结果待交付 · ${foreground.reason(ctx) ?? "就绪"}`, "info");
+		},
+	});
 
 	pi.registerTool({
 		name: "schedule_task",
@@ -861,6 +972,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			prompt: Type.Optional(Type.String()),
 			command: Type.Optional(Type.String()),
 			cwd: Type.Optional(Type.String()),
+			backgroundExecution: Type.Optional(Type.Boolean({ description: "explicitly allow shell execution during foreground work; result still waits" })),
 			timeoutMs: Type.Optional(Type.Number({ minimum: 1000, description: "default 300000" })),
 			followUpPrompt: Type.Optional(Type.String({ description: "shell: what to do with the output when woken" })),
 			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed" })),
@@ -911,9 +1023,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			await loadTasks();
 			let visible = visibleTasks(ctx);
 			if (params.id) {
-				const matches = visible.filter((task) => task.id === params.id || task.id.startsWith(params.id));
-				if (matches.length !== 1) throw new Error(`Scheduled task not found or prefix is ambiguous: ${params.id}`);
-				visible = matches;
+				const match = core.findTask(visible, params.id);
+				if (!match) throw new Error(`Scheduled task not found: ${params.id}`);
+				visible = [match];
 			}
 			const text = core.formatTaskList(visible, new Date(), { includeAll: Boolean(params.includeAll || params.id || params.includeHistory), includeHistory: Boolean(params.includeHistory) });
 			updateStatus(ctx);
@@ -926,7 +1038,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		label: "Cancel Scheduled Task",
 		description: "Cancel a scheduled task.",
 		parameters: Type.Object({
-			id: Type.String({ description: "id or unique prefix" }),
+			id: Type.String({ description: "id, unique prefix or exact name" }),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const task = await mutateVisibleTask(ctx, params.id, (visible) => core.cancelScheduledTask(visible, params.id, new Date()));
@@ -945,7 +1057,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		description: "Enable, disable, remove, or update a scheduled task; cleanup removes finished ones. update accepts any schedule_task field (command, followUpPrompt, maxRuns, ...); null clears backoff/expiresIn.",
 		parameters: Type.Object({
 			action: StringEnum(MANAGE_ACTIONS),
-			id: Type.Optional(Type.String({ description: "id or unique prefix; not needed for cleanup" })),
+			id: Type.Optional(Type.String({ description: "id, unique prefix or exact name; not needed for cleanup" })),
 			schedule: Type.Optional(Type.String()),
 			wakeOn: Type.Optional(StringEnum(WAKE_ON)),
 			timeoutMs: Type.Optional(Type.Number({ minimum: 1000 })),

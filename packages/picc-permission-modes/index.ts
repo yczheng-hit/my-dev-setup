@@ -7,7 +7,7 @@ import { readFileSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ensurePermissionModesConfig, resolvePermissionModesConfigPath } from "./config-path.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { AutoMode, getAutoMode, setAutoMode } from "./auto-mode.ts";
+import { AutoMode, collectReviewMessages, getAutoMode, setAutoMode } from "./auto-mode.ts";
 import { loadAutoModeConfig } from "./auto-mode-config.ts";
 import { loadUserPermissions } from "./permissionsConfig.ts";
 import {
@@ -20,6 +20,7 @@ const ACCEPT_EDITS_HEX = "#ccb1ff";
 const ACCEPT_EDITS_RGB = { r: 0xcc, g: 0xb1, b: 0xff };
 const REQUIRES_USER_INTERACTION = new Set<string>([
   "AskUserQuestion",
+  "question", "questionnaire", "ExitPlanMode", "exit_plan_mode",
 ]);
 const READ_FAMILY = new Set<string>([
   "read",
@@ -481,6 +482,21 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
    *  `persistState` to record the session's plan-file slug so `/resume`
    *  reuses the same plan file. */
   let currentSessionId: string = "";
+  let reviewGeneration = 0;
+  function invalidateReviews(ctx: ExtensionContext, reset = false): void {
+    ++reviewGeneration;
+    if (reset) getAutoMode()?.resetCounters(); else getAutoMode()?.cancel();
+    pendingClassifierDecisions.clear();
+    if (ctx.hasUI) ctx.ui.setStatus("auto-mode-classifying", undefined);
+  }
+  function updateReviewerStatus(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    const am = getAutoMode();
+    const health = am?.status();
+    ctx.ui.setStatus("auto-mode-classifying", currentMode === "auto"
+      ? `auto: ${am?.label(ctx)} · ${health?.lastDecision ?? "ready"}${health?.elapsedMs !== undefined ? ` ${health.elapsedMs}ms` : ""}${health?.retryAt && health.retryAt > Date.now() ? " · cooldown" : ""}`
+      : undefined);
+  }
   // Local patch: status-chip colours. Override per mode in the user config
   // (~/.pi/agent/extensions/picc-permission-modes/config.json):
   //   "modeColors": { "bypassPermissions": "#ff5f5f", "plan": "#5fafff", ... }
@@ -516,6 +532,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
   }
   function updateStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
+    updateReviewerStatus(ctx);
     try {
       const color = loadModeColors()[currentMode];
       if (!color) {
@@ -605,6 +622,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     ctx: ExtensionContext,
     opts: { fromPlan?: boolean; prePlanMode?: PermissionMode } = {},
   ): Promise<void> {
+    invalidateReviews(ctx);
     const previous = currentMode;
     currentMode = next;
     publishMode(ctx);
@@ -636,13 +654,48 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     "acceptEdits",
     "plan",
     "bypassPermissions",
-    "auto",
   ] as PermissionMode[]) {
     pi.registerCommand(m, {
       description: `Switch to ${MODE_META[m].title} mode`,
       handler: async (_args, ctx) => setMode(m, ctx),
     });
   }
+  pi.registerCommand("auto", {
+    description: "Auto mode; /auto status | model [active|provider/model] | test",
+    handler: async (args, ctx) => {
+      const [action, selection, ...extra] = (args ?? "").trim().split(/\s+/);
+      const am = getAutoMode();
+      if (!am) { ctx.ui.notify("Auto reviewer not initialized", "error"); return; }
+      if (!action) { await setMode("auto", ctx); return; }
+      if (action === "status" || (action === "model" && !selection)) {
+        ctx.ui.notify(JSON.stringify({ reviewer: am.label(ctx), config: am.classifierConfig(), health: am.status(), scope: "session; edit user config.json to persist" }, null, 2), "info");
+        return;
+      }
+      if (action === "model" && selection && !extra.length) {
+        const previous = am.classifierConfig();
+        if (selection === "active") am.configure({ ...previous, mode: "active", provider: undefined, model: undefined });
+        else {
+          const slash = selection.indexOf("/");
+          const provider = selection.slice(0, slash), model = selection.slice(slash + 1);
+          if (slash < 1 || !model || !ctx.modelRegistry.find(provider, model)) {
+            ctx.ui.notify("Unknown reviewer. Use /auto model provider/model or /auto model active", "error"); return;
+          }
+          am.configure({ ...previous, mode: "fixed", provider, model });
+        }
+        invalidateReviews(ctx);
+        updateReviewerStatus(ctx);
+        ctx.ui.notify(`Auto reviewer: ${am.label(ctx)} (session only; main model unchanged)`, "info");
+        return;
+      }
+      if (action === "test" && !selection) {
+        const result = await am.classify({ toolName: "reviewer_health_check", input: { description: "Diagnostic only; no action will execute" }, sessionMessages: [{ role: "user", content: "Check the reviewer JSON protocol only. Allow this no-op diagnostic." }], ctx, probe: true });
+        updateReviewerStatus(ctx);
+        ctx.ui.notify("unavailable" in result ? result.reason : `Reviewer responded: ${"allow" in result ? "allow" : result.shouldFallbackToPrompt ? "ask" : "deny"}; no tool executed`, "unavailable" in result ? "warning" : "info");
+        return;
+      }
+      ctx.ui.notify("Usage: /auto [status | model [active|provider/model] | test]", "info");
+    },
+  });
   pi.registerCommand("mode", {
     description:
       "Show or set the permission mode (default | acceptEdits | plan | bypassPermissions | auto)",
@@ -745,6 +798,8 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     input: Record<string, unknown>,
     ctx: ExtensionContext,
   ): Promise<{ block: true; reason: string } | undefined> {
+    if (ctx.signal?.aborted) return { block: true, reason: "Tool call cancelled" };
+    if (REQUIRES_USER_INTERACTION.has(tool)) return undefined;
     if (tool === "edit" || tool === "write") {
       const target = extractToolPath(input);
       const planPath = getPlanFilePath(ctx.sessionManager.getSessionId());
@@ -753,31 +808,20 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       }
     }
     if (currentMode === "auto") {
-      if (tool === "edit" || tool === "write") {
-        const target = extractToolPath(input);
-        if (
-          target !== "" &&
-          pathInAllowedWorkingPath(target, state.ctx, ctx.cwd) &&
-          !isDangerousFilePath(target)
-        ) {
-          rememberClassifierDecision(toolCallId, {
-            kind: "allow",
-            via: "safeAllowlist",
-          });
-          return undefined;
-        }
-      }
       const preDecision = computeDecision(
         tool,
         input,
-        gateContext(ctx),
+        state.ctx,
         "edit",
         ctx.cwd,
       );
       if (preDecision.behavior === "deny") {
         return { block: true, reason: preDecision.message };
       }
-      if (preDecision.behavior === "allow") {
+      if (preDecision.behavior === "ask" && (preDecision.decisionReason?.type === "safetyCheck" || preDecision.decisionReason?.type === "rule")) {
+        return askUserPermission(preDecision, tool, input, ctx);
+      }
+      if (preDecision.behavior === "allow" && !(tool === "bash" && getAutoMode()?.classifyAllShell())) {
         rememberClassifierDecision(toolCallId, {
           kind: "allow",
           via: "safeAllowlist",
@@ -793,9 +837,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     if (decision.behavior === "allow") return undefined;
     if (decision.behavior === "deny") {
       return { block: true, reason: decision.message };
-    }
-    if (currentMode === "plan") {
-      return askAutoClassifier(toolCallId, tool, input, ctx);
     }
     return askUserPermission(decision, tool, input, ctx);
   }
@@ -944,6 +985,15 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
           suggestions: pathCheck.suggestions ?? [],
         };
       }
+      const askRule = matchingBashRule(cmd, "ask", ctx);
+      if (askRule) {
+        return {
+          behavior: "ask",
+          message: `Allow bash command?\n  ${cmd}`,
+          decisionReason: { type: "rule", rule: askRule },
+          suggestions: [],
+        };
+      }
       if (currentMode === "acceptEdits") {
         if (isReadOnly) {
           return {
@@ -962,15 +1012,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
         return {
           behavior: "allow",
           decisionReason: { type: "other", reason: "read-only command" },
-        };
-      }
-      const askRule = matchingBashRule(cmd, "ask", ctx);
-      if (askRule) {
-        return {
-          behavior: "ask",
-          message: `Allow bash command?\n  ${cmd}`,
-          decisionReason: { type: "rule", rule: askRule },
-          suggestions: [],
         };
       }
       const allowRule = matchingBashRule(cmd, "allow", ctx);
@@ -1023,10 +1064,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       }
       return checkReadPermissionForTool(tool, path, ctx, cwd);
     }
-    return {
-      behavior: "allow",
-      decisionReason: { type: "other", reason: "no-path tool" },
-    };
+    return currentMode === "auto"
+      ? { behavior: "ask", message: `Review ${tool}`, decisionReason: { type: "other", reason: "unrecognized tool" }, suggestions: [] }
+      : { behavior: "allow", decisionReason: { type: "other", reason: "no-path tool" } };
   }
   function applyBypassGate(
     tool: string,
@@ -1058,8 +1098,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     input: Record<string, unknown>,
     ctx: ExtensionContext,
   ): Promise<{ block: true; reason: string } | undefined> {
+    const generation = reviewGeneration;
     if (ctx.hasUI) {
-      ctx.ui.setStatus?.("auto-mode-classifying", "auto: classifying…");
+      ctx.ui.setStatus?.("auto-mode-classifying", `auto: reviewing · ${getAutoMode()?.label(ctx) ?? "unconfigured"}`);
     }
     const orchestrator = getAutoMode();
     if (!orchestrator) {
@@ -1082,10 +1123,13 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
         sessionMessages: collectSessionMessages(ctx),
         ctx,
       });
+      if (generation !== reviewGeneration || ctx.signal?.aborted) return { block: true, reason: "Auto review cancelled" };
       if (ctx.hasUI) {
-        ctx.ui.setStatus("auto-mode-classifying", undefined);
+        updateReviewerStatus(ctx);
       }
-      if (result.unavailable) {
+      if ("unavailable" in result) {
+        if (result.cancelled || reviewGeneration !== generation || ctx.signal?.aborted) return { block: true, reason: "Auto review cancelled" };
+        if (orchestrator.classifierConfig().onUnavailable === "deny") return { block: true, reason: result.reason };
         return askUserPermission(
           {
             behavior: "ask",
@@ -1101,7 +1145,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
           ctx,
         );
       }
-      if (result.shouldFallbackToPrompt) {
+      if ("block" in result && result.shouldFallbackToPrompt) {
         return askUserPermission(
           {
             behavior: "ask",
@@ -1117,7 +1161,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
           ctx,
         );
       }
-      if (result.block) {
+      if ("block" in result) {
         rememberClassifierDecision(toolCallId, {
           kind: "block",
           via: result.via,
@@ -1137,9 +1181,9 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
       });
       return undefined;
     } catch (error) {
-      if (ctx.hasUI) ctx.ui.setStatus("auto-mode-classifying", undefined);
-      const message =
-        error instanceof Error ? error.message : String(error);
+      if (generation !== reviewGeneration || ctx.signal?.aborted) return { block: true, reason: "Auto review cancelled" };
+      updateReviewerStatus(ctx);
+      const message = "review failed; check /auto status and Pi provider authentication";
       rememberClassifierDecision(toolCallId, {
         kind: "block",
         via: "classify",
@@ -1152,16 +1196,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     }
   }
   function collectSessionMessages(ctx: ExtensionContext): unknown[] {
-    try {
-      const sm = ctx.sessionManager as unknown as {
-        buildSessionContext?: () => { messages: unknown[] };
-      };
-      if (typeof sm.buildSessionContext === "function") {
-        return sm.buildSessionContext().messages ?? [];
-      }
-    } catch {
-    }
-    return [];
+    return collectReviewMessages(ctx.sessionManager);
   }
   async function askUserPermission(
     decision: PermissionResult,
@@ -1169,6 +1204,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     input: Record<string, unknown>,
     ctx: ExtensionContext,
   ): Promise<{ block: true; reason: string } | undefined> {
+    const generation = reviewGeneration;
     if (!ctx.hasUI) {
       const reason =
         decision.decisionReason?.type === "asyncAgent"
@@ -1183,10 +1219,10 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     if (filePath) {
       const isRead =
         tool === "read" || tool === "grep" || tool === "find" || tool === "ls";
-      options = getFilePermissionOptions(tool, filePath, state.ctx, isRead ? "read" : "write");
+      options = currentMode === "auto" ? ["Allow", "Block"] : getFilePermissionOptions(tool, filePath, state.ctx, isRead ? "read" : "write");
     } else if (isBashPrompt) {
       const base = extractBashBaseCommand(String(input.command ?? ""));
-      options = [
+      options = currentMode === "auto" ? ["Yes", "No"] : [
         "Yes",
         `Yes, and don't ask again for: ${base} *`,
         "No",
@@ -1265,6 +1301,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
         overlayOptions: { anchor: "bottom-center", width: "100%" },
       },
     );
+    if (generation !== reviewGeneration || ctx.signal?.aborted) return { block: true, reason: "Permission request cancelled" };
     if (!choice) return { block: true, reason: "user dismissed dialog" };
     if (choice === "Allow" || choice === "Yes") return undefined;
     if (isBashPrompt && choice.startsWith("Yes, and don't ask again for: ")) {
@@ -1416,6 +1453,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     event: { reason?: string; previousSessionFile?: string } | undefined,
     ctx: ExtensionContext,
   ): Promise<void> {
+    invalidateReviews(ctx, true);
     state.originalCwd = ctx.cwd;
     currentSessionId = ctx.sessionManager.getSessionId();
     const reason = event?.reason;
@@ -1497,6 +1535,7 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
     _event: unknown,
     ctx: ExtensionContext,
   ): Promise<void> {
+    invalidateReviews(ctx);
     await refreshSessionContext(ctx);
   }
   function applyFlagOverride(): void {
@@ -1566,4 +1605,6 @@ export default function permissionModesExtension(pi: ExtensionAPI): void {
   }
   pi.on("session_start", onSessionStart);
   pi.on("session_tree", onSessionTree);
+  pi.on("session_shutdown", (_event, ctx) => invalidateReviews(ctx));
+  pi.on("model_select", (_event, ctx) => { invalidateReviews(ctx); updateReviewerStatus(ctx); });
 }

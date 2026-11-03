@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const host = process.env.PI_HOST_DIR;
+test('real native components search CJK/name/id, bound long lists and preserve full identity', { skip: !host }, async () => {
+  const require = createRequire(path.join(host, 'package.json'));
+  const tui = require.resolve('@earendil-works/pi-tui');
+  const { initTheme, theme } = await import(pathToFileURL(path.join(host, 'dist/modes/interactive/theme/theme.js')));
+  initTheme('dark', false);
+  const { createJiti } = require('jiti');
+  const jiti = createJiti(import.meta.url, { alias: { '@earendil-works/pi-coding-agent': path.join(host, 'dist/index.js'), '@earendil-works/pi-tui': tui }, fsCache: false });
+  const { createTaskPicker } = await jiti.import('../extensions/scheduler/picker.ts');
+  const items = Array.from({ length: 50 }, (_, index) => ({ value: `task_${index}_unique${index}`, label: index === 42 ? '部署检查 #unique42' : `任务 ${index}`, description: index === 42 ? 'npm test project-x' : `build ${index}` }));
+  let selected;
+  const picker = createTaskPicker(items, theme, (value) => { selected = value; }, () => {});
+  assert.ok(picker.render(60).length < 25, 'long list must have bounded viewport');
+  for (const char of '部署') picker.handleInput(char);
+  picker.handleInput('\r'); assert.equal(selected, items[42].value);
+  selected = 'not-cancelled';
+  const cancel = createTaskPicker(items, theme, (value) => { selected = value; }, () => {});
+  cancel.handleInput('\x1b'); assert.equal(selected, undefined);
+  const empty = createTaskPicker(items, theme, (value) => { selected = value; }, () => {});
+  selected = 'none'; for (const char of 'no-matches') empty.handleInput(char);
+  empty.handleInput('\r'); assert.equal(selected, 'none');
+});

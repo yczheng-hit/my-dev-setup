@@ -326,6 +326,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   setInteractiveModeForTests(undefined);
+  resetAutoMode();
 });
 afterAll(() => {
   if (savedGlobalEnv.config === undefined) delete process.env.PICC_PERMISSION_MODES_CONFIG_PATH;
@@ -957,16 +958,14 @@ describe("user-configured permissions", () => {
     });
     expect(read).toBeUndefined();
   });
-  it("falls back to ~/.claude/settings.json when local config has NO permissions block at all", async () => {
+  it("does not import ~/.claude/settings.json when native permissions are missing", async () => {
     writeLocalConfigWithoutPermissionsBlock({ allow: ["Read"] });
     permissionModesExtension(makeFakePiForExtension(pi));
     await pi.simulateSessionStart(cwd);
     pi.flags["permission-mode"] = "acceptEdits";
     await pi.simulateSessionStart(cwd);
-    const read = await pi.simulateToolCall("read", {
-      path: "/opt/elsewhere/some/file.ts",
-    });
-    expect(read).toBeUndefined();
+    const read = await pi.simulateToolCall("read", { path: "/opt/elsewhere/some/file.ts" }, pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async () => "Block" } as any }));
+    expect(read).toMatchObject({ block: true });
   });
 });
 describe("repo-scoped permissions", () => {
@@ -1050,23 +1049,14 @@ describe("repo-scoped permissions", () => {
     const followup = await pi.simulateToolCall("bash", { command: "git push origin dev" });
     expect(followup).toBeUndefined();
   });
-  it("auto-imports Claude Code repo settings when the repo file is absent", async () => {
+  it("never imports or persists Claude Code repo settings", async () => {
     writeClaudeRepo({ allow: ["Bash(git *)"] }, true);
     writeClaudeRepo({ allow: ["Read", "Bash(git *)"] }, false);
     permissionModesExtension(makeFakePiForExtension(pi));
     await pi.simulateSessionStart(cwd);
-    const gitResult = await pi.simulateToolCall("bash", { command: "git status" });
-    expect(gitResult).toBeUndefined();
-    const readResult = await pi.simulateToolCall("read", { path: "/anywhere/file.ts" });
-    expect(readResult).toBeUndefined();
-    const repoFile = join(repoDir, ".pi", "permissions.json");
-    expect(existsSync(repoFile)).toBe(true);
-    const parsed = JSON.parse(readFileSync(repoFile, "utf-8")) as {
-      permissions: { allow: string[] };
-    };
-    expect(parsed.permissions.allow).toContain("Bash(git *)");
-    expect(parsed.permissions.allow).toContain("Read");
-    expect(parsed.permissions.allow.filter((r) => r === "Bash(git *)")).toHaveLength(1);
+    const result = await pi.simulateToolCall("read", { path: "/anywhere/file.ts" }, pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async () => "Block" } as any }));
+    expect(result).toMatchObject({ block: true });
+    expect(existsSync(join(repoDir, ".pi", "permissions.json"))).toBe(false);
   });
   it("does not overwrite a non-empty repo file with claude settings", async () => {
     writeRepoPerms({ allow: ["Bash(npm *)"] });
@@ -2669,7 +2659,7 @@ describe("Bypass: dangerous-file safety check survives (gap #5 regression)", () 
     expect(result).toMatchObject({ block: true });
   });
 });
-import { resetAutoMode, setAutoMode } from "./auto-mode.ts";
+import { getAutoMode, resetAutoMode, setAutoMode } from "./auto-mode.ts";
 import { AutoMode } from "./auto-mode.ts";
 function makeStubAutoMode(
   decide: (
@@ -2720,7 +2710,7 @@ describe("Auto-mode classifier decision rendering", () => {
   it("registers a message renderer for the auto-classifier-decision custom type", () => {
     expect(pi.messageRenderers.has("permission-modes:auto-classifier-decision")).toBe(true);
   });
-  it("emits 'Allowed by auto mode classifier' when the classifier allows", async () => {
+  it("adds an approval note when the classifier allows", async () => {
     installStub(() => ({ allow: true, via: "classify" }));
     const callId = "call-allow-1";
     const before = pi.sentMessages.length;
@@ -2913,103 +2903,22 @@ describe("Auto-mode classifier decision rendering", () => {
     expect(component).toBeTruthy();
   });
 });
-describe("Plan mode routes ask to the auto-mode classifier", () => {
-  let pi: FakePi;
-  const cwd = process.cwd();
-  beforeEach(async () => {
+describe("Plan mode never uses auto to approve edits", () => {
+  it("requires manual approval even if the reviewer would allow", async () => {
     resetAutoMode();
-    pi = createFakePi();
+    const pi = createFakePi();
     permissionModesExtension(makeFakePiForExtension(pi));
-    await pi.simulateSessionStart(cwd);
-  });
-  afterEach(() => {
-    resetAutoMode();
-  });
-  function installStub(
-    decide: (
-      req: { toolName: string; input: Record<string, unknown> },
-    ) =>
-      | { allow: true; reason?: string; via: "safeAllowlist" | "classify" }
-      | {
-          block: true;
-          reason: string;
-          via: "classify" | "fallbackPrompt";
-          shouldFallbackToPrompt: boolean;
-        }
-      | { unavailable: true; reason: string },
-  ): void {
-    resetAutoMode();
-    setAutoMode(makeStubAutoMode(decide));
-  }
-  async function enterPlan() {
+    await pi.simulateSessionStart(process.cwd());
     await pi.simulateCommand("plan", "");
-  }
-  it("allows an ask when the classifier allows, and appends the note", async () => {
-    installStub(() => ({ allow: true, via: "classify" }));
-    await enterPlan();
-    const callId = "plan-allow-1";
-    const result = await pi.simulateToolCall(
-      "edit",
-      { path: "src/foo.ts" },
-      undefined,
-      callId,
-    );
-    expect(result).toBeUndefined();
-    const res = await pi.simulateToolResult(
-      "edit",
-      { path: "src/foo.ts" },
-      callId,
-      { content: "edited" },
-    );
-    const texts = res.content.map((b) => b.text).join("\n");
-    expect(texts).toContain("Allowed by auto mode classifier");
-  });
-  it("blocks when the classifier blocks", async () => {
-    installStub(() => ({
-      block: true,
-      reason: "plan mode: edits are not allowed",
-      via: "classify",
-      shouldFallbackToPrompt: false,
-    }));
-    await enterPlan();
-    const result = await pi.simulateToolCall("edit", {
-      path: "src/foo.ts",
-    });
+    resetAutoMode();
+    const decide = vi.fn(() => ({ allow: true, via: "classify" as const }));
+    setAutoMode(makeStubAutoMode(decide));
+    const custom = vi.fn(async () => "Block");
+    const result = await pi.simulateToolCall("edit", { path: "src/foo.ts" }, pi.fakeCtxFor({ ui: { ...pi.ui, custom } as any }));
     expect(result).toMatchObject({ block: true });
-  });
-  it("falls back to a prompt when the classifier is unavailable", async () => {
-    installStub(() => ({ unavailable: true, reason: "no provider" }));
-    await enterPlan();
-    const result = await pi.simulateToolCall(
-      "edit",
-      { path: "src/foo.ts" },
-      pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async <T,>() => ("Block") as T } as any }),
-    );
-    expect(result).toMatchObject({ block: true });
-  });
-  it("falls back to a prompt when the denial limit trips", async () => {
-    installStub(() => ({
-      block: true,
-      reason: "denied",
-      via: "fallbackPrompt",
-      shouldFallbackToPrompt: true,
-    }));
-    await enterPlan();
-    const result = await pi.simulateToolCall(
-      "edit",
-      { path: "src/foo.ts" },
-      pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async <T,>() => ("Block") as T } as any }),
-    );
-    expect(result).toMatchObject({ block: true });
-  });
-  it("still prompts in default mode even when the classifier would allow", async () => {
-    installStub(() => ({ allow: true, via: "classify" }));
-    const result = await pi.simulateToolCall(
-      "edit",
-      { path: "src/foo.ts" },
-      pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async <T,>() => ("Block") as T } as any }),
-    );
-    expect(result).toMatchObject({ block: true });
+    expect(custom).toHaveBeenCalled();
+    expect(decide).not.toHaveBeenCalled();
+    resetAutoMode();
   });
 });
 describe("auto mode: user rules precede the classifier", () => {
@@ -3132,6 +3041,88 @@ describe("auto mode: user rules precede the classifier", () => {
     });
     expect(result).toMatchObject({ block: true });
     expect(calls.n).toBe(1);
+  });
+  it("edit deny rules win over the in-cwd fast path", async () => {
+    const calls = await setupAutoWithRules({ deny: ["Edit(./blocked.ts)"] }, () => ({ allow: true, via: "classify" }));
+    const result = await pi.simulateToolCall("edit", { path: join(cwd, "blocked.ts") }, pi.fakeCtxFor({ cwd }));
+    expect(result).toMatchObject({ block: true });
+    expect(calls.n).toBe(0);
+  });
+  it("explicit ask also precedes the read-only shell fast path", async () => {
+    const calls = await setupAutoWithRules({ ask: ["Bash(git status:*)"] }, () => ({ allow: true, via: "classify" }));
+    const ctx = pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: async () => "No" } as any });
+    expect(await pi.simulateToolCall("bash", { command: "git status --short" }, ctx)).toMatchObject({ block: true });
+    expect(calls.n).toBe(0);
+  });
+  it("classifyAllShell sends read-only shells to the reviewer after deterministic gates", async () => {
+    await setupAutoWithRules({}, () => ({ allow: true, via: "classify" }));
+    const am = getAutoMode()!;
+    vi.spyOn(am, "classifyAllShell").mockReturnValue(true);
+    const classify = vi.spyOn(am, "classify");
+    expect(await pi.simulateToolCall("bash", { command: "git status --short" }, pi.fakeCtxFor({ cwd }))).toBeUndefined();
+    expect(classify).toHaveBeenCalledOnce();
+  });
+  it("explicit ask rules and sensitive paths are manual, never reviewer-approved", async () => {
+    const calls = await setupAutoWithRules({ ask: ["Bash(npm:*)"] }, () => ({ allow: true, via: "classify" }));
+    const custom = vi.fn(async () => "No");
+    const ctx = pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom } as any });
+    expect(await pi.simulateToolCall("bash", { command: "npm test" }, ctx)).toMatchObject({ block: true });
+    expect(await pi.simulateToolCall("write", { path: join(cwd, ".agents/rules/safety.md") }, ctx)).toMatchObject({ block: true });
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(calls.n).toBe(0);
+  });
+  it.each(["question", "questionnaire", "AskUserQuestion", "ExitPlanMode"])("leaves %s to its own user UI, never reviewer", async tool => {
+    const calls = await setupAutoWithRules({}, () => ({ allow: true, via: "classify" }));
+    expect(await pi.simulateToolCall(tool, {})).toBeUndefined();
+    expect(calls.n).toBe(0);
+  });
+  it("headless auto can review but cannot silently approve unavailable or ask", async () => {
+    await setupAutoWithRules({}, () => ({ unavailable: true, reason: "no reviewer" }));
+    const ctx = pi.fakeCtxFor({ cwd, hasUI: false });
+    expect(await pi.simulateToolCall("bash", { command: "npm test" }, ctx)).toMatchObject({ block: true });
+    resetAutoMode(); setAutoMode(makeStubAutoMode(() => ({ allow: true, via: "classify" })));
+    expect(await pi.simulateToolCall("bash", { command: "npm test" }, ctx)).toBeUndefined();
+    resetAutoMode(); setAutoMode(makeStubAutoMode(() => ({ block: true, reason: "uncertain", via: "classify", shouldFallbackToPrompt: true })));
+    expect(await pi.simulateToolCall("bash", { command: "npm test" }, ctx)).toMatchObject({ block: true });
+  });
+  it.each(["session_shutdown", "session_start", "session_tree", "model_select"])("%s invalidates pending tool approvals", async event => {
+    await setupAutoWithRules({}, () => ({ allow: true, via: "classify" }));
+    let finish!: (result: any) => void;
+    const am = new AutoMode({ config: { allow: [], softDeny: [], hardDeny: [], environment: [], safeToolAllowlist: [], denialLimits: { maxConsecutive: 3, maxTotal: 20 }, transcriptMaxChars: 1000 } as any });
+    (am as any).classify = () => new Promise(resolve => { finish = resolve; });
+    resetAutoMode(); setAutoMode(am);
+    const ctx = pi.fakeCtxFor({ cwd });
+    const pending = pi.simulateToolCall("bash", { command: "npm test" }, ctx);
+    for (const handler of pi.handlers.get(event) ?? []) await handler({}, ctx);
+    finish({ allow: true, via: "classify" });
+    expect(await pending).toMatchObject({ block: true, reason: expect.stringContaining("cancelled") });
+  });
+  it("a stale permission dialog cannot approve after session replacement", async () => {
+    await setupAutoWithRules({ ask: ["Bash(npm:*)"] }, () => ({ allow: true, via: "classify" }));
+    let finish!: (value: string) => void;
+    const ctx = pi.fakeCtxFor({ cwd, ui: { ...pi.ui, custom: () => new Promise(resolve => { finish = resolve; }) } as any });
+    const pending = pi.simulateToolCall("bash", { command: "npm test" }, ctx);
+    for (const handler of pi.handlers.get("session_shutdown") ?? []) await handler({}, ctx);
+    finish("Yes");
+    expect(await pending).toMatchObject({ block: true, reason: "Permission request cancelled" });
+  });
+  it("changing review models only changes reviewer, and /auto test never executes tools", async () => {
+    await setupAutoWithRules({}, () => ({ allow: true, via: "classify" }));
+    const ctx = pi.fakeCtxFor({ cwd });
+    ctx.model = { provider: "openai-codex", id: "coding" };
+    const main = ctx.model;
+    ctx.modelRegistry.find = (provider: string, id: string) => ({ provider, id });
+    const notify = vi.fn(); ctx.ui.notify = notify;
+    await pi.simulateCommand("auto", "model anthropic/safety", ctx);
+    expect(getAutoMode()!.classifierConfig()).toMatchObject({ mode: "fixed", provider: "anthropic", model: "safety" });
+    expect(ctx.model).toBe(main);
+    const classify = vi.spyOn(getAutoMode()!, "classify");
+    await pi.simulateCommand("auto", "test", ctx);
+    expect(classify).toHaveBeenCalledWith(expect.objectContaining({ probe: true, toolName: "reviewer_health_check" }));
+    await pi.simulateCommand("auto", "status", ctx);
+    expect(notify.mock.calls.at(-1)![0]).toContain("session");
+    await pi.simulateCommand("auto", "model active", ctx);
+    expect(getAutoMode()!.classifierConfig().mode).toBe("active");
   });
 });
 describe("Auto-mode classifier note: pre-LLM context strip", () => {

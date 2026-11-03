@@ -2,7 +2,7 @@
 
 基础版本：npm `@jl1990/pi-scheduler@0.5.1`（[jl1990/pi-scheduler](https://github.com/jl1990/pi-scheduler)）。运行代码补丁：`../../patches/pi-scheduler/0.5.1-local.patch`。
 
-目标：提示词精简、消息不重复、少占模型上下文。定时、锁、补跑、恢复等调度逻辑不改。
+目标：提示词精简、消息不重复、少占模型上下文。保留定时、锁、补跑、恢复的既有结构；本轮追加前台优先执行/交付队列和取消校验，见第 6 节。
 
 ## 改动
 
@@ -37,7 +37,7 @@ $ gh run list --limit 1
 
 现在这些都改成 `pi.appendEntry("scheduled-task-log")` + `registerEntryRenderer`：保存在会话里、界面上显示一行，但不发给模型。shell 结果默认一行，`ctrl+o` 展开命令和输出（最多 1500 字符）。已唤醒模型时不再追加这一行。提醒用强调色，失败用警告/错误色。同一提醒原来还有一条不保存的 `notify` 提示，也去掉了。
 
-只有 `message` 动作仍用 `sendMessage`，因为它本来就是发给模型的。
+`message` 且 `triggerTurn: false` 仍用 `sendMessage` 记录模型可见消息；会触发回合的 message/prompt/shell follow-up 均进入自己的 pending wake 队列。
 
 ### 4. 中文、本地时间
 
@@ -51,6 +51,17 @@ $ gh run list --limit 1
 - 去掉 shell 每次开始时的 “Running scheduled command” 提示。
 - `prepareArguments` 标为 `any`，修复上游已有的一个 TypeScript 错误。
 
+
+### 6. 前台优先与可取消唤醒（本地实现，尚未部署）
+
+- 草稿（包括空白）、pending 人工消息、忙碌模型、嵌套 UI prompt、短稳定窗口与手动 pause 一起形成前台 gate。默认 shell 也等待；仅显式 `backgroundExecution: true` 可并行执行，结果仍留在 scheduler 自有队列。不再把结果预先塞进 Pi followUp。
+- `pendingWake` 持久化且与原 session 绑定，事务认领和发送前二次校验；同任务有 pending 结果时不重复补跑。reload 恢复 queued；崩溃中已 dispatching 的项变为 uncertain，**不自动重发**，可显式取消丢弃，避免重复驱动模型。
+- `/scheduler pause|resume|run|status`；resume/run 不绕过前台 gate。notify 仍不触发模型。状态显示等待原因与待交付计数。
+- `/schedules` 和无参数 `/schedule-cancel` 打开真正可搜索的有界列表（原生 Container/Input/SelectList，名称、命令、scope、完整 ID 和 `#短ID`）；按 full ID、唯一前缀/短后缀、唯一名称定位，歧义不猜。选择后在共享锁内按 full ID + revision 重验，任务改变时拒绝旧选择。
+- 停用但尚未完成的任务仍可在菜单选择后启用；菜单操作遇到旧 revision 会给出明确错误，不将拒绝误报为成功。
+- 取消/disable 撤销未交付 wake，运行中 shell 默认继续；UI 可单独终止本进程拥有的命令，不 abort 主会话、不跨进程 kill。已交给模型的内容不假装撤回。
+- 全局 state 目录使用 Pi `getAgentDir()`，保留 `PI_SCHEDULER_STATE_FILE` 显式覆盖。原有时间解析、cron/catchup、共享锁/owner/recovery 保留。
+- 最终全套（`PI_SCHEDULER_LIVE_TESTS=1`、Pi 1.4）：**150 passed / 0 skipped / 0 failed**。包括 picker、uncertain 不重放、运行中取消与本机显式终止；另有跨功能真实 Pi 合成会话验证，见 `scripts/test/ux-composition.test.mjs`。
 ## 验证
 
 ```bash
@@ -59,7 +70,7 @@ npm ci
 PI_SCHEDULER_LIVE_TESTS=1 npm test   # 需要本机已安装 pi
 ```
 
-139 项全部通过，其中包括用真实 Pi 1.4.0 加载扩展的 live 测试。新增 `test/local-patch.test.cjs` 覆盖：中文时间格式、schema 不含别名但仍接受旧参数、唤醒块格式、无重复的模型消息、未唤醒时只写 log entry、输出截断、`manage update` 接受未列出的字段。
+150 项全部通过，其中包括用真实 Pi 1.4.0 加载扩展的 live 测试。`test/local-patch.test.cjs` 覆盖中文时间格式、schema 不含别名但仍接受旧参数、唤醒块格式、无重复的模型消息、未唤醒时只写 log entry、输出截断、`manage update` 接受未列出的字段。
 
 测试来自上游 git `b4ea618`（npm 包里不含测试）。测试改动：两个 harness 补上 `registerEntryRenderer` / `appendEntry`；3 个测试文件中按英文文案断言的地方改为新文案；原本受系统语言影响的 `formatAbsoluteTime` 用例不再依赖语言；删除检查上游 `.github/workflows` 的用例，因为这个目录没有随包复制过来。
 
@@ -67,8 +78,8 @@ PI_SCHEDULER_LIVE_TESTS=1 npm test   # 需要本机已安装 pi
 
 - 用真实 Pi `SessionManager` 运行提醒和 shell 任务，结果写入 2 条 `custom/scheduled-task-log`，`buildSessionContext()` 中的模型消息数为 0。
 - 在 tmux 中用离线假模型运行交互界面：`/schedule`、`/remind`、`/schedules`、prompt 唤醒、`ctrl+o` 展开输出，显示均正常。
-- 类型检查（TypeScript 5.9.3，使用本机 Pi 1.4.0 的类型定义）通过。
+- 最新严格类型检查：TypeScript 6.0.3，使用本机 Pi 1.4.0 类型定义，通过。
 
 ## 补丁维护
 
-patch 只包含 `extensions/` 运行代码，使用 `a/`、`b/` 路径。已验证：npm 原版打上 patch 后与本目录 `extensions/` 完全一致。测试、此文档不在 patch 中。`package.json`、`README.md`、`LICENSE.md` 与原版相同。
+patch 只包含 `extensions/` 运行代码，使用 `a/`、`b/` 路径。已验证：npm 原版打上 patch 后与本目录 `extensions/` 完全一致。测试、此文档不在 patch 中。`package.json` 额外把 `.test.mjs` 选择器测试纳入 npm test；文档/测试不属于 runtime patch。

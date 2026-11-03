@@ -59,7 +59,8 @@ async function harness(root, exec, sandboxOverrides = {}) {
   const sandbox = {
     require: localRequire, process: {...process, env: {...process.env, PI_SCHEDULER_STATE_FILE: stateFile}},
     console, setTimeout, clearTimeout, setInterval, clearInterval,
-    Cron: localRequire('croner').Cron, randomUUID, homedir: () => stateDir, join: path.join,
+    AbortController,
+    Cron: localRequire('croner').Cron, randomUUID, getAgentDir: () => stateDir, join: path.join,
     StringEnum: values => ({enum: values}), Text: class {},
     Type: new Proxy({}, {get: (_, key) => value => key === 'Object' ? {properties: value} : value}),
     ...sandboxOverrides,

@@ -24,12 +24,14 @@ export default function (pi) {
   if (process.env.HERDR_ENV !== "1" || !paneId) return;
 
   let active = false;
+  let activeLabel;
+  let stopped = false;
   const runningTools = new Map(); // toolCallId -> toolName
+  const prompts = []; // Matching kind/title supports nested and out-of-order closes.
 
   let bootstrapActive = false;
-  let ignoredBootstrapPrompt = false;
-  pi.events.on("btw:ui-bootstrap", (event) => {
-    bootstrapActive = event?.active === true;
+  const unsubscribeBootstrap = pi.events.on("btw:ui-bootstrap", (event) => {
+    if (!stopped) bootstrapActive = event?.active === true;
   });
   function report(args) {
     try {
@@ -48,7 +50,7 @@ export default function (pi) {
     // Reuse the agent number from the plugin's label.
     try {
       execFile(herdrBin, ["pane", "get", paneId], { timeout: 2000 }, (error, stdout) => {
-        if (seq !== reportSeq) return; // prompt already ended
+        if (stopped || seq !== reportSeq) return; // prompt already ended
         let num = "";
         try {
           if (!error) num = String(JSON.parse(stdout).result?.pane?.state_labels?.idle ?? "").match(/^\d+(?= |$)/)?.[0] ?? "";
@@ -72,28 +74,45 @@ export default function (pi) {
   pi.on("tool_execution_start", (e) => runningTools.set(e.toolCallId, e.toolName));
   pi.on("tool_execution_end", (e) => runningTools.delete(e.toolCallId));
 
-  pi.on("ui_prompt_start", (event) => {
-    // Only the short-lived BTW TUI bootstrap is non-blocking. Its persistent
-    // overlay is mounted separately, so real subsequent approvals still emit.
-    if (bootstrapActive && event?.kind === "custom" && !active) {
-      ignoredBootstrapPrompt = true;
-      return;
-    }
-    if (active) return;
-    active = true;
-    const label = classify(event);
+  function publish() {
+    const visible = prompts.filter((prompt) => !prompt.ignored).at(-1);
+    const label = visible?.label;
+    if (active === !!visible && activeLabel === label) return;
+    active = !!visible;
+    activeLabel = label;
     reportMetadata(label);
-    pi.events.emit("herdr:blocked", { active: true, label });
+    pi.events.emit("herdr:blocked", active ? { active: true, label } : { active: false });
+  }
+
+  pi.on("ui_prompt_start", (event) => {
+    if (stopped) return;
+    prompts.push({
+      kind: event?.kind, title: event?.title,
+      // Only the short-lived resource-bootstrap custom prompt is exempt.
+      ignored: bootstrapActive && event?.kind === "custom",
+      label: classify(event),
+    });
+    publish();
   });
 
-  pi.on("ui_prompt_end", () => {
-    if (ignoredBootstrapPrompt) {
-      ignoredBootstrapPrompt = false;
-      return;
-    }
-    if (!active) return;
+  pi.on("ui_prompt_end", (event) => {
+    if (stopped) return;
+    const index = prompts.findLastIndex((prompt) => prompt.kind === event?.kind && prompt.title === event?.title);
+    if (index < 0) return; // An unmatched end must not unblock a different prompt.
+    prompts.splice(index, 1);
+    publish();
+  });
+
+  pi.on("session_shutdown", () => {
+    if (stopped) return;
+    stopped = true;
+    unsubscribeBootstrap?.();
+    bootstrapActive = false;
+    prompts.length = 0;
+    runningTools.clear();
+    if (active) pi.events.emit("herdr:blocked", { active: false });
     active = false;
-    pi.events.emit("herdr:blocked", { active: false });
-    reportMetadata(null);
+    activeLabel = undefined;
+    reportMetadata(null); // increments reportSeq and clears only our metadata source
   });
 }

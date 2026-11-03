@@ -217,3 +217,31 @@ produce one model request, explicit approval produces two. The second uses an is
 verify native feedback → Pi-managed vi → cancel → usable input, plus edit/save/reapproval. Neither
 reads real user configuration, saved sessions or the clipboard. Regenerated runtime-only patch:
 normalized npm 0.1.3 + patch equals all local runtime files. Activate with `/reload` when idle.
+
+
+## AGENTS-only + independent auto reviewer (pending deployment)
+
+- Claude Code user/project settings are no longer fallback permission sources and are never automatically persisted. Native user config and `.pi/permissions.json` remain.
+- Replaced the Anthropic-specific HTTP client with Pi `ModelRegistry.streamSimple`: fixed reviewer or explicit follow-active, reviewer-owned model/auth/headers/OAuth, no tools or main-model mutation.
+- Strict plain JSON `allow|deny|ask`; bounded timeout even when a transport ignores abort, safe one-time manual fallback/headless block, cooldown and metadata-only logging. Session/reload/tree/model/mode cancellation invalidates pending reviewer results and stale permission dialogs.
+- Explicit deny/ask and sensitive paths precede auto fast paths. Relative file rules now match session-cwd absolute inputs too; explicit shell ask rules precede read-only shortcuts. `.agents`, `.pi` and AGENTS files are sensitive writes. Questions and plan approvals stay human-only.
+- Reviewer context uses read-only native `buildSessionProjection()` so compaction and extension evidence cannot be promoted to fresh user authorization; thinking is omitted. Shared sibling `../pi-agents-context` provides AGENTS/trusted `.agents/rules`, including worktree shadowing. This package is not standalone distributable without that sibling.
+- User commands: `/auto`, `/auto status`, `/auto model active|provider/model`, `/auto test`. Interactive selection is session-only; persist via the user config. Repository config keeps `bypassPermissions` default and a fixed `anthropic/claude-sonnet-5-5` reviewer; entering auto is explicit.
+- Selective native CLAUDE discovery removal is a separate **SDK + bundled CLI host compatibility patch**, maintained by `scripts/agents-only.mjs` and tested on temporary copies. No active host/install/settings were patched for this work. See `../pi-agents-context/README.md` for deploy/restart/backup/rollback and upgrade limitations.
+
+Validation commands (from repo root; Pi 1.4.0, no real provider calls):
+
+```sh
+export PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent"
+node packages/picc-permission-modes/test/reviewer-registry.mjs
+node --test packages/pi-agents-context/test/*.test.mjs
+node packages/picc-permission-modes/test/model-turn.mjs
+agent_dir=$(mktemp -d /tmp/pi-auto-tests-XXXXXX)
+PI_CODING_AGENT_DIR="$agent_dir" npm test --prefix packages/picc-permission-modes -- --maxWorkers=2 --minWorkers=1
+rm -rf "$agent_dir"
+node scripts/permission-patch.mjs /path/to/unpacked/npm-0.1.3/package --check
+```
+
+The registry test uses real Pi runtime/registry and in-memory providers/credentials, and a real compaction-aware SessionManager. It checks provider/key/header isolation and summary provenance, **not** real OAuth refresh, remote availability or model judgment quality. GPT prompt composition is checked in both extension orders; local-mock Codex continuations and both model-switch directions remain separate regression checks.
+
+Final isolated permission suite: **581 passed, 6 skipped, 0 failed**. AGENTS/host-copy fixtures: **5 passed**. Real Pi registry/session-projection checks and plan-turn continuation checks passed. GPT prompt unit tests: **5 passed**; local mock Codex lite/full continuations, both switch directions, and real subagent-adapter loading passed. No real provider, OAuth refresh, deployment or full new-package composition with BTW was exercised.

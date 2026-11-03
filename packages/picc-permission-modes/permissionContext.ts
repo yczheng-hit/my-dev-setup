@@ -31,12 +31,16 @@ export const DANGEROUS_FILES = [
   ".ripgreprc",
   ".mcp.json",
   ".claude.json",
+  "AGENTS.md",
+  "AGENTS.override.md",
 ] as const;
 export const DANGEROUS_DIRECTORIES = [
   ".git",
   ".vscode",
   ".idea",
   ".claude",
+  ".agents",
+  ".pi",
 ] as const;
 export function isDangerousFilePath(pathStr: string): boolean {
   if (!pathStr) return false;
@@ -139,7 +143,7 @@ function patternWithRoot(
   }
   let normalizedPattern = pattern;
   if (pattern.startsWith("./")) normalizedPattern = pattern.slice(2);
-  return { relativePattern: normalizedPattern, root: null };
+  return { relativePattern: path.resolve(_cwd, normalizedPattern).slice(1), root: path.sep };
 }
 function dirSepNorm(p: string): string {
   return p.replace(/\\/g, "/");
@@ -176,8 +180,9 @@ function matchesPathPattern(
   ruleValue: PermissionRuleValue,
   absPath: string,
   originalTarget: string,
+  cwd = process.cwd(),
 ): boolean {
-  const parts = patternWithRoot(ruleValue.ruleContent!, absPath);
+  const parts = patternWithRoot(ruleValue.ruleContent!, cwd);
   const normalizedPattern = parts.relativePattern
     .replace(/^\.\//, "")
     .replace(/\\/g, "/");
@@ -209,6 +214,7 @@ function ruleMatches(
   absPath: string,
   ruleString: string,
   originalTarget: string,
+  cwd = process.cwd(),
 ): boolean {
   if (ruleValue.toolName.startsWith("mcp__")) {
     const ruleParts = ruleValue.toolName.split("__");
@@ -229,22 +235,24 @@ function ruleMatches(
   }
   if (ruleValue.toolName.toLowerCase() !== toolName.toLowerCase()) return false;
   if (ruleValue.ruleContent === undefined) return true;
-  return matchesPathPattern(ruleValue, absPath, originalTarget);
+  return matchesPathPattern(ruleValue, absPath, originalTarget, cwd);
 }
 function matchesReadRuleSpace(
   ruleValue: PermissionRuleValue,
   absPath: string,
   originalTarget: string,
+  cwd = process.cwd(),
 ): boolean {
   if (ruleValue.toolName.toLowerCase() !== "read") return false;
   if (ruleValue.ruleContent === undefined) return false;
-  return matchesPathPattern(ruleValue, absPath, originalTarget);
+  return matchesPathPattern(ruleValue, absPath, originalTarget, cwd);
 }
 function readRuleMatches(
   ruleValue: PermissionRuleValue,
   targetTool: string,
   absPath: string,
   originalTarget: string,
+  cwd = process.cwd(),
 ): boolean {
   if (
     ruleValue.ruleContent === undefined &&
@@ -252,7 +260,7 @@ function readRuleMatches(
   ) {
     return true;
   }
-  return matchesReadRuleSpace(ruleValue, absPath, originalTarget);
+  return matchesReadRuleSpace(ruleValue, absPath, originalTarget, cwd);
 }
 export function matchingRuleForInput(
   targetTool: string,
@@ -260,6 +268,7 @@ export function matchingRuleForInput(
   toolType: "edit" | "read",
   behavior: PermissionBehavior,
   context: ToolPermissionContext,
+  cwd = process.cwd(),
 ): PermissionRule | null {
   const sources: PermissionRuleSource[] = [
     "userSettings",
@@ -277,7 +286,7 @@ export function matchingRuleForInput(
       : behavior === "deny"
       ? context.alwaysDenyRules
       : context.alwaysAskRules;
-  const absPath = path.resolve(
+  const absPath = path.resolve(cwd,
     targetPath.startsWith("~")
       ? targetPath.replace(/^~/, homedir())
       : targetPath,
@@ -289,8 +298,8 @@ export function matchingRuleForInput(
       const value = permissionRuleValueFromString(ruleString);
       const matched =
         toolType === "read"
-          ? readRuleMatches(value, targetTool, absPath, targetPath)
-          : ruleMatches(value, targetTool, absPath, ruleString, targetPath);
+          ? readRuleMatches(value, targetTool, absPath, targetPath, cwd)
+          : ruleMatches(value, targetTool, absPath, ruleString, targetPath, cwd);
       if (!matched) {
         continue;
       }
@@ -307,15 +316,17 @@ export function matchingDenyRule(
   tool: string,
   targetPath: string,
   context: ToolPermissionContext,
+  cwd = process.cwd(),
 ): PermissionRule | null {
-  return matchingRuleForInput(tool, targetPath, "edit", "deny", context);
+  return matchingRuleForInput(tool, targetPath, "edit", "deny", context, cwd);
 }
 export function matchingAskRule(
   tool: string,
   targetPath: string,
   context: ToolPermissionContext,
+  cwd = process.cwd(),
 ): PermissionRule | null {
-  return matchingRuleForInput(tool, targetPath, "edit", "ask", context);
+  return matchingRuleForInput(tool, targetPath, "edit", "ask", context, cwd);
 }
 type ShellRule =
   | { type: "exact"; command: string }
@@ -732,7 +743,7 @@ export function checkWritePermissionForTool(
       message: `Pi requested permissions to use ${tool}, but you haven't granted it yet.`,
     };
   }
-  const deny = matchingDenyRule(tool, targetPath, context);
+  const deny = matchingDenyRule(tool, targetPath, context, cwd);
   if (deny) {
     return {
       behavior: "deny",
@@ -767,7 +778,7 @@ export function checkWritePermissionForTool(
       } satisfies PermissionAllowDecision;
     }
   }
-  const ask = matchingAskRule(tool, targetPath, context);
+  const ask = matchingAskRule(tool, targetPath, context, cwd);
   if (ask) {
     return {
       behavior: "ask",
@@ -775,13 +786,13 @@ export function checkWritePermissionForTool(
       decisionReason: { type: "rule", rule: ask },
     } satisfies PermissionAskDecision;
   }
-  if (context.mode === "acceptEdits" && pathInAllowedWorkingPath(targetPath, context, cwd)) {
+  if ((context.mode === "acceptEdits" || context.mode === "auto") && pathInAllowedWorkingPath(targetPath, context, cwd)) {
     return {
       behavior: "allow",
-      decisionReason: { type: "mode", mode: "acceptEdits" },
+      decisionReason: { type: "mode", mode: context.mode },
     } satisfies PermissionAllowDecision;
   }
-  const allow = matchingRuleForInput(tool, targetPath, "edit", "allow", context);
+  const allow = matchingRuleForInput(tool, targetPath, "edit", "allow", context, cwd);
   if (allow) {
     return {
       behavior: "allow",
@@ -821,7 +832,7 @@ export function checkReadPermissionForTool(
     };
   }
   // local patch: removed the Windows-only suspicious-path prompt (macOS/Linux only).
-  const deny = matchingRuleForInput(tool, targetPath, "read", "deny", context);
+  const deny = matchingRuleForInput(tool, targetPath, "read", "deny", context, cwd);
   if (deny) {
     return {
       behavior: "deny",
@@ -829,7 +840,7 @@ export function checkReadPermissionForTool(
       decisionReason: { type: "rule", rule: deny },
     } satisfies PermissionDenyDecision;
   }
-  const ask = matchingRuleForInput(tool, targetPath, "read", "ask", context);
+  const ask = matchingRuleForInput(tool, targetPath, "read", "ask", context, cwd);
   if (ask) {
     return {
       behavior: "ask",
@@ -847,7 +858,7 @@ export function checkReadPermissionForTool(
       decisionReason: { type: "mode", mode: "default" },
     } satisfies PermissionAllowDecision;
   }
-  const allow = matchingRuleForInput(tool, targetPath, "read", "allow", context);
+  const allow = matchingRuleForInput(tool, targetPath, "read", "allow", context, cwd);
   if (allow) {
     return {
       behavior: "allow",
@@ -898,6 +909,7 @@ export function isPathAllowedAdaptor(
     "read",
     "allow",
     context,
+    cwd,
   );
   if (readAllow) {
     return {

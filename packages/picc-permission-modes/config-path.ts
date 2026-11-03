@@ -4,10 +4,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_CONFIG = {
   autoMode: {
-    provider: {
-      apiKey: "${ANTHROPIC_AUTH_TOKEN}",
-      maxContextChars: 80_000,
-    },
+    classifier: { mode: "active", timeoutMs: 15000, onUnavailable: "ask", failureThreshold: 3, cooldownMs: 30000 },
     allow: [
       "Standard read-only file inspection inside the working directory.",
       "Standard search/grep/glob operations in the working directory.",
@@ -28,7 +25,7 @@ const DEFAULT_CONFIG = {
       "DROP DATABASE / DROP SCHEMA without explicit user confirmation.",
       "Disabling safety tooling, audit logs, or git hooks.",
       "Systematic scanning of credential stores (.env, ~/.aws/, keychains, etc.).",
-      "Disabling or removing .claude/ settings, hooks, or rules.",
+      "Disabling or removing .agents/ or .pi/ settings, hooks, or rules.",
     ],
     environment: [
       "An autonomous coding agent running inside the user's pi session.",

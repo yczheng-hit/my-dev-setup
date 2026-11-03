@@ -1,12 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { resolvePermissionModesConfigPath } from "./config-path.ts";
 export interface UserPermissions {
   allow: string[];
   deny: string[];
   ask: string[];
-  source: "local-config" | "claude-settings" | "none";
+  source: "local-config" | "none";
 }
 const EMPTY: UserPermissions = {
   allow: [],
@@ -16,10 +14,6 @@ const EMPTY: UserPermissions = {
 };
 function resolveLocalConfigPath(): string {
   return resolvePermissionModesConfigPath();
-}
-function resolveClaudeSettingsPath(): string {
-  const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-  return join(claudeConfigDir, "settings.json");
 }
 /** Strip `//` and `/* * /` JSON comments (matches the upstream loader's
  *  behavior so the autoMode block can live next to flat-permission rules
@@ -118,31 +112,6 @@ export function readJsonFile(path: string): unknown {
     return null;
   }
 }
-/** Persist `perms` as a `permissions` block in the local config.json.
- *  Preserves all other top-level keys. Writes atomically (best-effort:
- *  ensures the parent dir exists, then writes). Returns true on success. */
-function persistPermissionsToLocalConfig(
-  localPath: string,
-  perms: { allow: string[]; deny: string[]; ask: string[] },
-): boolean {
-  try {
-    const existing = readJsonFile(localPath);
-    const base: Record<string, unknown> =
-      existing && typeof existing === "object"
-        ? { ...(existing as Record<string, unknown>) }
-        : {};
-    base.permissions = {
-      allow: [...perms.allow],
-      deny: [...perms.deny],
-      ask: [...perms.ask],
-    };
-    mkdirSync(dirname(localPath), { recursive: true });
-    writeFileSync(localPath, JSON.stringify(base, null, 2) + "\n", "utf-8");
-    return true;
-  } catch {
-    return false;
-  }
-}
 /** Deep-equal-ish comparison for a parsed permissions block. Compares the
  *  three rule arrays by content (order-insensitive). Returns true when the
  *  two blocks describe the same allow/deny/ask sets. */
@@ -166,25 +135,6 @@ export function loadUserPermissions(): UserPermissions {
     );
     if (hasAnyRules(localPerms)) {
       return { ...localPerms, source: "local-config" };
-    }
-  }
-  const claudePath = resolveClaudeSettingsPath();
-  const claudeRaw = readJsonFile(claudePath);
-  if (claudeRaw && typeof claudeRaw === "object") {
-    const claudePerms = parsePermissionsBlock(
-      (claudeRaw as Record<string, unknown>).permissions,
-    );
-    if (hasAnyRules(claudePerms)) {
-      const localPermsForCompare =
-        localRaw && typeof localRaw === "object"
-          ? parsePermissionsBlock(
-              (localRaw as Record<string, unknown>).permissions,
-            )
-          : { allow: [], deny: [], ask: [] };
-      if (!permissionsBlockEqual(localPermsForCompare, claudePerms)) {
-        persistPermissionsToLocalConfig(localPath, claudePerms);
-      }
-      return { ...claudePerms, source: "claude-settings" };
     }
   }
   return EMPTY;

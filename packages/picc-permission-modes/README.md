@@ -1,141 +1,95 @@
-# picc-permission-modes
+# picc-permission-modes — local Pi variant
 
-[![npm downloads](https://img.shields.io/npm/dt/@ladbabynpm/picc-permission-modes.svg)](https://www.npmjs.com/package/@ladbabynpm/picc-permission-modes)
-
-A Claude Code style permission-mode system for the [pi coding agent](https://pi.dev).
-Part of [picc](https://github.com/Ladbaby/picc), a pi agent setup mirroring Claude Code's harness.
-Mirrors upstream `PermissionMode` semantics across messages shown to the LLM, dialogs shown in the TUI, prompt strings, plan-mode flow, dangerous-path safety, and persistence.
-
-Fork of [pi-permission-modes](https://pi.dev/packages/pi-permission-modes), where we replicate Claude Code's harness more faithfully.
+Based on `@ladbabynpm/picc-permission-modes@0.1.3`. This checkout keeps its planning UI and permission rules, but no longer imports Claude Code configuration. Use the repository package entry, **not** the upstream npm entry, for these changes. Runtime code also depends on sibling `../pi-agents-context`; distributing this directory alone is unsupported.
 
 ## Modes
 
-| Mode | Symbol | Behavior |
-| --- | --- | --- |
-| `default` | — | Ask on edits/writes. Auto-allow reads inside cwd. Ask on bash outside the read-only allowlist. |
-| `acceptEdits` | ⏵⏵ | Auto-allow edits inside cwd. Ask otherwise. Auto-allow bash commands on the upstream allowlist (`mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, `sed`). |
-| `plan` | ⏸ | Read-only intent, but **not hard-blocked**: only the plan file is auto-allowed; every other edit/write flows through the normal permission prompt (matches Claude Code). Bash and reads defer to `pi-permission-system`. Plan file at `<agentDir>/plans/<slug>.md` (global dir + random 3-word `adjective-verb-noun` slug, e.g. `~/.pi/agent/plans/gleaming-brewing-phoenix.md`). |
-| `bypassPermissions` | ⏵⏵ | Auto-allow everything **except** dangerous-path safety checks (`.gitconfig`, `.bashrc`, `.git/`, `.claude/`, etc.). |
-| `auto` | ⏵⏵ | Reads/search/plan/task tools are safe-allowlisted (no classifier call). Edits/writes **inside cwd** are fast-pathed like `acceptEdits` (dangerous paths excluded). Everything else goes through a separate LLM classifier that allows safe actions and blocks destructive/exfiltrating ones. If the classifier is **unavailable** (no provider, HTTP error, timeout), the call falls back to a normal user prompt instead of hard-blocking. The TUI surfaces each classifier decision inline (see below). |
+| Mode | Behavior |
+| --- | --- |
+| `default` | Ask for writes and non-read-only shell actions. |
+| `acceptEdits` | Allow ordinary workspace writes and supported shell operations, retaining explicit rules and sensitive-path checks. |
+| `plan` | Plan file is writable; other edits require human confirmation. Auto never approves a plan or answers a question for you. |
+| `bypassPermissions` | Existing bypass behavior, retaining sensitive-path/manual safety checks. **This repository still defaults to bypass; enabling auto is explicit.** |
+| `auto` | Explicit deny/ask and sensitive-path checks run first. Ordinary workspace writes and safe reads may avoid an LLM call; remaining actions use the selected reviewer. |
 
-## Install
+This is an application permission gate, **not an OS sandbox**. Reviewer judgments and textual policy lists are not deterministic security enforcement; explicit permission rules and manual safety gates remain important.
 
-Install via `pi install npm:@ladbabynpm/picc-permission-modes`.
+## Native configuration only
 
+User configuration: `<agentDir>/extensions/picc-permission-modes/config.json`, normally `~/.pi/agent/extensions/picc-permission-modes/config.json`.
 
-## Configuration
-
-All configuration lives in `~/.pi/agent/extensions/picc-permission-modes/config.json` (not the installed npm package), with a few environment variables to override its location or supply the classifier's auth. The extension creates a starter config at that path on first load if it does not yet exist.
-
-### Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PICC_PERMISSION_MODES_CONFIG_PATH` | `~/.pi/agent/extensions/picc-permission-modes/config.json` | Absolute path to the extension's `config.json`. Override to point at a config in a different location. |
-| `PICC_PERMISSION_MODE` | *(unset)* | Initial permission mode for **headless / SDK** hosts (e.g. the `picc-claude-shim` driven by T3 Code). Set to one of `default`, `acceptEdits`, `plan`, `bypassPermissions`, `auto` (camelCase or kebab-case). Headless pi sessions never fire `session_start`, so the `--permission-mode` flag is never seen — this var is how a host tells the gate which mode to start in. Without it, a headless session stays on `default` and auto-rejects every non-allow tool call. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Directory the loader reads `settings.json` from when falling back to Claude Code's permissions block. |
-| `ANTHROPIC_AUTH_TOKEN` | *(unset)* | API key for the `auto` mode LLM classifier. Used when `autoMode.provider.apiKey` is unset, and interpolated into `"${ANTHROPIC_AUTH_TOKEN}"` placeholders in `config.json`. |
-
-### Example `config.json`
+- `PICC_PERMISSION_MODES_CONFIG_PATH`: explicit alternate user configuration path.
+- `PICC_PERMISSION_MODE`: initial mode for headless/SDK hosts; mode flag/session behavior remains supported.
+- Repository permission rules: `.pi/permissions.json`.
+- `.claude/settings.json`, `.claude/settings.local.json`, `CLAUDE_CONFIG_DIR` and old `autoMode.provider` transport/auth settings are **not imported or persisted**. No Claude content is copied, deleted or migrated.
+- Only user configuration chooses the reviewer. Project permission files cannot redirect its provider/model/endpoint.
 
 ```json
 {
   "autoMode": {
-    "provider": {
-      "apiKey": "${ANTHROPIC_AUTH_TOKEN}",
-      "maxContextChars": 80000
+    "classifier": {
+      "mode": "fixed",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "timeoutMs": 15000,
+      "onUnavailable": "ask",
+      "failureThreshold": 3,
+      "cooldownMs": 30000
     },
-    "allow": [
-      "Standard read-only file inspection inside the working directory.",
-      "Standard search/grep/glob operations in the working directory.",
-      "Running tests, linters, and formatters.",
-      "Editing files inside the current working directory.",
-      "git add/commit/diff/log/status/fetch within the repository."
-    ],
-    "softDeny": [
-      "Force pushes (git push -f, git push --force, git push --force-with-lease).",
-      "rm -rf outside the working directory.",
-      "Editing files outside the working directory without explicit authorization.",
-      "Network egress to non-trusted external endpoints.",
-      "git push to a branch that is not the session's working branch."
-    ],
-    "hardDeny": [
-      "rm -rf /, rm -rf $HOME, or equivalent filesystem-wide destructive deletes.",
-      "Force push to main / master / the repository default branch.",
-      "DROP DATABASE / DROP SCHEMA without explicit user confirmation.",
-      "Disabling safety tooling, audit logs, or git hooks.",
-      "Systematic scanning of credential stores (.env, ~/.aws/, keychains, etc.).",
-      "Disabling or removing .claude/ settings, hooks, or rules."
-    ],
-    "environment": [
-      "An autonomous coding agent running inside the user's pi session."
-    ],
+    "allow": ["Routine local tests and inspection"],
+    "softDeny": ["Shared-system changes without specific authorization"],
+    "hardDeny": ["Credential exfiltration"],
+    "environment": ["A Pi coding session"],
     "classifyAllShell": false,
-    "denialLimits": {
-      "maxConsecutive": 3,
-      "maxTotal": 20
-    },
+    "denialLimits": { "maxConsecutive": 3, "maxTotal": 20 },
     "transcriptMaxChars": 80000
   },
   "permissions": {
-    "allow": ["Read", "Bash(go)", "Bash(git commit *)"],
-    "deny": ["Bash(rm *)", "Bash(git push *)", "Bash(sudo *)"],
-    "ask": []
+    "defaultMode": "bypassPermissions",
+    "allow": ["Bash(npm:*)"],
+    "deny": ["Edit(./protected/**)"],
+    "ask": ["Bash(git push:*)"]
   }
 }
 ```
 
-User permissions are explained in the next section.
+Generic defaults use `classifier.mode: "active"` (follow the active Pi model). This repository instead supplies the fixed reviewer above. A missing fixed model never silently switches to active. Use a model actually registered in your Pi installation.
 
-## User permissions
+Relative path rules are matched against the session cwd, for both relative and absolute tool inputs. `classifyAllShell: true` sends otherwise allowed shell commands to review as well; it never bypasses denies, explicit asks or safety checks.
 
-Add a `permissions` block to `~/.pi/agent/extensions/picc-permission-modes/config.json` to seed session-allow, session-deny, and session-ask rules. The format is identical to Claude Code's `permissions` block in `~/.claude/settings.json` (see [code.claude.com/docs/en/permissions](https://code.claude.com/docs/en/permissions)). Example:
+## Independent reviewer
+
+The main model can be Codex, Claude, Gemini or a custom Pi provider; the reviewer can independently be any registered chat model supported by Pi's native registry. The reviewer request uses **that model's** endpoint, credentials, headers and OAuth handling via `modelRegistry.streamSimple()`. No main-model key/header is copied to another provider. Configure provider credentials using Pi's models/auth facilities, not this permission file.
+
+The reviewer receives no execution tools, requests reasoning off, and returns only:
 
 ```json
-{
-  "permissions": {
-    "allow": [
-      "WebFetch",
-      "Read(//**)",
-      "Bash(go)",
-      "Bash(git commit *)",
-      "Bash(git * main)"
-    ],
-    "deny": [
-      "Bash(rm *)",
-      "Bash(rmdir *)",
-      "Bash(git push *)",
-      "Bash(sudo *)",
-      "Bash(shred *)",
-      "Bash(Restart-Computer *)",
-      "Bash(Format-Volume *)",
-      "Bash(Clear-Disk *)",
-      "Bash(Remove-Item *)"
-    ],
-    "ask": []
-  }
-}
+{"decision":"allow","reason":"Routine authorized local operation"}
 ```
 
-Each rule is a string like `Read`, `Bash(go)`, `Bash(git commit *)`, or `Read(//absolute/path/**)`. Bare tool names (no parens) auto-allow every call to that tool. Paren rules can carry an exact command, a wildcard, or a path glob.
+Valid decisions are `allow`, `deny`, `ask`. Invalid JSON, extra fields, XML, tool calls, incomplete output, auth/provider errors and timeouts never authorize execution. Unavailable → one-time manual confirmation (`ask`) or block (`deny`); headless hosts block when confirmation is required. Repeated failures open a cooldown. Cancellation, session/reload/tree changes and model changes invalidate pending results and permission dialogs. Denial limits request human input, never silently allow.
 
-**Precedence:** if the local `permissions` block in `config.json` has any entries in `allow`/`deny`/`ask`, those are used as-is. If the local block is empty (or the file is missing), the loader falls back to parsing `~/.claude/settings.json`'s `permissions` block so the same allow/deny rules you have in Claude Code apply to pi too.
+Instructions use native AGENTS and trusted `.agents/rules` through the shared package; no CLAUDE fallback. Transcript collection uses Pi's read-only, compaction-aware projection, keeping compaction/branch summaries and extension evidence distinct from actual user requests. Thinking is excluded; tool results are untrusted and truncated. Logs, when enabled, contain operational metadata, not prompts, commands, model reasons or credentials. Reviewer requests themselves necessarily transmit the selected context to the reviewer provider.
 
-**Auto-persistence:** when the loader falls back to `~/.claude/settings.json`, it also writes the parsed rules back to `config.json` so the rules show up on disk where you can inspect or edit them. The write is idempotent — re-running when the local rules already match the claude settings is a no-op. Other top-level keys in `config.json` (e.g. `autoMode`) are preserved.
+## Commands
 
-## CLI
+- `/auto`: enter auto mode.
+- `/auto status`: reviewer, last decision, latency, failure/cooldown state.
+- `/auto model active`: follow main model.
+- `/auto model provider/model`: select an independent reviewer **for this session only**.
+- `/auto test`: diagnostic review request; executes no proposed action.
+- `/default`, `/acceptEdits`, `/plan`, `/bypassPermissions`, `/mode`: existing mode controls.
 
-```bash
-pi --permission-mode default          # explicit default
-pi --permission-mode acceptEdits      # auto-approve edits
-pi --permission-mode plan             # start in plan mode
-pi --permission-mode bypassPermissions
-pi --permission-mode auto             # auto-mode classifier routes every tool call
-pi --permission-mode ask              # alias for default
+Interactive selection never changes the main model, thinking level or tool set. Edit the user config and reload/restart to persist a reviewer selection.
+
+## Validation
+
+```sh
+export PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent"
+agent_dir=$(mktemp -d /tmp/pi-auto-tests-XXXXXX)
+PI_CODING_AGENT_DIR="$agent_dir" npm test --prefix packages/picc-permission-modes -- --maxWorkers=2 --minWorkers=1
+rm -rf "$agent_dir"
+node --test packages/pi-agents-context/test/*.test.mjs
 ```
 
-## Slash commands
-
-- `/default`, `/acceptEdits`, `/plan`, `/bypassPermissions`, `/auto`
-- `/mode <name>` — set mode by alias
-- `/mode` — open an interactive selector
+See `LOCAL-PATCH.md` for historical changes. Tests use isolated configuration and mocked/offline providers; they do not establish live provider availability or model decision quality.

@@ -37,7 +37,7 @@ describe("permission modes config path", () => {
     expect(ensurePermissionModesConfig(configPath)).toBe(configPath);
     expect(existsSync(configPath)).toBe(true);
     expect(JSON.parse(readFileSync(configPath, "utf-8"))).toMatchObject({
-      autoMode: { provider: { apiKey: "${ANTHROPIC_AUTH_TOKEN}" } },
+      autoMode: { classifier: { mode: "active", timeoutMs: 15000, onUnavailable: "ask" } },
       permissions: { allow: [], deny: [], ask: [] },
     });
 

@@ -8,12 +8,12 @@ index ed9cb52..3056826 100644
  import { createHudFooter, type HudEditorState } from "./hud-footer/render.ts";
 +import { registerRenameCommand } from "./hud-footer/session-name.ts"; // local patch
  import { HUD_CURRENCIES, type HudConfig, type HudCurrency, type HudLanguageSetting, type HudStyle } from "./hud-footer/types.ts";
- 
+
  const ACTIVE_EXTENSION_KEY = Symbol.for("pi-hud-footer.active");
 @@ -268,6 +269,9 @@ export default function (pi: ExtensionAPI) {
  		applyHud(ctx);
  	});
- 
+
 +	// local patch: `/name`, `/rename`, and other extensions all use Pi's native name event.
 +	pi.on("session_info_changed", () => editorState.requestRender?.());
 +
@@ -28,6 +28,27 @@ index ed9cb52..3056826 100644
 +	// local patch: /rename stores the name through Pi; session_info_changed redraws the HUD.
 +	registerRenameCommand(pi, () => currentI18n().language, commandI18n.language);
  }
+diff --git a/extensions/hud-footer/config.ts b/extensions/hud-footer/config.ts
+index 446301b..fbd659d 100644
+--- a/extensions/hud-footer/config.ts
++++ b/extensions/hud-footer/config.ts
+@@ -1,6 +1,5 @@
+-import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
++import { CONFIG_DIR_NAME, getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+-import { homedir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { normalizeLanguageSetting } from "./i18n.ts";
+ import {
+@@ -146,7 +145,7 @@ export function isDisplayEnabled(config: HudConfig, key: HudDisplayKey): boolean
+ }
+
+ function globalConfigPath(): string {
+-	return join(homedir(), CONFIG_DIR_NAME, "agent", CONFIG_FILE_NAME);
++	return join(getAgentDir(), CONFIG_FILE_NAME);
+ }
+
+ function projectConfigPath(ctx: ExtensionContext): string {
 diff --git a/extensions/hud-footer/render.ts b/extensions/hud-footer/render.ts
 index 2edb7e6..09c0cd0 100644
 --- a/extensions/hud-footer/render.ts
@@ -39,14 +60,14 @@ index 2edb7e6..09c0cd0 100644
 +import { sessionNameText } from "./session-name.ts"; // local patch
  import { collectStats, TOOL_ORDER } from "./stats.ts";
  import type { ColorName, HudConfig, HudLanguage, HudStats } from "./types.ts";
- 
+
 @@ -13,6 +14,7 @@ type FooterData = Parameters<FooterFactory>[2];
- 
+
  export interface HudEditorState {
  	getGitBranch?: () => string | null | undefined;
 +	requestRender?: () => void; // local patch: redraw after session renames
  }
- 
+
  export interface HudBorderSegments {
 @@ -175,7 +177,7 @@ function toolLine(stats: HudStats, theme: Theme, width: number, config: HudConfi
  	if (!isDisplayEnabled(config, "toolsLine") || width < 60) return undefined;
@@ -55,12 +76,12 @@ index 2edb7e6..09c0cd0 100644
 -	return truncateToWidth(joinParts([" ", theme.fg("muted", label), summary]), width);
 +	return truncateToWidth(joinParts([theme.fg("muted", label), summary]), width);
  }
- 
+
  function renderHudTokenSegment(
 @@ -226,7 +228,12 @@ export function renderHudTopBorderSegments(
  	], theme.fg("dim", " | "));
  	const location = locationText(ctx, branch, config, theme);
- 
+
 -	return { left: joinParts([model, runMetrics || undefined]) || undefined, right: location };
 +	const session = isDisplayEnabled(config, "sessionName") // local patch
 +		? sessionNameText(pi.getSessionName(), theme, i18n.language)
@@ -69,12 +90,12 @@ index 2edb7e6..09c0cd0 100644
 +
 +	return { left: joinParts([model, runMetrics || undefined]) || undefined, right };
  }
- 
+
  export function renderHudBottomBorderSegments(
 @@ -342,11 +349,14 @@ function renderClassicFooterLines(
  		? theme.fg("muted", `${i18n.labels.cost} ${fmtCost(stats.cost, config, isSubscriptionModel(ctx))}`)
  		: undefined;
- 
+
 -	const line1Body = joinWithSeparator([joinParts([topLeft, contextSegment]) || undefined, git, state], theme.fg("dim", " | "));
 +	const session = isDisplayEnabled(config, "sessionName") // local patch
 +		? sessionNameText(pi.getSessionName(), theme, i18n.language)
@@ -98,7 +119,7 @@ index 2edb7e6..09c0cd0 100644
 +			editorState.requestRender = () => tui.requestRender(); // local patch
 +		}
  		const disposeBranch = footerData.onBranchChange(() => tui.requestRender());
- 
+
  		return {
 diff --git a/extensions/hud-footer/session-name.ts b/extensions/hud-footer/session-name.ts
 new file mode 100644
@@ -183,6 +204,55 @@ index 0000000..5cd334f
 +		},
 +	});
 +}
+diff --git a/extensions/hud-footer/stats.ts b/extensions/hud-footer/stats.ts
+index c820c60..ed45584 100644
+--- a/extensions/hud-footer/stats.ts
++++ b/extensions/hud-footer/stats.ts
+@@ -2,7 +2,7 @@ import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-a
+ import type { HudStats, HudUsageScope } from "./types.ts";
+
+ export const TOOL_ORDER = ["edit", "write", "bash", "read", "grep", "find", "ls"];
+-const statsCache = new WeakMap<object, { key: string; stats: HudStats }>();
++const statsCache = new WeakMap<object, { key: string; fastKey?: string; stats: HudStats }>();
+
+ type UsageTotals = Pick<HudStats, "input" | "output" | "cacheRead" | "cacheWrite" | "cost">;
+
+@@ -131,16 +131,25 @@ function statsCacheKey(branch: SessionEntry[], entries: SessionEntry[] | undefin
+ }
+
+ export function collectStats(ctx: ExtensionContext, usageScope: HudUsageScope): HudStats {
++	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?: () => number };
++	// Native entries are append-only. Branch totals change with the leaf; session
++	// totals additionally need the entry count, including off-branch appends.
++	const cacheOwner = manager;
++	const fastKey = typeof manager.getLeafId === "function" &&
++		(usageScope === "branch" || typeof manager.getEntryCount === "function")
++		? JSON.stringify([manager.getSessionId?.(), usageScope, manager.getLeafId(),
++			usageScope === "session" ? manager.getEntryCount?.() : undefined]) : undefined;
++	const cached = statsCache.get(cacheOwner);
++	if (fastKey !== undefined && cached?.fastKey === fastKey) return cached.stats;
+ 	const branch = ctx.sessionManager.getBranch();
+ 	const entries = usageScope === "session" ? ctx.sessionManager.getEntries() : undefined;
+ 	const key = statsCacheKey(branch, entries, usageScope);
+
+-	const cached = statsCache.get(ctx);
+ 	if (cached?.key === key) return cached.stats;
+
+ 	const branchStats = collectBranchStats(branch);
+ 	if (!entries) {
+-		statsCache.set(ctx, { key, stats: branchStats });
++		statsCache.set(cacheOwner, { key, fastKey, stats: branchStats });
+ 		return branchStats;
+ 	}
+
+@@ -151,6 +160,6 @@ export function collectStats(ctx: ExtensionContext, usageScope: HudUsageScope):
+ 		latestCacheHitRate: sessionUsage.latestCacheHitRate,
+ 	};
+
+-	statsCache.set(ctx, { key, stats });
++	statsCache.set(cacheOwner, { key, fastKey, stats });
+ 	return stats;
+ }
 diff --git a/extensions/hud-footer/types.ts b/extensions/hud-footer/types.ts
 index f5c9f60..2751f48 100644
 --- a/extensions/hud-footer/types.ts

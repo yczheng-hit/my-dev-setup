@@ -2,7 +2,7 @@ import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-a
 import type { HudStats, HudUsageScope } from "./types.ts";
 
 export const TOOL_ORDER = ["edit", "write", "bash", "read", "grep", "find", "ls"];
-const statsCache = new WeakMap<object, { key: string; stats: HudStats }>();
+const statsCache = new WeakMap<object, { key: string; fastKey?: string; stats: HudStats }>();
 
 type UsageTotals = Pick<HudStats, "input" | "output" | "cacheRead" | "cacheWrite" | "cost">;
 
@@ -131,16 +131,25 @@ function statsCacheKey(branch: SessionEntry[], entries: SessionEntry[] | undefin
 }
 
 export function collectStats(ctx: ExtensionContext, usageScope: HudUsageScope): HudStats {
+	const manager = ctx.sessionManager as ExtensionContext["sessionManager"] & { getEntryCount?: () => number };
+	// Native entries are append-only. Branch totals change with the leaf; session
+	// totals additionally need the entry count, including off-branch appends.
+	const cacheOwner = manager;
+	const fastKey = typeof manager.getLeafId === "function" &&
+		(usageScope === "branch" || typeof manager.getEntryCount === "function")
+		? JSON.stringify([manager.getSessionId?.(), usageScope, manager.getLeafId(),
+			usageScope === "session" ? manager.getEntryCount?.() : undefined]) : undefined;
+	const cached = statsCache.get(cacheOwner);
+	if (fastKey !== undefined && cached?.fastKey === fastKey) return cached.stats;
 	const branch = ctx.sessionManager.getBranch();
 	const entries = usageScope === "session" ? ctx.sessionManager.getEntries() : undefined;
 	const key = statsCacheKey(branch, entries, usageScope);
 
-	const cached = statsCache.get(ctx);
 	if (cached?.key === key) return cached.stats;
 
 	const branchStats = collectBranchStats(branch);
 	if (!entries) {
-		statsCache.set(ctx, { key, stats: branchStats });
+		statsCache.set(cacheOwner, { key, fastKey, stats: branchStats });
 		return branchStats;
 	}
 
@@ -151,6 +160,6 @@ export function collectStats(ctx: ExtensionContext, usageScope: HudUsageScope): 
 		latestCacheHitRate: sessionUsage.latestCacheHitRate,
 	};
 
-	statsCache.set(ctx, { key, stats });
+	statsCache.set(cacheOwner, { key, fastKey, stats });
 	return stats;
 }

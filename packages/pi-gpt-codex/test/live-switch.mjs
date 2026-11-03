@@ -58,7 +58,7 @@ await fs.mkdir(work);
 const claims = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acct_test' } })).toString('base64url');
 await fs.writeFile(path.join(agentDir, 'auth.json'), JSON.stringify({ 'openai-codex': { type: 'oauth', access: `e30.${claims}.sig`, refresh: 'r', expires: Date.now() + 3600e3, accountId: 'acct_test' } }));
 await fs.writeFile(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { 'openai-codex': { baseUrl: `${baseUrl}/backend-api` }, anthropic: { baseUrl } } }));
-await fs.writeFile(path.join(agentDir, 'settings.json'), JSON.stringify({ transport: 'sse', modelThinkingLevels: { 'openai-codex/gpt-6.1-sol': 'xhigh' } }));
+await fs.writeFile(path.join(agentDir, 'settings.json'), JSON.stringify({ transport: 'sse', defaultThinkingLevel: 'high' }));
 await fs.writeFile(path.join(agentDir, 'openai-codex-compat.json'), JSON.stringify({ responsesLite: true, reasoningSummary: 'off', imageGeneration: false }));
 
 const first = startWithClaude ? ['anthropic', CLAUDE] : ['openai-codex', 'gpt-6.1-sol'];

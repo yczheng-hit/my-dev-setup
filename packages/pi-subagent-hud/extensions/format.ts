@@ -1,4 +1,5 @@
-// Pure state + formatting for the subagent HUD segment (no Pi imports, unit-tested directly).
+// State + formatting for the subagent HUD segment; use Pi's terminal-column primitives.
+import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
 
 export type RowState = "running" | "queued" | "complete" | "failed" | "stopped" | "unknown";
 
@@ -260,7 +261,7 @@ function segment(row: HudRow, now: number, paint: Painter, withTask: boolean): P
 	return join(parts);
 }
 
-const width = (text: string) => [...text].length;
+const width = visibleWidth;
 
 /**
  * One status text for the HUD line, or undefined when there is nothing to show.
@@ -307,7 +308,7 @@ export function renderStatus(
 	const label = active.length ? ` ${active.length} running` : ` ${done.length} done`;
 	const full = join([head, [label, label], ...(active.length && names ? [[`: ${names}`, `: ${names}`] as Piece] : []), ...tail]);
 	if (width(full[0]) <= opts.budget) return full[1];
-	return join([head, [label, label], ...tail])[1];
+	return truncateToWidth(join([head, [label, label], ...tail])[1], Math.max(0, opts.budget), "");
 }
 
 /** Columns we may use on the shared HUD status line (rest is for permission mode, todos, …). */
@@ -331,5 +332,5 @@ export function hudStatusText(
 ): string | undefined {
 	const paint = opts.painter ?? plain;
 	const body = renderStatus(rows, { ...opts, budget: opts.budget - width(LEAD) });
-	return body === undefined ? undefined : paint.fg("dim", LEAD) + body;
+	return body === undefined ? undefined : truncateToWidth(paint.fg("dim", LEAD) + body, Math.max(0, opts.budget), "");
 }

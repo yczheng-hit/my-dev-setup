@@ -3,9 +3,6 @@
   "defaultModel": "claude-opus-5-5",
   "defaultThinkingLevel": "high",
   "externalEditor": "vi",
-  "modelThinkingLevels": {
-    "openai-codex/gpt-6.1-sol": "xhigh"
-  },
   "enabledModels": [
     "anthropic/claude-opus-5-5",
     "anthropic/claude-fable-5-1",
@@ -16,6 +13,7 @@
     "openai-codex/gpt-6.1-sol"
   ],
   "packages": [
+    "repo:packages/pi-agents-context",
     "repo:packages/pi-agent-summary-time",
     "repo:packages/pi-fork-save",
     "npm:pi-cc-extensions",
@@ -30,6 +28,7 @@
     "npm:pi-repl-py",
     "npm:pi-context",
     "repo:packages/pi-scheduler",
+    "repo:packages/pi-unread-navigation",
     "npm:@narumitw/pi-goal",
     "repo:tools/pi-btw-split",
     "npm:pi-web-access",

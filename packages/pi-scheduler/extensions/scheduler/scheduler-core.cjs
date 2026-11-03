@@ -394,6 +394,7 @@ function createScheduledTask(input, nowValue = new Date(), idFn = generateId) {
 		scope: normalizeScope(input.scope),
 	};
 
+	if (input.backgroundExecution !== undefined) task.backgroundExecution = input.backgroundExecution === true;
 	if (validated.intervalMs !== undefined) task.intervalMs = validated.intervalMs;
 	if (input.backoff !== undefined) task.backoff = normalizeBackoff(input.backoff, validated.intervalMs, now);
 	if (input.title !== undefined) task.title = compactSpaces(input.title);
@@ -546,6 +547,10 @@ function normalizeTask(task, nowValue = new Date()) {
 		delete migrated.stopOn;
 	}
 
+	if (migrated.pendingWake) {
+		const wake = migrated.pendingWake;
+		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || wake.content.length > 16000 || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
+	}
 	return migrated;
 }
 
@@ -655,9 +660,17 @@ function selectCatchUpCronTasks(tasks, nowValue = new Date(), options = {}) {
 		.slice(0, maxFire);
 }
 
+// Generated IDs carry a stable six-character suffix; resolve it uniquely, never first-match.
+function shortTaskId(id) { return String(id).split('_').at(-1); }
+
 function findTask(tasks, idOrPrefix) {
 	const id = compactSpaces(idOrPrefix);
-	return tasks.find((task) => task.id === id || task.id.startsWith(id));
+	if (!id) throw new Error("Task id or name is required");
+	const exact = tasks.find(task => task.id === id);
+	if (exact) return exact;
+	const matches = tasks.filter(task => task.id.startsWith(id) || shortTaskId(task.id) === id.replace(/^#/, '') || task.name === id || task.title === id);
+	if (matches.length > 1) throw new Error(`Scheduled task selector is ambiguous: ${id}; choose ${matches.map(task => task.id).join(', ')}`);
+	return matches[0];
 }
 
 function cancelScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
@@ -666,6 +679,8 @@ function cancelScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	if (!task) throw new Error(`Scheduled task not found: ${idOrPrefix}`);
 	if (task.status === "cancelled") throw new Error(`Scheduled task ${task.id} is already cancelled`);
 	task.enabled = false;
+	delete task.pendingWake;
+	task.managementRevision = randomUUID();
 	task.status = "cancelled";
 	task.cancelledAt = now.toISOString();
 	task.nextRun = undefined;
@@ -677,6 +692,8 @@ function disableScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	const task = findTask(tasks, idOrPrefix);
 	if (!task) throw new Error(`Scheduled task not found: ${idOrPrefix}`);
 	task.enabled = false;
+	delete task.pendingWake;
+	task.managementRevision = randomUUID();
 	task.disabledAt = now.toISOString();
 	task.nextRun = undefined;
 	return task;
@@ -690,6 +707,7 @@ function enableScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	if (task.status === "cancelled" || task.status === "failed" || task.status === "fired") task.status = "pending";
 	delete task.stopReason;
 	task.enabled = true;
+	task.managementRevision = randomUUID();
 	const validated = validateTaskSchedule(task.type ?? "once", task.schedule ?? task.whenText ?? task.dueAt, nowValue);
 	task.type = validated.type;
 	task.schedule = validated.schedule;
@@ -745,6 +763,10 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 			delete task.expiredAt;
 		}
 	}
+	// Any explicit edit invalidates not-yet-delivered work and stale management selections.
+	task.managementRevision = randomUUID();
+	delete task.pendingWake;
+	if (updates.backgroundExecution !== undefined) task.backgroundExecution = updates.backgroundExecution === true;
 	if (updates.name !== undefined) task.name = compactSpaces(updates.name);
 	if (updates.title !== undefined) task.title = compactSpaces(updates.title);
 	if (updates.description !== undefined) task.description = compactSpaces(updates.description);
@@ -1117,13 +1139,13 @@ function describeTask(task, nowValue = new Date()) {
 
 function formatTaskLine(task, nowValue = new Date()) {
 	const label = task.name || task.title;
-	const state = task.enabled === false ? "已停用" : STATUS_ZH[task.status] ?? task.status;
+	const state = task.pendingWake ? `待交付/${task.pendingWake.state}` : task.enabled === false ? "已停用" : STATUS_ZH[task.status] ?? task.status;
 	const runs = `已运行 ${task.runCount ?? 0} 次${task.lastStatus ? `，上次${LAST_ZH[task.lastStatus] ?? task.lastStatus}` : ""}`;
 	return `- ${task.id}${label ? `「${label}」` : ""} [${state}] ${runs} · ${describeTask(task, nowValue)}`;
 }
 
 function formatTaskList(tasks, nowValue = new Date(), options = {}) {
-	const list = options.includeAll ? tasks.slice().sort(sortByNextRun) : pendingTasks(tasks);
+	const list = options.includeAll ? tasks.slice().sort(sortByNextRun) : tasks.filter(task => task.pendingWake || task.enabled !== false && !isTerminal(task)).sort(sortByNextRun);
 	if (list.length === 0) return options.includeAll ? "没有定时任务。" : "没有待运行的定时任务。";
 	const lines = [options.includeAll ? "全部定时任务：" : "待运行的定时任务："];
 	for (const task of list) {
@@ -1176,6 +1198,8 @@ module.exports = {
 	selectCatchUpCronTasks,
 	recoverInterruptedTasks,
 	shellResultFingerprint,
+	findTask,
+	shortTaskId,
 	cancelScheduledTask,
 	disableScheduledTask,
 	enableScheduledTask,

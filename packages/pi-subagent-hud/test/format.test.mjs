@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import {
-  updateRows, renderStatus, shortModel, formatTokens, formatElapsed, taskLabel, statusBudget,
-  mapCompletionStatus, mapSnapshotState, hudStatusText, STATUS_KEY, LEAD,
-} from '../extensions/format.ts';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+const host = process.env.PI_HOST_DIR;
+if (!host) throw new Error('Set PI_HOST_DIR');
+const require = createRequire(path.join(host, 'package.json'));
+const tui = require.resolve('@earendil-works/pi-tui');
+const { createJiti } = await import(pathToFileURL(path.join(path.dirname(require.resolve('jiti/package.json')), 'lib/jiti.mjs')));
+const { updateRows, renderStatus, shortModel, formatTokens, formatElapsed, taskLabel, statusBudget, mapCompletionStatus, mapSnapshotState, hudStatusText, STATUS_KEY, LEAD } = await createJiti(import.meta.url, { alias: { '@earendil-works/pi-tui': tui } }).import('../extensions/format.ts');
 
 const T0 = 1_800_000_000_000;
 const none = new Map();
@@ -166,4 +171,22 @@ test('painter colors pieces but layout is measured on plain text', () => {
   assert.ok(text.includes('<accent>◓</>'), text);
   assert.ok(text.includes('<muted> [gpt-6-luna]</>'), text);
   assert.ok(text.includes('Display test'), 'plain width 69 fits budget 70 even though painted text is longer');
+});
+
+
+test('CJK and emoji status obey terminal column budget, including tiny summaries', async () => {
+  const { createRequire } = await import('node:module');
+  const path = await import('node:path');
+  const fs = await import('node:fs');
+  const host = process.env.PI_HOST_DIR;
+  const require = createRequire(host ? path.join(host, 'package.json') : import.meta.url);
+  const entry = require.resolve.paths('@earendil-works/pi-tui').map(dir => path.join(dir, '@earendil-works/pi-tui/dist/index.js')).find(fs.existsSync);
+  const { visibleWidth } = await import(entry);
+  const rows = [{ key: 'cjk', agent: '中文研究员🧑‍💻', task: '检查编译性能与行为🎉', state: 'running', startedAt: T0, tokens: 2700 }];
+  for (const budget of [0, 1, 8, 20, 40, 80]) {
+    const text = renderStatus(rows, { now: T0 + 2000, budget });
+    assert.ok(visibleWidth(text ?? '') <= budget, `budget=${budget} actual=${visibleWidth(text ?? '')}: ${text}`);
+    const full = hudStatusText(rows, { now: T0 + 2000, budget });
+    assert.ok(visibleWidth(full ?? '') <= budget, `HUD budget=${budget} actual=${visibleWidth(full ?? '')}`);
+  }
 });

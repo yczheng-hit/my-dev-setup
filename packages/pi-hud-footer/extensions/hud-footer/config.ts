@@ -1,6 +1,5 @@
-import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { normalizeLanguageSetting } from "./i18n.ts";
 import {
@@ -146,7 +145,7 @@ export function isDisplayEnabled(config: HudConfig, key: HudDisplayKey): boolean
 }
 
 function globalConfigPath(): string {
-	return join(homedir(), CONFIG_DIR_NAME, "agent", CONFIG_FILE_NAME);
+	return join(getAgentDir(), CONFIG_FILE_NAME);
 }
 
 function projectConfigPath(ctx: ExtensionContext): string {

@@ -61,6 +61,7 @@ for (const scenario of ["timeout", "cron", "invalid-cron", "throwing-reporter", 
 				h.context.hasUI = true;
 				h.context.ui = {
 					setStatus() {}, setWidget() {},
+					getEditorText() { return ''; }, onTerminalInput() { return () => {}; },
 					notify(message) {
 						notices.push(message);
 						if (scenario === 'throwing-reporter' || scenario === 'expiry') throw new Error('UI is closed');

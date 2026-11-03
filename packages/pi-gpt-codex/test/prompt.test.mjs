@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const host = process.env.PI_HOST_DIR;
 if (!host) throw new Error('Set PI_HOST_DIR to the installed @earendil-works/pi-coding-agent directory');
-const { createJiti } = await import(pathToFileURL(path.join(host, 'node_modules/jiti/lib/jiti.mjs')));
+// Managed installs hoist jiti and pi-tui above the host package, so resolve them from the host directory.
+const hostRequire = createRequire(path.join(host, 'package.json'));
+const { createJiti } = await import(pathToFileURL(path.join(path.dirname(hostRequire.resolve('jiti/package.json')), 'lib/jiti.mjs')));
 const jiti = createJiti(import.meta.url, { alias: { '@earendil-works/pi-coding-agent': path.join(host, 'dist/index.js') } });
 const { buildSystemPrompt, normalizeBuildSystemPromptOptions } = await import(pathToFileURL(path.join(host, 'dist/core/system-prompt.js')));
 const { applyGptPrompt, isGptModel, withTruncationHint, GPT_PROMPT, TOOLS_CODEX, TOOLS_PI } = await jiti.import('../extensions/prompt.ts');

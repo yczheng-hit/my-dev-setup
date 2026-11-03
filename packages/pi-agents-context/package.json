@@ -1,0 +1,8 @@
+{
+  "name": "pi-agents-context",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "pi": { "extensions": ["./extensions/index.ts"] },
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}

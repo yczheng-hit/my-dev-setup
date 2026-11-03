@@ -72,7 +72,7 @@ const claims = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { cha
 const token = `e30.${claims}.sig`;
 await fs.writeFile(path.join(agentDir, 'auth.json'), JSON.stringify({ 'openai-codex': { type: 'oauth', access: token, refresh: 'r', expires: Date.now() + 3600e3, accountId: 'acct_test' } }));
 await fs.writeFile(path.join(agentDir, 'models.json'), JSON.stringify({ providers: { 'openai-codex': { baseUrl } } }));
-await fs.writeFile(path.join(agentDir, 'settings.json'), JSON.stringify({ transport: 'sse', modelThinkingLevels: { 'openai-codex/gpt-6.1-sol': 'xhigh' } }));
+await fs.writeFile(path.join(agentDir, 'settings.json'), JSON.stringify({ transport: 'sse', defaultThinkingLevel: 'high' }));
 await fs.writeFile(path.join(agentDir, 'openai-codex-compat.json'), JSON.stringify({ responsesLite: LITE, fastMode: process.env.LIVE_COMPAT_FAST === '1', reasoningSummary: 'off', imageGeneration: false }));
 if (process.env.LIVE_FAST === '1') {
   await fs.mkdir(path.join(agentDir, 'extensions'));
@@ -119,7 +119,7 @@ try {
   assert.equal(await fs.readFile(path.join(work, 'notes.txt'), 'utf8'), 'hello codex\n', 'apply_patch must edit the file');
 
   const first = requests[0];
-  assert.equal(first.body.reasoning.effort, 'xhigh');
+  assert.equal(first.body.reasoning.effort, 'high');
   if (LITE) assert.equal(first.body.reasoning.context, 'all_turns');
   assert.equal(first.body.reasoning.summary, undefined);
   if (LITE) assert.equal(first.body.parallel_tool_calls, false);

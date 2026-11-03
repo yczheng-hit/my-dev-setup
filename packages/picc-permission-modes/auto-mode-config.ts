@@ -1,28 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-export interface AutoModeProviderConfig {
-  baseUrl?: string;
-  apiKey?: string;
-  anthropicVersion?: string;
+export interface AutoModeClassifierConfig {
+  mode: "active" | "fixed";
+  provider?: string;
   model?: string;
-  extraHeaders?: Record<string, string>;
-  maxContextChars?: number;
-}
-export interface ResolvedAutoModeProviderConfig {
-  baseUrl: string;
-  apiKey: string;
-  anthropicVersion: string;
-  model: string;
-  extraHeaders: Record<string, string>;
-  maxContextChars?: number;
+  timeoutMs: number;
+  onUnavailable: "ask" | "deny";
+  failureThreshold: number;
+  cooldownMs: number;
 }
 export interface AutoModeLimits {
   maxConsecutive: number;
   maxTotal: number;
 }
 export interface AutoModeConfig {
-  provider?: AutoModeProviderConfig;
+  classifier?: AutoModeClassifierConfig;
   allow: string[];
   softDeny: string[];
   hardDeny: string[];
@@ -62,37 +53,14 @@ const DEFAULT_HARD_DENY: string[] = [
   "DROP DATABASE / DROP SCHEMA without explicit user confirmation.",
   "Disabling safety tooling, audit logs, or git hooks.",
   "Systematic scanning of credential stores (.env, ~/.aws/, keychains, etc.).",
-  "Disabling or removing .claude/ or .pi/ settings, hooks, or rules.",
+  "Disabling or removing .agents/ or .pi/ settings, hooks, or rules.",
 ];
 const DEFAULT_ENVIRONMENT: string[] = [
   "An autonomous coding agent running inside the user's pi session.",
 ];
 const DEFAULT_SAFE_TOOL_ALLOWLIST = new Set<string>([
-  "read",
-  "Read",
-  "grep",
-  "Grep",
-  "glob",
-  "Glob",
-  "LSP",
-  "ToolSearch",
-  "ListMcpResourcesTool",
-  "ReadMcpResourceTool",
-  "TodoWrite",
-  "TaskCreate",
-  "TaskGet",
-  "TaskUpdate",
-  "TaskList",
-  "TaskStop",
-  "TaskOutput",
-  "AskUserQuestion",
-  "EnterPlanMode",
-  "ExitPlanMode",
-  "TeamCreate",
-  "TeamDelete",
-  "SendMessage",
-  "Sleep",
-  "classify_result",
+  "read", "Read", "grep", "Grep", "glob", "Glob", "find", "ls", "LSP",
+  "TodoWrite", "TaskGet", "TaskList", "TaskOutput",
 ]);
 export function loadAutoModeConfig(
   configPath: string,
@@ -102,7 +70,7 @@ export function loadAutoModeConfig(
   if (!existsSync(configPath)) {
     return {
       config: defaultAutoModeConfig(),
-      issues: [`Auto-mode config not found at '${configPath}'. Using defaults — provider inherits from active pi model.`],
+      issues: [`Auto-mode config not found at '${configPath}'. Using defaults — reviewer follows the active Pi model.`],
       loadedFrom: configPath,
     };
   }
@@ -111,10 +79,9 @@ export function loadAutoModeConfig(
     const text = readFileSync(configPath, "utf-8");
     raw = JSON.parse(stripJsonComments(text));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     return {
       config: defaultAutoModeConfig(),
-      issues: [`Failed to parse auto-mode config: ${message}`],
+      issues: ["Failed to parse auto-mode config; check JSON syntax (contents omitted)"],
       loadedFrom: configPath,
     };
   }
@@ -129,16 +96,9 @@ export function loadAutoModeConfig(
   }
   const defaults = defaultAutoModeConfig();
   const blockR = block as Record<string, unknown>;
+  if (blockR.provider !== undefined) issues.push("autoMode.provider is obsolete and ignored. Configure classifier.provider/model in Pi; credentials belong in Pi models/auth, not this file.");
   const cfg: AutoModeConfig = {
-    ...(blockR.provider && typeof blockR.provider === "object"
-      ? {
-          provider: readProvider(
-            blockR.provider as Record<string, unknown>,
-            env,
-            issues,
-          ),
-        }
-      : {}),
+    classifier: readClassifier(blockR.classifier, defaults.classifier!, issues),
     allow: readStringArray(blockR.allow, defaults.allow, issues, "autoMode.allow"),
     softDeny: readStringArray(
       blockR.softDeny ?? blockR.soft_deny,
@@ -186,6 +146,7 @@ export function loadAutoModeConfig(
 }
 function defaultAutoModeConfig(): AutoModeConfig {
   return {
+    classifier: defaultClassifierConfig(),
     allow: DEFAULT_ALLOW,
     softDeny: DEFAULT_SOFT_DENY,
     hardDeny: DEFAULT_HARD_DENY,
@@ -196,45 +157,29 @@ function defaultAutoModeConfig(): AutoModeConfig {
     transcriptMaxChars: 80_000,
   };
 }
-function readProvider(
-  raw: Record<string, unknown>,
-  env: NodeJS.ProcessEnv,
-  issues: string[],
-): AutoModeProviderConfig {
-  const out: AutoModeProviderConfig = {};
-  if (typeof raw.baseUrl === "string" && raw.baseUrl.length > 0) {
-    out.baseUrl = interpolateEnv(raw.baseUrl, env);
+export function defaultClassifierConfig(): AutoModeClassifierConfig {
+  return { mode: "active", timeoutMs: 15000, onUnavailable: "ask", failureThreshold: 3, cooldownMs: 30000 };
+}
+function readClassifier(raw: unknown, defaults: AutoModeClassifierConfig, issues: string[]): AutoModeClassifierConfig {
+  if (raw === undefined) return { ...defaults };
+  if (!raw || typeof raw !== "object") { issues.push("autoMode.classifier must be an object"); return { ...defaults, mode: "fixed" }; }
+  const value = raw as Record<string, unknown>;
+  const fixed = value.mode === "fixed" || value.provider !== undefined || value.model !== undefined;
+  const result: AutoModeClassifierConfig = {
+    mode: fixed ? "fixed" : "active",
+    timeoutMs: value.timeoutMs === undefined ? defaults.timeoutMs : readPositiveInt(value.timeoutMs, defaults.timeoutMs, issues),
+    onUnavailable: value.onUnavailable === "deny" ? "deny" : "ask",
+    failureThreshold: value.failureThreshold === undefined ? defaults.failureThreshold : readPositiveInt(value.failureThreshold, defaults.failureThreshold, issues),
+    cooldownMs: value.cooldownMs === undefined ? defaults.cooldownMs : readPositiveInt(value.cooldownMs, defaults.cooldownMs, issues),
+  };
+  if (typeof value.provider === "string") result.provider = value.provider.trim();
+  if (typeof value.model === "string") result.model = value.model.trim();
+  if (fixed && (!result.provider || !result.model)) issues.push("Fixed auto reviewer requires classifier.provider and classifier.model; review will fail closed.");
+  if (value.mode !== undefined && value.mode !== "active" && value.mode !== "fixed") {
+    issues.push("Invalid classifier.mode; review disabled until corrected.");
+    result.mode = "fixed"; delete result.provider; delete result.model;
   }
-  if (typeof raw.apiKey === "string" && raw.apiKey.length > 0) {
-    out.apiKey = interpolateEnv(raw.apiKey, env);
-  } else if (env.ANTHROPIC_AUTH_TOKEN) {
-    out.apiKey = env.ANTHROPIC_AUTH_TOKEN;
-  }
-  if (!out.apiKey) {
-    issues.push(
-      "autoMode.provider.apiKey is empty and ANTHROPIC_AUTH_TOKEN is unset — " +
-        "the classifier will inherit auth from pi's active model when not set here.",
-    );
-  }
-  if (typeof raw.model === "string" && raw.model.length > 0) {
-    out.model = raw.model;
-  }
-  if (typeof raw.anthropicVersion === "string") {
-    out.anthropicVersion = raw.anthropicVersion;
-  } else if (typeof raw.anthropic_version === "string") {
-    out.anthropicVersion = raw.anthropic_version;
-  }
-  if (raw.maxContextChars != null) {
-    out.maxContextChars = readPositiveInt(
-      raw.maxContextChars ?? raw.max_context_chars,
-      80_000,
-      issues,
-    );
-  }
-  if (raw.extraHeaders && typeof raw.extraHeaders === "object") {
-    out.extraHeaders = raw.extraHeaders as Record<string, string>;
-  }
-  return out;
+  return result;
 }
 function readLimits(
   raw: Record<string, unknown>,
@@ -293,12 +238,6 @@ function readStringArray(
   }
   return cleaned.length > 0 ? cleaned : fallback;
 }
-function interpolateEnv(input: string, env: NodeJS.ProcessEnv): string {
-  return input.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (match, name) => {
-    const v = env[name];
-    return typeof v === "string" ? v : match;
-  });
-}
 function stripJsonComments(input: string): string {
   let output = "";
   let i = 0;
@@ -352,15 +291,8 @@ function consumeString(input: string, start: number, quote: string): ScanSegment
   }
   return { output: out, nextIndex: i };
 }
-export function defaultAutoModeConfigPath(
-  importMetaUrl: string,
-  agentDir: string,
-): string {
-  void importMetaUrl;
-  void dirname;
-  void resolve;
-  void fileURLToPath;
-  return `${agentDir.replace(/[\\/]+$/, "")}/extensions/pi-permission-system/config.json`;
+export function defaultAutoModeConfigPath(_importMetaUrl: string, agentDir: string): string {
+  return `${agentDir.replace(/[\\/]+$/, "")}/extensions/picc-permission-modes/config.json`;
 }
 export function isSafeAllowlistedTool(
   toolName: string,

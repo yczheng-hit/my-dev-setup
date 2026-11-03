@@ -66,68 +66,21 @@ describe("loadRepoPermissions", () => {
       expect(result.allow).toEqual([]);
     });
   });
-  describe("auto-import from claude repo settings", () => {
-    it("imports from settings.local.json when the repo file is absent", () => {
+  describe("Claude settings are never imported", () => {
+    it.each([undefined, {}, { permissions: { allow: [] } }])("ignores both Claude settings files with native config %j", (native) => {
+      if (native) writeJson(repoPath, native);
       writeJson(claudeLocalPath, { permissions: { allow: ["Bash(git *)"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("claude-settings");
-      expect(result.allow).toEqual(["Bash(git *)"]);
-      expect(existsSync(repoPath)).toBe(true);
-      expect(readPerms(repoPath).allow).toContain("Bash(git *)");
-    });
-    it("imports from settings.json when the repo file is absent", () => {
-      writeJson(claudeProjectPath, { permissions: { allow: ["Read"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("claude-settings");
-      expect(result.allow).toEqual(["Read"]);
-    });
-    it("merges both claude files, deduping across them", () => {
-      writeJson(claudeLocalPath, { permissions: { allow: ["Bash(git *)", "Read"] } });
-      writeJson(claudeProjectPath, { permissions: { allow: ["Read", "Bash(go)"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("claude-settings");
-      expect(result.allow.filter((r) => r === "Read")).toHaveLength(1);
-      expect(result.allow).toContain("Bash(git *)");
-      expect(result.allow).toContain("Bash(go)");
-      expect(result.allow).toHaveLength(3);
-    });
-    it("merges across behaviors (allow from one, deny from the other)", () => {
-      writeJson(claudeLocalPath, { permissions: { allow: ["Read"] } });
-      writeJson(claudeProjectPath, { permissions: { deny: ["Bash(rm *)"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.allow).toEqual(["Read"]);
-      expect(result.deny).toEqual(["Bash(rm *)"]);
-    });
-    it("does NOT overwrite a repo file that already has rules", () => {
-      writeJson(repoPath, { permissions: { allow: ["Bash(npm *)"] } });
-      writeJson(claudeLocalPath, { permissions: { allow: ["Bash(git *)"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("local-config");
-      expect(readPerms(repoPath).allow).toEqual(["Bash(npm *)"]);
-    });
-    it("is idempotent when the repo file already matches the import", () => {
-      writeJson(repoPath, { permissions: { allow: ["Bash(git *)", "Read"] } });
-      writeJson(claudeLocalPath, { permissions: { allow: ["Read", "Bash(git *)"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("local-config");
-      expect(result.allow.sort()).toEqual(["Bash(git *)", "Read"]);
+      writeJson(claudeProjectPath, { permissions: { allow: ["Read"], deny: ["Write"] } });
+      const before = existsSync(repoPath) ? readFileSync(repoPath, "utf8") : undefined;
+      expect(loadRepoPermissions(cwd)).toEqual({ source: "none", allow: [], deny: [], ask: [] });
+      expect(existsSync(repoPath)).toBe(before !== undefined);
+      if (before !== undefined) expect(readFileSync(repoPath, "utf8")).toBe(before);
     });
   });
   describe("tolerance", () => {
-    it("drops non-string entries in claude rules", () => {
-      writeJson(claudeLocalPath, {
-        permissions: { allow: ["Read", 42, null, "Bash(go)"] },
-      });
-      const result = loadRepoPermissions(cwd);
-      expect(result.allow).toEqual(["Read", "Bash(go)"]);
-    });
-    it("treats malformed JSON in a claude file as empty", () => {
-      mkdirSync(dirname(claudeLocalPath), { recursive: true });
-      writeFileSync(claudeLocalPath, "{ not valid json", "utf-8");
-      writeJson(claudeProjectPath, { permissions: { allow: ["Read"] } });
-      const result = loadRepoPermissions(cwd);
-      expect(result.source).toBe("claude-settings");
-      expect(result.allow).toEqual(["Read"]);
+    it("drops non-string entries in native rules", () => {
+      writeJson(repoPath, { permissions: { allow: ["Read", 42, null, "Bash(go)"] } });
+      expect(loadRepoPermissions(cwd).allow).toEqual(["Read", "Bash(go)"]);
     });
     it("tolerates JSON comments in the repo file", () => {
       mkdirSync(dirname(repoPath), { recursive: true });
