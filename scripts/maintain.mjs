@@ -8,7 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { inspectInstallation, hostUpdateCommand, inventory, resolveLatest, resolvedSettings, readJson, executable, PI_PACKAGE } from './maintenance-policy.mjs';
 import { planAgentsOnly } from './agents-only.mjs';
-import { planExtensionTree } from './managed-deploy.mjs';
+import { buildPlan, planExtensionTree } from './managed-deploy.mjs';
+import { queuePrepared, readQueued, queueRoot, repositoryDigest, restoreLaunchHook, installLaunchHook } from './maintenance-queue.mjs';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const json = value => JSON.stringify(value, null, 2) + '\n';
 function run(command, args, options = {}) {
@@ -28,7 +29,7 @@ function atomic(file, content) {
 function stateRoot(agentDir) { return path.join(agentDir, 'state/my-dev-setup'); }
 export function parseArgs(args) {
   const command = args.shift() ?? 'check';
-  if (!['check', 'update', 'bootstrap', 'status'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status [--repo DIR] [--agent-dir DIR] [--apply]');
+  if (!['check', 'update', 'bootstrap', 'status', 'activate'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status|activate [--repo DIR] [--agent-dir DIR] [--apply]');
   const options = { command, repo: ROOT, agentDir: path.resolve(process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi/agent')) };
   while (args.length) {
     const flag = args.shift();
@@ -117,6 +118,7 @@ async function prepare(repo, agentDir, lock, installation) {
   ensureRepositoryTools(repo);
   const runtimeNode = installation.node ?? process.execPath;
   ensureLocalDependencies(repo, runtimeNode);
+  const sourceHash = repositoryDigest(repo);
   const stage = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-maintain-')));
   try {
     const stageAgent = path.join(stage, 'agent'), hostRoot = path.join(stage, 'host');
@@ -161,20 +163,21 @@ async function prepare(repo, agentDir, lock, installation) {
       'packages/pi-unread-navigation/test/extension.test.mjs'].map(file => path.join(repo, file));
     for (const file of tests) if (!fs.existsSync(file)) throw new Error(`Required candidate regression is missing: ${file}`);
     run(runtimeNode, ['--test', ...tests], { env: { ...env, PI_HOST_DIR: host } });
-    return { stage, stageAgent, host, installation };
+    return { stage, stageAgent, host, installation, sourceHash };
   } catch (error) { fs.rmSync(stage, { recursive: true, force: true }); throw error; }
 }
 export function assertNoRunningPi({ output, currentPid = process.pid } = {}) {
   if (output === undefined) {
     const ps = spawnSync('ps', ['-axo', 'pid=,comm=,args='], { encoding: 'utf8', timeout: 10000 });
-    if (ps.status !== 0) throw new Error('Cannot establish that Pi is stopped; run bootstrap after closing Pi sessions.');
+    if (ps.status !== 0) throw new Error('Cannot establish whether Pi is running; activation postponed without changing the current runtime.');
     output = ps.stdout;
   }
   const running = output.split('\n').filter(line => {
-    const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/); if (!match || Number(match[1]) === currentPid) return false;
-    return path.basename(match[2]) === 'pi' || /(?:pi-coding-agent\/(?:dist|bin)\/|(?:^|\s|\/)pi(?:\s|$))/.test(match[3]);
+    const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+    if (!match || Number(match[1]) === currentPid || Number(match[1]) === process.ppid && Number(process.env.PI_MAINTENANCE_LAUNCH_PID) === process.ppid) return false;
+    return /maintenance-launch\.mjs(?:\s|$)/.test(match[3]) || path.basename(match[2]) === 'pi' || /(?:pi-coding-agent\/(?:dist|bin)\/|(?:^|\s|\/)pi(?:\s|$))/.test(match[3]);
   });
-  if (running.length) throw new Error('Pi processes are running. Close Pi and run bootstrap --apply from an external terminal. No process was stopped.');
+  if (running.length) throw Object.assign(new Error('Pi processes are running; candidate remains queued until the next safe start. No process was stopped.'), { code: 'PI_RUNNING', pids: running.map(line => Number(line.trim().split(/\s+/)[0])) });
 }
 export function assertPlainPath(target) {
   for (let dir = path.resolve(target);; dir = path.dirname(dir)) {
@@ -187,6 +190,10 @@ function backupNpm(agentDir, backup) {
   const source = path.join(agentDir, 'npm');
   if (!fs.existsSync(source)) return;
   fs.cpSync(source, path.join(backup, 'npm'), { recursive: true, dereference: false });
+}
+export function runningPi(options) {
+  try { assertNoRunningPi(options); return false; }
+  catch (error) { if (error.code !== 'PI_RUNNING') throw error; return true; }
 }
 export function applyPrepared(options, lock, prepared, { command = run, detect = inspectInstallation, stopped = assertNoRunningPi, hasHerdr = () => Boolean(executable('herdr')) } = {}) {
   const { repo, agentDir } = options;
@@ -222,6 +229,8 @@ export function applyPrepared(options, lock, prepared, { command = run, detect =
     if (fs.existsSync(hashlineDir)) fs.cpSync(hashlineDir, path.join(backup, 'hashline'), { recursive: true, dereference: false });
     if (installation.host) fs.cpSync(installation.host, path.join(backup, 'pi-before-update'), { recursive: true, dereference: false });
     atomic(path.join(backup, 'receipt.json'), json({ installation, target: lock, status: 'prepared' }));
+    const hook = installation.hook;
+    if (hook) restoreLaunchHook(installation.bin);
     if (installation.version !== lock.host.version) {
       const [binary, args] = hostUpdateCommand(installation, lock.host.version);
       const env = { ...process.env, PATH: `${path.dirname(installation.node ?? installation.manager ?? installation.bin)}${path.delimiter}${process.env.PATH ?? ''}`,
@@ -259,20 +268,73 @@ export function applyPrepared(options, lock, prepared, { command = run, detect =
     atomic(settingsFile, json(resolvedSettings(repo, lock)));
     command('/bin/bash', [path.join(repo, 'setup.sh'), '--skip-tool-updates'], { env: { ...env, MY_DEV_SETUP_SETTINGS: settingsFile } });
     command(runtimeNode, [path.join(repo, 'scripts/check-pi-extensions.mjs'), repo, '--host', actual.host, '--agent-dir', agentDir, '--settings', settingsFile], { env });
+    if (hook) installLaunchHook(repo, agentDir, actual);
     atomic(path.join(backup, 'receipt.json'), json({ installation, target: lock, status: 'applied' }));
-    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: lock.host.version, backup, restartRequired: true }));
-    console.log(`applied\tPi ${lock.host.version}; restart Pi. Backup: ${backup}`);
+    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: lock.host.version, backup, restartRequired: !options.startup }));
+    console.log(`applied\tPi ${lock.host.version}; ${options.startup ? 'starting the new runtime' : 'new runtime on next Pi start'}. Backup: ${backup}`);
   } catch (error) {
     atomic(path.join(backup, 'failure.json'), json({ status: 'failed', error: error.message }));
+    // A manager can replace the wrapper before failing. Restore the safety gate for future starts.
+    if (installation.hook) {
+      try { const remaining = detect(); if (remaining.kind !== 'blocked' && remaining.host) installLaunchHook(repo, agentDir, remaining); }
+      catch (hookError) { console.error(`Startup safety hook needs repair: ${hookError.message}`); }
+    }
     atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'failed', targetHost: lock.host.version, backup, error: error.message, restartRequired: true }));
     throw new Error(`${error.message}\nPartial installation may exist; configuration has its own transaction backup. Package/host backup: ${backup}`);
   } finally { fs.closeSync(descriptor); fs.unlinkSync(guard); }
+}
+export function activateQueued(options, { stopped = assertNoRunningPi, detect = inspectInstallation, command = run, apply = applyPrepared } = {}) {
+  const pendingFile = path.join(queueRoot(options.agentDir), 'pending.json');
+  if (!fs.existsSync(pendingFile)) return;
+  try { stopped(); } catch (error) {
+    if (error.code !== 'PI_RUNNING') throw error;
+    console.log('queued\tOther Pi processes are still running; keep using the installed version.'); return;
+  }
+  let artifact, current, prepared;
+  try {
+    artifact = readQueued(options.agentDir);
+    if (artifact.repo !== options.repo) throw new Error('Pending candidate belongs to another repository.');
+    current = detect(); const previous = artifact.installation;
+    if (['kind', 'prefix', 'root', 'manager', 'node', 'version'].some(key => previous[key] && previous[key] !== current[key])) throw new Error('Pi owner/version changed after preparation; ask the agent to prepare again.');
+    prepared = { stage: artifact.stage, stageAgent: path.join(artifact.stage, 'agent'), host: path.join(artifact.stage, 'host/node_modules', PI_PACKAGE) };
+    command(current.node ?? process.execPath, [path.join(options.repo, 'scripts/check-pi-extensions.mjs'), options.repo, '--host', prepared.host,
+      '--agent-dir', prepared.stageAgent, '--settings', path.join(prepared.stageAgent, 'settings.json')]);
+  } catch (error) {
+    console.error(`queued\tActivation postponed before installation: ${error.message}`); return;
+  }
+  // Activation must use the exact recorded direct versions, not a fresh latest lookup.
+  try { apply({ ...options, startup: true }, artifact.lock, prepared); }
+  catch (error) {
+    const statusFile = path.join(queueRoot(options.agentDir), 'status.json');
+    if (fs.existsSync(statusFile) && readJson(statusFile).status === 'failed') throw error;
+    console.error(`queued\tInstallation did not start: ${error.message}`); return;
+  }
+  // Do not consume a newer candidate published by a concurrent agent.
+  if (readJson(pendingFile).stage === artifact.stage) fs.unlinkSync(pendingFile);
+}
+export function installationNeedsUpdate(repo, agentDir, lock, installation) {
+  if (installation.version !== lock.host.version) return true;
+  for (const item of lock.remotes) {
+    if (item.kind === 'remote-npm') {
+      try { if (readJson(path.join(agentDir, 'npm/node_modules', item.name, 'package.json')).version !== item.version) return true; } catch { return true; }
+    } else {
+      const result = spawnSync('git', ['-C', path.join(agentDir, 'git', item.identity), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 10000 });
+      if (result.status !== 0 || result.stdout.trim() !== item.commit) return true;
+    }
+  }
+  const stage = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pi-maintenance-drift-')));
+  try {
+    const settingsFile = path.join(stage, 'settings.json'); atomic(settingsFile, json(resolvedSettings(repo, lock)));
+    return buildPlan({ repo, agentDir, host: installation.host, settingsFile,
+      hashlineDir: process.env.PI_HASHLINE_DIR ?? path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'pi-hashline-edit-pro') }).changes.length > 0;
+  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
 export async function main(options) {
   if (options.command === 'status') {
     const file = path.join(stateRoot(options.agentDir), 'status.json');
     console.log(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 'No maintenance has been applied on this machine.'); return;
   }
+  if (options.command === 'activate') return activateQueued(options);
   const installation = inspectInstallation();
   console.log(`host\t${installation.kind}\t${installation.version ?? 'not installed'}${installation.reason ? ` · ${installation.reason}` : ''}`);
   const lock = await resolveLatest(options.repo);
@@ -280,14 +342,23 @@ export async function main(options) {
   console.log(`target\tPi ${lock.host.version}`);
   if (options.command === 'check') return;
   if (installation.kind === 'blocked') throw new Error(installation.reason);
-  if (options.apply) assertNoRunningPi();
+  const needsUpdate = options.apply ? installationNeedsUpdate(options.repo, options.agentDir, lock, installation) : true;
   const prepared = await prepare(options.repo, options.agentDir, lock, installation);
   try {
+    if (repositoryDigest(options.repo) !== prepared.sourceHash) throw new Error('Repository changed during validation; prepare again before queuing/installing.');
     const artifact = { ...lock, validation: { level: 'factory-host-patch-and-synthetic-sdk', nodeMajor: Number(process.versions.node.split('.')[0]), platform: process.platform, arch: process.arch } };
     atomic(path.join(options.repo, 'maintenance.lock.json'), json(artifact));
     console.log('validated\tmaintenance.lock.json updated; repository-only packages were not merged or replaced.');
-    if (options.command === 'bootstrap' && options.apply) applyPrepared(options, lock, prepared);
-    else console.log('prepared\tNo active installation/configuration changed. Run bootstrap --apply outside Pi to configure this machine.');
+    if (options.command === 'bootstrap' && options.apply) {
+      if (!needsUpdate) {
+        installLaunchHook(options.repo, options.agentDir, inspectInstallation());
+        console.log('current\tLatest installed composition validated; automatic startup hook ready. Current Pi continues unchanged.'); return;
+      }
+      if (runningPi()) {
+        queuePrepared(options, lock, prepared, inspectInstallation());
+        console.log(`queued\tPi ${lock.host.version} and plugins validated. Current Pi continues unchanged; automatic activation on the next safe start.`);
+      } else applyPrepared(options, lock, prepared);
+    } else console.log('prepared\tNo active installation/configuration changed. Ask the Pi agent to update to queue automatic activation.');
   } finally { fs.rmSync(prepared.stage, { recursive: true, force: true }); }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

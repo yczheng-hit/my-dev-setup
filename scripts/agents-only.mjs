@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { readLaunchHook } from './maintenance-queue.mjs';
 const MARKER = 'my-dev-setup: agents-only v1';
 const HELPER = `// ${MARKER}\nimport{realpathSync as __agentsOnlyRealpath}from"node:fs";\nfunction __agentsOnlyForbidden(p){return [p,__agentsOnlyRealpath(p)].some(v=>/(^|[\\\\/])\\.claude([\\\\/]|$)|(^|[\\\\/])claude\\.md$/i.test(v))}\n`;
 const OLD_HASH = '8a935f14f62c1c1a3e937f5c912c2215e25aa5fa591716e23c86224ce1dc34cd';
@@ -78,6 +79,7 @@ export function planAgentsOnly(host, agentDir) {
 export function findHost() {
   if (process.env.PI_HOST_DIR) return process.env.PI_HOST_DIR;
   const bin = spawnSync('sh', ['-c', 'command -v pi'], { encoding: 'utf8' }).stdout.trim();
+  if (bin) { const hook = readLaunchHook(bin); if (hook) return hook.original.host; }
   if (bin) for (let dir = path.dirname(fs.realpathSync(bin)); dir !== path.dirname(dir); dir = path.dirname(dir)) {
     try { if (JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).name === '@earendil-works/pi-coding-agent') return dir; } catch {}
   }

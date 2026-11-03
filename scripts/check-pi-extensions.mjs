@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { syncBuiltinESMExports } from 'node:module';
+import { readLaunchHook } from './maintenance-queue.mjs';
 
 const HOST_PACKAGE = '@earendil-works/pi-coding-agent';
 const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim().slice(0, 500);
@@ -15,6 +16,7 @@ const isHost = (dir) => {
 function findHost(explicit) {
   if (explicit || process.env.PI_HOST_DIR) return explicit || process.env.PI_HOST_DIR;
   const bin = spawnSync('sh', ['-c', 'command -v pi'], { encoding: 'utf8' }).stdout?.trim();
+  if (bin) { const hook = readLaunchHook(bin); if (hook) return hook.original.host; }
   if (bin) for (let dir = path.dirname(fs.realpathSync(bin)); dir !== path.dirname(dir); dir = path.dirname(dir)) {
     if (isHost(dir)) return dir;
   }

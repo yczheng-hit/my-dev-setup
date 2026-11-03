@@ -150,6 +150,7 @@ test('pnpm shell shim and Bun symlink retain their own global installer', () => 
     const bunBin = path.join(f.root, '.bun/bin/pi'); fs.symlinkSync(cli, bunBin);
     const result = inspectInstallation({ bin: bunBin, env: { PATH: '' } });
     assert.equal(result.kind, 'bun'); assert.deepEqual(hostUpdateCommand(result, '1.5.0'), [bun, ['add', '--global', '--ignore-scripts', `${PI_PACKAGE}@1.5.0`]]);
+    assert.equal(result.node, process.execPath);
   } finally { f.close(); }
 });
 

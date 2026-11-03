@@ -4,7 +4,7 @@
 
 本机 settings 可直接引用本地仓库 package；新启动或 `/reload` 可能直接加载当前源码。没有运行 setup 只说明未同步受管配置/宿主事务，不能据此断言新版代码未启用。宿主补丁仍须重启 Pi。
 
-新版自动更新入口见 [maintenance.md](maintenance.md)：`bootstrap.sh` 检查 Pi 安装渠道、只更新远程直用包、保留仓库 hack，并通过 `MY_DEV_SETUP_SETTINGS` 将已验证的精确来源交给部署脚本。现有配置 restore 不覆盖包管理器更新或 hashline 数据迁移。
+新版自动更新入口见 [maintenance.md](maintenance.md)：`bootstrap.sh` 检查 Pi 安装渠道、只更新远程直用包、保留仓库 hack，并通过 `MY_DEV_SETUP_SETTINGS` 将已验证的精确来源交给部署脚本；有运行中 Pi 时由 agent 持久排队，下次安全自然启动自动激活，不要求手动退出或外部执行。现有配置 restore 不覆盖包管理器更新或 hashline 数据迁移。
 
 ## 只读扩展组合预检
 

@@ -1,326 +1,101 @@
 # my-dev-setup
 
-个人 herdr + pi 开发环境配置。普通 Git 仓库 + Bash 脚本，不需要 chezmoi、Stow 等配置管理工具。
+个人 **Herdr + Pi** 开发环境：配置、主题、本地扩展与自动维护入口。使用普通 Git 仓库和 Bash/Node 脚本，不依赖额外的 dotfiles 管理器。
 
-## 更新日志
+## 配置与更新
 
-按日期倒序记录影响使用或部署的变更；每次改配置、插件或部署行为时同步更新。
+把本仓库链接交给 Pi agent，告诉它：
 
-### 待部署：AGENTS-only 与独立 auto reviewer
+> 按仓库说明配置或更新我的 Pi 环境，保留当前会话。
 
-- 不再自动导入 `CLAUDE.md`、`.claude/rules` 或 Claude Code permissions；保留 native `AGENTS.md`，新增 `packages/pi-agents-context` 统一加载受信任的 `.agents/rules`。`.agents/skills` 沿用 Pi 原生发现，`.pi` 仍是 Pi 运行配置目录。不会自动迁移/删除 Claude 文件，也不限制使用 Claude 模型。
-- auto 改为通过 Pi 原生 registry 调用独立审核模型：支持固定 `provider/model` 或跟随主模型，认证/endpoint/headers/OAuth 都使用审核模型自己的配置。仓库固定 `anthropic/claude-sonnet-5-5`；`/auto model active` 或 `/auto model provider/model` 只改当前会话审核角色，不改主模型。`/auto status` 看状态，`/auto test` 仅诊断。
-- 严格 JSON `allow/deny/ask`；显式 deny/ask、敏感路径优先。超时/不可用只降级为一次确认或阻止；无 UI 不会默认通过；会话/模型切换、重载和取消使旧结果失效。问题和计划批准仍由人操作。**默认模式仍是 bypassPermissions，没有改成 auto。**
-- Pi 1.4 原生会回退读 CLAUDE，显式部署时同时补 SDK 与 bundled CLI；未知版本或自定义 legacy rules 先拒绝。现在通过带哈希的配置事务统一备份/恢复，详情见 [部署安全](docs/deployment-safety.md)。升级 Pi 后需重验；宿主改动需重启，不能只 `/reload`。
-- 本轮仅修改仓库并运行隔离/离线验证，**没有运行 setup、部署设置或修改正在使用的 Pi 安装**。详情见 `packages/picc-permission-modes/README.md` 和 `packages/pi-agents-context/README.md`。
+agent 按 [AGENTS.md](AGENTS.md) 执行检查、下载和验证，**不需要你另开终端、手动运行脚本或为了更新退出 Pi**。
 
-### 待部署：前台优先调度、未读导航与部署安全
+- **Pi 正在运行**：新版组合保存为持久候选，当前会话继续使用现有版本；下次正常启动、且没有其他旧 Pi 进程时自动激活。
+- **Pi 未运行**：直接安装并配置。
+- **已经是目标版本与配置**：验证后保持不变，不重复排队。
 
-- scheduler 不再抢未提交 steer：草稿、排队消息、模型回合和弹窗期间，默认 shell 执行及结果唤醒等待；可显式允许后台 shell，但结果仍排在 scheduler 自有可取消队列。`/scheduler pause|resume|run|status`；`/schedules`、无参数 `/schedule-cancel` 提供可搜索的有界选择器，名称/完整或短 ID 歧义不猜，旧选择 revision 失效会拒绝。
-- 新增 `packages/pi-unread-navigation`：fullscreen 中人工“返回最新”优先定位最早未读最终回复正文开头，再次明确跳底；保留程序内部自动跟随。只按稳定可见范围近似计已读，分支/会话隔离，普通 scrollback 原生降级。
-- 完整 loader 预检保留 npm/git/本地包过滤，同时加载 standalone；真实 Pi 1.4 当前组合 **23 包 / 29 factories / 0 缺失 / 0 错误**。Node 权限限制临时目录写入，禁用 JS 网络与子进程，不触发真实会话或模型；原生 addon 检查仍要求信任扩展。
-- `setup.sh` 写配置前校验全部配置/宿主补丁，再检查完整加载组合。新的 managed inventory 只清理未修改的已管理旧扩展/主题，自定义代码保留；哈希匹配的事务备份可预览/恢复。**本轮没有运行真实 setup。**
-- scheduler/HUD 使用原生自定义 agent-dir；子任务 HUD 按终端列宽处理 CJK/emoji；Herdr bridge 保留嵌套 prompt 阻塞。性能先测量：50k 合成 entries 的 250 帧统计由每帧遍历变为 1 次；同 socket 10 路 pane-id 事件由 30 次 CLI 合并为 3 次（测试 fixture，不是生产延迟保证）。
-- 真实 Pi 1.4 的离线合成会话已验证 AGENTS、独立 auto reviewer、BTW factory、scheduler、未读导航和 HUD 共存；factory 预检之外还覆盖草稿阻塞、取消待交付结果、单次安全唤醒与导航清理。不等于真实审核服务/OAuth 或用户 UI 的线上验收。
-- 详细状态、已验与未验边界见 [UX 方案](docs/pi-ux-roadmap.md)、[预检/清单/恢复](docs/deployment-safety.md)。本地 BTW 修复已提交推送；远端实际激活与线上使用仍需单独验收。
+核心与第三方插件整套切换，不把 `/reload` 当成 Pi 核心热升级；不自动 kill、重启或 reload 当前会话。安装沿用原包管理器及 Node prefix，不另装第二份 Pi。
 
-### 2026-10-28
+需要 **macOS/Linux、git、Node >=22.19/npm、Herdr**；monitor 另需 Python >=3.11。Node、Herdr 和系统软件不自动升级。完整流程、安装渠道和异常处理见 [自动维护](docs/maintenance.md)。
 
-- Pi 的外部编辑器默认改为 **vi**（`externalEditor: "vi"`），主输入框和原生编辑框中的 Ctrl+G 都使用它，不再回退到系统 nano/Pico；仅影响 Pi，不改 shell 的 EDITOR/VISUAL。本机已定点更新，在空闲时 `/reload` 或重启 Pi 生效；其他机器 `git pull && ./setup.sh`。
-- **picc 计划审批不再从弹窗里直接启动外部编辑器。** 第三项 `Stay in plan mode` 关闭审批并停住当前模型回合，等你继续输入；第四项 `Request changes to the plan…` 打开 Pi 原生反馈框，Esc/空提交同样返回主输入框，提交意见后只修改计划再审批、不直接执行。审批里的 Ctrl+G 先关闭弹窗再用 Pi 原生编辑器编辑计划，保存后重开审批；原生框里的 Ctrl+G 由 Pi 管理 vi 等外部编辑器的终端切换。保留 bypass-first、Shift+Tab、滚轮和空计划保护。隔离全套 562 通过/6 跳过；真实 Pi UI 与离线模型回合验证通过。
-- **Herdr 子任务不再覆盖 agent 编号。** 新增自有适配器 `packages/pi-subagents-herdr-labels`，由它调用未修改的 npm `pi-subagents` 入口，只过滤该桥写入的 state labels；编号/状态颜色、`3 approval` / `3 plan ready` 保留，上游摘要、标题后缀、刷新、恢复和完成清理仍在，任务详情仍看 Pi HUD。不改 Herdr、不靠周期刷编号抢标签。settings 保留 `{ "source": "npm:pi-subagents", "extensions": [] }` 供安装和 skills/prompts，紧接本地适配器，避免重复注册。其他机器 `git pull && ./setup.sh`；本机已定点更新 package 清单，在没有活动子任务时 `/reload` 或重启 Pi。上游包升级后需重启以清掉 Node 旧模块缓存。
-- **`setup.sh` 现在会真正加载原生模块，并在 Linux 老 C++ 运行库上自动本地重编译 tree-sitter。** 现象：在系统 libstdc++ 较老的 Linux 上，`setup.sh` 正常结束、`pi list` 也列出 `pi-openai-codex-compat`，但 `/reload` 后 `apply_patch` / `exec_command` / `write_stdin` 都没有，GPT 只有一部分配置生效。根因：`tree-sitter@0.25.1` 自带的 `prebuilds/linux-x64/tree-sitter.node` 需要 `GLIBCXX_3.4.31`，系统库没有，整个插件在 pi 里加载失败（loaded=0）；而 `--ignore-scripts` 安装只证明文件存在，`pi list` 只证明包被配置。改动：
-  1. `scripts/native-deps.mjs`：对每个包里含原生扩展的依赖逐个真正 `require`，把失败分成 `libstdcxx` / `node-abi` / `no-binary`（本地重编译能修）和 `missing` / `crash` / `other`（只诊断）。`setup.sh` 在安装依赖后调用，失败时打印原因和建议，退出码为 1。
-  2. `scripts/rebuild-native.mjs`：**只重编译那一个失败的依赖**，其余包仍然 `--ignore-scripts`，不放开安装脚本。自动探测，不写死路径：Python ≥ 3.8（node-gyp < 10 不支持 ≥ 3.12）、最新的 g++ ≥ 10（`gcc-N`、`gcc-toolset-N`、`devtoolset-N`，或 `CC`/`CXX`）、当前 Node 安装目录的头文件（没有则交给 node-gyp 下载）、npm 自带的 node-gyp。Linux 上加 `LDFLAGS="-static-libstdc++ -static-libgcc"`，结果不依赖系统旧库；`--napi_build_version=8`，`--jobs` 取 CPU 数且不超过 4。缺工具链时给出明确的手动命令，不会半途而废。
-  3. `scripts/check-pi-extensions.mjs`：不调用模型、不联网，用 pi 自己的 `loadExtensions` 在隔离目录里加载 `pi/settings.json` 里所有 `repo:` 扩展，打印每个包注册的工具、命令、事件数。`setup.sh` 末尾自动运行；`pi list` 正常不再被当成加载成功。
-  4. `setup.sh` 新增 `--no-rebuild`（只报告，不编译）；`--dry-run` 只显示会怎么重编译，不动文件。
-  5. 测试兼容：`pi-gpt-codex`、`pi-fork-save`、`pi-hud-footer` 的单元测试原来把 jiti、pi-tui 写成 `PI_HOST_DIR/node_modules/...`，managed 安装里它们被提升到上层，直接 `npm test` 找不到模块。现在用 `createRequire` 从宿主目录解析；已用“依赖全部上提”的目录结构验证，29 项测试通过，旧写法在同一结构下确实报 `ERR_MODULE_NOT_FOUND`。
-  已验证：macOS 上人为损坏 tree-sitter 预编译后，`setup.sh` 的检查函数识别为 `no-binary`、实际 `node-gyp rebuild` 成功并复检通过，再次运行无变化；伪造 Linux 平台与桩编译器验证 g++ 选择、`CC`/`CXX` 覆盖、编译器过旧、Python 不可用四种分支；模拟的 GLIBCXX 报错被分类为 `libstdcxx`。**尚未在真实的老 libstdc++ Linux 主机上从零跑 `./setup.sh`**，该主机上的手动重编译方案已验证通过，这次是把它固化进脚本。
-  同步：`git pull && ./setup.sh`，已开的 pi 执行 `/reload`。想手动重编译：`node scripts/rebuild-native.mjs packages/pi-openai-codex-compat tree-sitter`；只想检查加载：`node scripts/check-pi-extensions.mjs .`。回滚：`git revert` 这次提交即可，`setup.sh` 回到只检查依赖目录是否存在；已重编译出的 `node_modules/tree-sitter/build/` 可保留，也可 `rm -rf packages/pi-openai-codex-compat/node_modules && ./setup.sh` 重装。
-- **GPT（`openai-codex`）模型的 harness 对齐官方 Codex CLI，Claude 路径不变。** 之前 pi 用通用提示词和 `bash`/`edit`/`write` 工具跑 GPT，和 Codex 官方的请求形状差很多。现在三处一起改：
-  1. 新增本地补丁版 `packages/pi-openai-codex-compat`（npm `pi-openai-codex-compat@0.0.29`）：`apply_patch` 自由格式工具替换 `edit`/`write`，`exec_command`/`write_stdin` 替换 `bash`，打开 Responses Lite（`reasoning.context=all_turns`、`parallel_tool_calls=false`），`end_turn=false` 自动续跑，远程 compaction。补丁修的是 Lite 下 `apply_patch` 被 schema 校验拒绝、续跑断掉的问题。配置在 `pi/openai-codex-compat.json`（`responsesLite: true`、`reasoningSummary: "off"`、`imageGeneration: false`），部署到 `~/.pi/agent/openai-codex-compat.json`。
-  2. 新增自有插件 `packages/pi-gpt-codex`：只在 GPT 模型上把 pi 的通用开头和 “Be concise” 换成 Codex 风格系统提示词（自主完成、不中途停、compaction 后继续任务、只用 `apply_patch` 改文件），工具说明随当前工具集切换；项目上下文、`AGENTS.md` 和其他插件加的段落保留。bash 输出被截断时附上完整日志头部的读取方法。
-  3. `pi/settings.json`：`pi-hashline-edit-pro` 对 `openai-codex/*` 关闭（`pi/pi-hashline-edit-pro.json` → `~/.config/pi-hashline-edit-pro/config.json`，合并写入，不覆盖本机其他键），Codex 模型改用 `apply_patch`。
-- picc 的权限闸现在也检查 `apply_patch` / `exec_command` / `shell_command`（原来它们不经过 `edit`/`write`/`bash` 检查，会绕过权限模式）：补丁按 `*** Add/Update/Delete/Move` 拆成逐文件的写入检查，`exec_command` 按 bash 命令检查。新增 9 个测试，全套 550 通过、6 跳过、0 失败。
-- 移除 `@nijaru/pi-fast-mode`：兼容包接管 `openai-codex` 流之后它不再生效（实测 `service_tier` 为空，与加载顺序无关）。Fast 模式改用兼容包自己的 `fastMode`（默认关），用 `/codex-settings` 切换，或在 `~/.pi/agent/openai-codex-compat.json` 写 `"fastMode": true`，请求带 `service_tier: "priority"`。
-- 其他机器同步：`git pull && ./setup.sh`，然后重启 pi（或 `/reload`）。`/login` 用 ChatGPT 账号登录后选 `openai-codex/*` 模型即可。
-- 回滚：在 `pi/settings.json` 删掉 `repo:packages/pi-openai-codex-compat` 和 `repo:packages/pi-gpt-codex`，需要的话加回 `npm:@nijaru/pi-fast-mode`，执行 `./setup.sh` 后 `/reload`；`setup.sh` 合并设置时不会删本机已有的键，所以还要手动删除 `~/.pi/agent/openai-codex-compat.json`。也可以把 `~/.my-dev-setup-backups/<时间>/` 里的旧文件拷回。
+### 部署前注意
 
-### 2026-10-23
+这是个人配置，不是通用安全默认：
 
-- `/btw` 升级到 pi-btw-split `0.7.1-split.10`：一个 BTW 线程变成**连续对话**，追问能看到之前的问答；主会话快照只在对话开始时取，之后主会话的变化不会再悄悄改掉 BTW 看到的内容。要跟上主会话时：`/btw:sync`（随下一个问题追加主会话新进展），或 `/btw:autosnap on`（每个问题前自动追加，存在 `~/.pi/agent/btw.json` 的 `snapshot.auto`，默认关），模型也会在需要时自己调用 `main_session_update`。pane 标题显示 `main context 14:02 · main +3 rounds since (/btw:sync)`。主会话切分支、换 BTW 模型/thinking、重载或对话太长时，才用新快照重开，并带上之前的问答。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
-- herdr Spaces 侧栏恢复原样，工作区名前不再加序号（`packages/herdr-pane-id` 0.6.0 会清掉旧的 `$ws_num`，`herdr/config.toml` 删除 `[ui.sidebar.spaces]`）。
-- herdr Agents 侧栏再整理：第一行为 `1 · tools · pi-config`，只有编号随状态变色，工作区名和 tab 名保持原来的颜色，工作区名不加粗；工作中由黄改橙、完成由青改蓝，和空闲的绿色区分开（`[theme.custom]`）。pi 等待确认时编号处显示 `1 approval` / `1 plan ready`（红），确认后恢复。`packages/herdr-pane-id` 升到 0.5.0，`herdr-ui-prompt-blocked.ts` 改为写带编号的 blocked state label。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync`，已开的 pi 执行 `/reload`。
-- herdr Agents 侧栏改为**用 agent 编号代替状态圆圈**：每个 agent 一行一个唯一编号 `1`、`2`、`3`，颜色仍随状态（空闲绿、工作黄、等待红、完成蓝），顺序与 `prefix+N` 跳转一致；行内不再重复工作区序号（修复同一工作区三个 agent 都显示 `1`）。Spaces 区保留工作区序号。`packages/herdr-pane-id` 升到 0.3.0（用 state label 显示编号，agent 增减、tab 或工作区变化时重排），`herdr-ui-prompt-blocked.ts` 不再写 state label，等待原因只走 `$blocked_reason`。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。
-- herdr 侧栏的工作区名前加上序号，例如 Spaces 显示 `1 · tools`，Agents 显示 `1 · tools · <tab>`。序号与 `prefix+shift+N` 一致，新建、关闭或拖动工作区后自动更新。由 `packages/herdr-pane-id` 插件（0.2.0）写入 `$ws_num` token，`herdr/config.toml` 新增 `[ui.sidebar.spaces]` 行。其他机器执行 `./setup.sh`，再执行 `herdr plugin action invoke local.pane-id.sync` 或重启 herdr。
-- herdr 左侧 Agents 列表在工具名后显示 pane ID，例如 `pi · w1:p3`。由新的 herdr 插件 `packages/herdr-pane-id`（`local.pane-id`）把 ID 写成 `$pane_id` token：herdr 启动、新建 pane、pane 跨工作区移动、检测到 agent 时自动更新；`herdr/config.toml` 第二行改为 `["agent", { token = "$pane_id", dim = true }]`。其他机器执行 `./setup.sh`（复制 config 并 link 插件），再执行 `herdr plugin action invoke local.pane-id.sync` 立即补上已有 pane，或重启 herdr。
+- 权限默认为 **`bypassPermissions`**，计划批准默认选项也是 bypass。需要更保守的模式时，先修改 [权限配置](pi/extensions/picc-permission-modes/config.json)。
+- 配置包含默认模型、模型白名单及 SSH/SCP allowlist，部署到其他机器前应检查；**不包含账号或 API key**。
+- 不读写凭据、真实 session 或聊天日志，不清全局缓存；包安装及 hashline 数据备份只保存在本机。
 
-- 新增 `@nijaru/pi-fast-mode`：`/fast`（`on` / `off` / `status`）切换 Codex Fast 模式，请求带 `service_tier: "priority"`，额度消耗约 2.5×，开启时底部显示 `⚡ FAST`。只对 Pi 自带的 `openai-codex` 提供方生效（需先 `/login` 用 ChatGPT 账号登录），走 `local`（OmniRoute）的模型不受影响。默认关闭；开关状态记在每个会话里，并写入 `~/.pi/agent/extensions/pi-fast-mode.json` 作为新会话默认值。其他机器执行 `./setup.sh` 或 `pi install npm:@nijaru/pi-fast-mode`，然后重启 Pi。（2026-10-28 起已被兼容包的 `fastMode` 取代。）
+## 主要功能
 
-### 2026-10-22
+| 功能 | 实现与说明 |
+| --- | --- |
+| AGENTS-only 上下文 | [pi-agents-context](packages/pi-agents-context/README.md)：AGENTS 与受信任 `.agents/rules`，不自动导入 Claude 文件 |
+| 权限与独立审核模型 | [picc-permission-modes](packages/picc-permission-modes/LOCAL-PATCH.md)：手动 plan、审批反馈、独立 auto reviewer；审核角色不改变主模型 |
+| GPT/Codex 适配 | [Codex compat](packages/pi-openai-codex-compat/LOCAL-PATCH.md)＋`pi-gpt-codex`：工具、提示词与 Responses 路由适配 |
+| 前台优先调度 | [pi-scheduler](packages/pi-scheduler/LOCAL-PATCH.md)：草稿/弹窗/模型回合期间延迟唤醒，可暂停、取消，交付不明时不自动重发 |
+| 未读回复导航 | [pi-unread-navigation](packages/pi-unread-navigation/README.md)：fullscreen 中优先定位最早未读最终回复 |
+| 会话与子任务 HUD | [HUD footer](packages/pi-hud-footer/LOCAL-PATCH.md)、[subagent HUD](packages/pi-subagent-hud/README.md)、UTC+8 回合摘要 |
+| Herdr 编号与状态 | [pane-id](packages/herdr-pane-id/README.md)＋[subagents 标签适配器](packages/pi-subagents-herdr-labels/README.md)：保留编号、状态颜色和审批提示 |
+| 分叉快照 | [pi-fork-save](packages/pi-fork-save/README.md)：保存副本而不切换前台会话 |
+| 侧边对话与监控 | [pi-btw-split](https://github.com/yczheng-hit/pi-btw-split)、[herdr-monitor](https://github.com/yczheng-hit/herdr-monitor)；`./monitor.sh` 启动监控 |
 
-- `/btw` 升级到 pi-btw-split `0.7.1-split.9`：BTW 输入框里的 ↑/↓ 改成和主会话一样翻输入历史（输入框为空或光标在行首时 ↑ 调出之前的 BTW 问题，↓ 回到正在写的草稿），不再逐行滚动对话记录；滚动改用 PgUp/PgDn 或鼠标滚轮。历史包含本会话所有 BTW 问题，`/btw:new` 和重载之后仍在。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
-- herdr-monitor 的 Agents 表新增 **WORKSPACE**（herdr 工作区名）和 **SESSION**（会话名）两列，原来的 NAME 列去掉。pi 的会话名就是 `/rename` 或 `/name` 设置的名称，改名后下一次刷新（默认 2 秒）就会显示，未命名时显示 `—`；Claude、Codex 显示它们自己的对话标题。过滤框也能按工作区名和会话名搜索。窗口较窄时依次隐藏 TYPE、LAST WORK、WORKSPACE。herdr-monitor 同时改为本仓库的 git submodule（`tools/herdr-monitor`，当前 `2852106`），在本仓库里就能看到它的代码和改动。其他机器在本仓库执行 `git pull && ./setup.sh`（会更新 monitor 并重装），然后重启 monitor。
-- 定时任务插件改为本地补丁版 `packages/pi-scheduler`，**提示词大幅精简**：工具定义约 1470 → 750 token；唤醒模型时只发一个紧凑块（如 `⏰ 定时任务 task_x「CI」 运行完成 · 11:30`，下接命令、`退出码 1 · 用时 2.3s`、非空输出、`下一步：…`），不再列内部字段和空 stderr，输出上限 18000 → 4000 字符。创建、提醒、`/schedules`、取消和没有唤醒模型的 shell 结果只显示在界面上，不再进入模型上下文；唤醒后也不再重复发一条 “finished”。小部件、列表和结果改为中文本地时间。旧任务文件和旧参数照常可用。其他机器执行 `./setup.sh`（安装依赖并改用本地包），然后重启 Pi。
-- picc 去掉 Windows 专用的路径检查（只用 macOS/Linux）。原来 default 等模式下，`grep`/`read` 的路径如果是 `.`、`src/.`、以 `.` 或空格结尾、含 `~1`、`//host/...`，会被当成可疑 Windows 路径而弹窗确认，现在直接按普通路径规则处理；`.git/`、`.bashrc`、`.claude/` 等危险路径检查不变。原来依赖环境的 4 个测试也改为自带测试环境，全套 541 通过、0 失败。
-- Pi 升级到 **1.4.0**（`pi update --self`）。26 个扩展全部加载无错误；本仓库插件测试在 1.4.0 下通过：pi-btw-split 34/34、pi-agent-summary-time 4/4、pi-fork-save 10/10、pi-hud-footer 14/14、pi-subagent-hud 15/15；picc 全套测试同样通过。其他机器同样执行 `pi update --self`，然后重启 Pi。
-- Pi 启动时默认进入 **bypass permissions** 模式：所有工具调用自动放行，只保留危险路径检查（`.git/`、`.bashrc`、`.claude/` 等）。由 `pi/extensions/picc-permission-modes/config.json` 中的 `permissions.defaultMode` 控制，删掉该字段或改为 `"default"` 即恢复每次询问。恢复或分叉的会话仍沿用该会话上次的模式，`--permission-mode` 参数优先级更高。子 agent 同样继承这个模式。修改后执行 `/reload` 生效。
+monitor 默认只观察。显式开启自动确认后是界面识别，**不是命令安全审查**，详见它自己的说明。
 
-### 2026-10-21
+## 插件来源与维护策略
 
-- 全局 `pi/AGENTS.md` 只保留一条规则：搜索优先使用 ripgrep（`grep` 工具或 bash 中的 `rg`）。
-- 新增 `/fork-save`：保存当前会话的分叉副本，但前台仍停留在原会话。保存后只把新会话 ID 复制到剪贴板，副本中的历史 token 和 cost 统计从零开始。
-- `/btw` 升级到 pi-btw-split `0.7.1-split.8`：每次提问都会重新生成一份主会话快照。快照包含主会话的运行状态、当前任务及工具调用进度（成功、报错、等待中）、之前几轮对话和已有的压缩摘要，不会额外调用模型。快照默认最多占 BTW 剩余窗口的 60%，上限等于主会话的上下文窗口，第一次提问不会触发压缩。可以在 `~/.pi/agent/btw.json` 写 `{"snapshot":{"share":"50%"}}` 调整比例（`maxTokens` 可另设更低的上限），下一次提问即生效。已安装的机器在 `~/tools/pi-btw-split` 执行 `git pull`，再在 Pi 里执行 `/reload`。
+[pi/settings.json](pi/settings.json) 是唯一加载清单，保留顺序和资源过滤；[maintenance.json](maintenance.json) 记录分类与自有工具 commit。
 
-### 2026-10-20
+| 来源 | 更新方式 |
+| --- | --- |
+| 普通远程 npm/git 包 | 查询最新稳定版/配置 ref，隔离验证后固定到精确版本/commit |
+| 本地补丁包 | permission、Codex compat、HUD footer、scheduler 以本仓库源码为准，**不查询、merge 或替换第三方上游** |
+| 自有扩展与适配器 | 使用 `packages/` 中的代码，与新版远程依赖一起验证 |
+| 自有独立工具 | BTW、monitor 按仓库固定 commit 初始化；已有不同版本或本地修改保留，不自动 reset/merge |
 
-- HUD 显示会话名称，并新增 `/rename`。
-- Pi 回合摘要显示 UTC+8 完成时间。
-- 新增 `@jl1990/pi-scheduler` 和 `@narumitw/pi-goal`。
-- plan mode 改为只能由用户手动进入。
-- 要求 `pi-hashline-edit-pro >= 6.5.0`，修复长会话中读取大文件时卡住的问题。
-- 修复 herdr 插件通过符号链接注册时被误判为有变化的问题。
+[maintenance.lock.json](maintenance.lock.json) 记录成功验证的直接依赖版本和完整性，**不是完整间接依赖锁，也不是本机已安装状态**。本机状态看维护收据；不要用宽泛的 `pi update --extensions` 替代分类型维护。
 
-### 2026-10-16
+本地补丁记录在 [patches/](patches/)，修改补丁包时同步运行代码、测试和对应 patch。历史变更看 Git，不在 README 维护另一份版本流水。
 
-- 初始化 herdr 和 pi 配置。
-- 同步 Pi 主题和插件。
-- 改用本机 Herdr 快捷键和 Tokyo Night 主题。
-
-## 使用
-
-推荐把本仓库链接交给 AI，要求“按仓库说明配置或更新本机”。根目录 `AGENTS.md` 和 `bootstrap.sh` 是统一入口：沿原安装方式更新 Pi、验证并安装最新远程插件，再配置环境；本地 hack 只使用仓库代码，不主动 merge 上游。需要已有 **git、Herdr、Node.js >=22.19 / npm**；Pi 缺失时使用当前 Node 对应 npm 安装。monitor 另需 Python 3.11+。详见 [自动维护](docs/maintenance.md)。
-
-```bash
-git clone https://github.com/yczheng-hit/my-dev-setup.git ~/tools/my-dev-setup
-cd ~/tools/my-dev-setup
-./bootstrap.sh --check    # 只读检查最新版、安装方式和插件类型
-./bootstrap.sh --prepare  # 隔离准备/验证；Pi 会话中使用
-./bootstrap.sh            # 外部终端：升级并配置本机（运行中 Pi 会阻塞）
-```
-
-以后更新：
-
-```bash
-cd ~/tools/my-dev-setup
-git pull --ff-only
-./bootstrap.sh
-```
-
-仅扩展/资源改动可在运行中的 Pi 执行 `/reload`；若更新宿主或 AGENTS-only 补丁，必须重新启动 Pi。herdr 配置会尝试热加载，不会自动重启进程。本机 settings 若直接引用仓库源码，新启动或 `/reload` 即可能加载修改，**未运行 setup 不代表源码尚未生效**；setup 负责同步受管配置与宿主补丁。
-
-### 脚本行为
-
-- 文件内容相同则跳过；配置变化前创建 `~/.my-dev-setup-backups/<时间>/transaction-<uuid>/`，记录原字节与前后 SHA-256，恢复默认只预览。见 [部署安全](docs/deployment-safety.md)。
-- `pi/settings.json` 与本机现有文件合并：仓库中的同名顶层字段优先，本机独有字段（如 `deviceId`）保留。`packages` 是整份清单替换，不是追加。
-- `repo:...` 是本脚本的路径占位符，部署时转成此 checkout 的绝对路径；不能把源 `settings.json` 直接复制给 pi。
-- `tools.tsv` 列出的自有工具仓库会 clone 到 `tools/<name>`，之后每次 `git pull --ff-only`；有本地改动或不在指定分支时只警告、不更新。pi-btw-split 已 gitignore；herdr-monitor 同时是本仓库的 **git submodule**，在 GitHub 上点 `tools/herdr-monitor` 就能看到它的代码和固定的提交。submodule 未初始化时（空目录）`setup.sh` 照样 clone；已初始化但处于 detached HEAD 时，先切回 `main` 再更新。
-- herdr-monitor 在 `tools/herdr-monitor/.venv` 里用 Python 3.11+ 安装，commit 变化后才重装；脚本只安装，不启动它。
-- 仅 inventory 中哈希未变的旧扩展/主题可备份清理；未知或修改过的扩展保留，不清空目标目录。
-- 本地插件仅安装必要的 runtime dependencies，不安装宿主 pi 的另一份副本。
-- 安装后会真正加载每个本地包里的原生扩展（tree-sitter、node-pty 等）。预编译文件因系统 libstdc++ 过老、Node ABI 不符等原因加载失败时，只针对那一个依赖用本机编译器重编译（`scripts/rebuild-native.mjs`，Linux 上静态链接 libstdc++），其他包仍然不运行安装脚本；`--no-rebuild` 只报告不编译。
-- 写配置前用 Pi 自己的资源加载器检查所有 repo/已安装 npm/git/standalone 扩展组合。加载失败停止配置写入；缺包明确标记 incomplete，部署安装清单后需再次检查。
-- `bootstrap.sh` 每次解析最新 stable 并隔离验证，通过后将远程来源固定为精确版本/commit；`maintenance.lock.json` 记录验证结果。`setup.sh` 仍可独立做旧式配置部署，但不负责更新 Pi。不要用宽泛的 `pi update --extensions` 替代分类型维护。
-- 默认 agent-dir 的官方 Herdr integration 用 `herdr integration install pi` 管理，不搬运生成文件；custom agent-dir 不偷偷写默认目录，需单独配置集成。
-- 同一个 herdr 插件 ID 如果已注册到另一个目录，保留原注册并警告，不偷偷替换。
-- 不读写 `auth.json`、`models.json`、`models-store.json` 或真实 session/日志，不清全局缓存。维护会在本机私有目录备份包安装及 hashline 的 undo/snapshot 数据；候选使用临时缓存。**部署配置与插件不需要登录或密钥**；只有实际使用需要认证的模型、联网服务时，才另行配置对应账号/凭据。
-
-> **配置的实际内容包含默认模型和权限规则。** 默认模型仅保存 ID，不保存 key；在没有这些模型的机器上，可以删除 `defaultProvider`、`defaultModel`、`enabledModels` 这几个字段，沿用本机选择。权限规则包含 SSH/SCP 的 allowlist，见 `pi/permissions.json` 与 `pi/extensions/picc-permission-modes/config.json`；不需要时应先删除对应项。
->
-> `picc-permission-modes` 的本地补丁让 Pi **启动即为 bypass permissions**（`permissions.defaultMode`），计划批准菜单的默认选项也是 bypass permissions，不是更保守的 default / acceptEdits；详情在它的 `LOCAL-PATCH.md`。这是个人偏好，不是通用安全默认；在别人的机器上部署前请先删掉 `defaultMode`。
-
-## 结构
+## 仓库布局
 
 ```text
-my-dev-setup/
-├── setup.sh
-├── monitor.sh                              # 启动 herdr-monitor（在 herdr pane 里运行）
-├── tools.tsv                               # 自有工具仓库清单
-├── scripts/                                # setup.sh 调用的辅助脚本
-│   ├── native-deps.mjs                     # 真正加载原生依赖，分类失败原因
-│   ├── rebuild-native.mjs                  # 只重编译失败的那一个依赖，自动探测工具链
-│   ├── managed-deploy.mjs                 # 配置/宿主预检、ownership 清单与哈希校验恢复
-│   └── check-pi-extensions.mjs             # 完整本地/npm/git 组合加载检查（隔离、无模型）
-├── tools/                                  # setup.sh clone 的仓库；herdr-monitor 是 submodule
-│   ├── pi-btw-split/
-│   └── herdr-monitor/
-├── herdr/
-│   └── config.toml                         # 本机 Herdr 快捷键、tokyo-night 主题、blocked reason、agent 编号、pane ID 侧栏
-├── pi/
-│   ├── AGENTS.md                           # 全局指令：搜索优先 ripgrep
-│   ├── settings.json                       # 插件清单、claude-dark 主题、UI、模型偏好
-│   ├── themes/claude-dark.json              # 自定义主题
-│   ├── keybindings.json                    # Ctrl+E / Alt+T 切换 thinking，End 到行尾
-│   ├── pi-cc-extensions.json               # diff、卡片、footer 等 UI 偏好
-│   ├── openai-codex-compat.json            # GPT/Codex：Responses Lite、reasoning summary 等
-│   ├── pi-hashline-edit-pro.json           # 对 openai-codex/* 关闭 hashline（合并写入）
-│   ├── WATCHDOG.yml                        # pi-omp-advisor 的 main watchdog 关闭
-│   ├── permissions.json
-│   └── extensions/
-│       ├── herdr-ui-prompt-blocked.ts       # 计划/权限弹窗 -> herdr blocked reason
-│       ├── claude-rules.ts                 # 退役占位，不再部署或读取 Claude 规则
-│       ├── handoff.ts                      # 上下文交接
-│       ├── todo.ts
-│       ├── question.ts
-│       ├── questionnaire.ts
-│       ├── subagent/config.json            # 含 pi-subagent-hud 需要的 fleetView 等设置
-│       └── picc-permission-modes/config.json
-├── packages/                               # 本地补丁版 / 本地插件（vendored）
-│   ├── picc-permission-modes/
-│   ├── pi-agents-context/                  # AGENTS/.agents 指令策略与结构化 rules 段落
-│   ├── pi-openai-codex-compat/
-│   ├── pi-gpt-codex/
-│   ├── pi-hud-footer/
-│   ├── pi-scheduler/
-│   ├── pi-unread-navigation/               # fullscreen 未读最终回复导航
-│   ├── pi-subagent-hud/
-│   └── herdr-pane-id/                      # herdr 插件：侧栏 agent 编号、pane ID、工作区序号
-└── patches/                                # 第三方包相对 npm 原版的改动
-    ├── picc-permission-modes/0.1.3-local.patch
-    ├── pi-openai-codex-compat/0.0.29-local.patch
-    ├── pi-hud-footer/0.8.0-local.patch
-    └── pi-scheduler/0.5.1-local.patch
+AGENTS.md                 # agent 维护约定
+bootstrap.sh              # agent 调用的统一更新入口
+maintenance*.json         # 来源策略与已验证候选记录
+pi/                       # Pi 配置模板、主题、独立扩展
+herdr/                    # Herdr 配置模板
+packages/                 # 仓库维护的扩展、适配器与补丁包
+patches/                  # 相对已记录第三方基线的运行代码 patch
+tools/                    # 自有独立 checkout；monitor 为 submodule
+scripts/                  # 候选验证、启动钩子、部署事务与测试
+monitor.sh                # 在已有 Herdr pane 中启动 monitor
 ```
 
-## 插件来源与版本
+`repo:` 是部署占位符，会展开为 checkout 路径；不要把源 `pi/settings.json` 直接复制到本机，也不要把含机器路径的本机 settings 整份拷回仓库。
 
-### 自有工具（独立 GitHub 仓库）
+## 状态、验证与恢复
 
-| 工具 | 仓库 | 用途 |
-|---|---|---|
-| pi-btw-split | [yczheng-hit/pi-btw-split](https://github.com/yczheng-hit/pi-btw-split) | pi `/btw` 侧边对话；同时作为 pi 包和 herdr 插件 `local.pi-btw-light` |
-| herdr-monitor | [yczheng-hit/herdr-monitor](https://github.com/yczheng-hit/herdr-monitor) | 前台 herdr agent 监控 TUI，可选的受保护权限确认 |
+以下是 agent 使用的诊断入口，也可手动运行：
 
-两者都跟随 `main`。以后想固定版本，可在 `tools.tsv` 把分支改成 tag。herdr-monitor 是 submodule，本仓库记录它的提交：在 herdr-monitor 提交并推送后，回到本仓库执行 `git add tools/herdr-monitor` 并提交，这样本仓库就能看到新版本。
-
-herdr-monitor 默认 **OFF**（只观察）。开启 ON 后会向符合条件的权限菜单发送 Enter；这是界面识别，不是命令安全审查。详见它的 README。
-
-当前参考的 BTW 版本是 split.5（`845ef90`，Linux/macOS），部署时跟随 GitHub `main`。
-
-### 本地补丁版 / 本地插件（packages/）
-
-**规则：** 较大、独立开发的模块单独建仓库（目前只有 pi-btw-split、herdr-monitor，列在 `tools.tsv`）；小补丁和小插件直接放在本仓库 `packages/` 维护，不再开新仓库或 fork。
-
-| 目录 | 类型 | 基础版本 | 相对原版的改动 |
-|---|---|---|---|
-| `packages/picc-permission-modes` | 第三方 + 补丁 | npm `@ladbabynpm/picc-permission-modes@0.1.3` | `patches/picc-permission-modes/0.1.3-local.patch` |
-| `packages/pi-openai-codex-compat` | 第三方 + 补丁 | npm `pi-openai-codex-compat@0.0.29` | `patches/pi-openai-codex-compat/0.0.29-local.patch` |
-| `packages/pi-hud-footer` | 第三方 + 补丁 | npm `pi-hud-footer@0.8.0` | `patches/pi-hud-footer/0.8.0-local.patch` |
-| `packages/pi-scheduler` | 第三方 + 补丁 | npm `@jl1990/pi-scheduler@0.5.1` | `patches/pi-scheduler/0.5.1-local.patch` |
-| `packages/pi-subagent-hud` | 自己的小插件 | — | — |
-| `packages/pi-gpt-codex` | 自己的小插件 | — | GPT 模型专用的 Codex 风格系统提示词和输出截断提示，其他模型不受影响 |
-| `packages/pi-agent-summary-time` | 自己的小插件 | — | 覆盖回合摘要渲染，显示东八区完成时间 |
-| `packages/pi-fork-save` | 自己的小插件 | — | `/fork-save` 保存分叉但不切换前台，稍后用 `pi --session` 加载 |
-
-四个 patch 都已验证：npm 原版打上 patch 后与 `packages/` 里的运行代码一致（picc 比较时忽略原版的 CRLF 换行）。patch 只覆盖运行代码；目录里额外的测试、文档和示例是本地补充。
-
-**picc-permission-modes**：基于 [Ladbaby/picc-permission-modes](https://github.com/Ladbaby/picc-permission-modes) 的 npm `@ladbabynpm/picc-permission-modes@0.1.3`，详细记录在它的 `LOCAL-PATCH.md`：
-
-1. **计划文件修复**：`EnterPlanMode` 立即返回当前 session 的确切计划路径；`ExitPlanMode` 在计划缺失、为空或不可读时留在 plan mode，要求先写计划，不弹批准窗口。
-2. **计划批准弹窗**：选项顺序改为 **1. bypass permissions（Enter 默认）**、2. accept edits（Shift+Tab）、3. 留在 plan mode；全屏模式下鼠标滚轮只滚动计划内容。
-3. **底栏交给 pi-hud-footer**：不再自己 `setFooter`，改为发布 `permission-mode` 状态；颜色可在 `modeColors` 配置。
-4. **shell 解析错误不再打到屏幕上**：带 JS 模板字符串的 heredoc 会让 shell-quote 报 `Bad substitution`，原来被 `console.error` 直接画在编辑器和 HUD 上。现在默认静默；需要诊断时设置 `PICC_DEBUG=/绝对路径` 写入文件。权限判断不变。
-5. **权限模式标签不再加粗**：RGB 颜色只设置前景色，不再发送 ANSI 粗体指令，避免底栏粗体样式泄漏到后续文字。
-6. **plan mode 只能手动进入**：`config.json` 设置 `"planMode": { "agentCanEnter": false }` 后，不注册模型可以调用的 `EnterPlanMode` 工具，Pi 不会主动切换到 plan mode，也不会弹窗询问。手动入口 `/plan`、`/mode plan`、`Shift+Tab` 照常可用。plan mode 里的 `ExitPlanMode` 计划批准流程不变。本仓库配置已经设为 `false`；删除该字段或改为 `true` 即恢复原版行为。修改后执行 `/reload` 生效。
-7. **启动模式可配置**：`config.json` 的 `permissions.defaultMode`（与 Claude Code `settings.json` 同名）决定新会话的初始模式，可填 `default`、`acceptEdits`、`plan`、`bypassPermissions`（或 `bypass`）、`auto`。本仓库设为 `bypassPermissions`。恢复或分叉的会话、`--permission-mode` 参数和 `PICC_PERMISSION_MODE` 环境变量优先。同时修复：有界面的新会话不会把启动模式告诉子 agent，子 agent 原来退回 default。
-8. **去掉 Windows 专用逻辑**：只在 macOS/Linux 使用。删除可疑 Windows 路径检查（它在 macOS 上也会误判 `.`、`notes.` 这类路径并弹窗），以及上游代码里只在 Windows 生效的 UNC 路径、盘符、`~\` 分支；测试改用 POSIX 路径并自带配置，全套 541 通过、0 失败。
-9. **Codex 风格工具也过权限闸**：`apply_patch` 按 `*** Add/Update/Delete/Move` 拆成逐文件的 write/edit 检查，`exec_command` / `shell_command` 按 bash 命令检查（`write_stdin` 只向已启动的进程写输入，不单独检查）。没有这一条，GPT 的 `apply_patch` 会绕过 plan / default / acceptEdits 模式。代码在 `codexTools.ts`，全套 550 通过、6 跳过、0 失败。
-
-**pi-openai-codex-compat**：npm `pi-openai-codex-compat@0.0.29` + 一处本地补丁，把 `openai-codex` provider 的请求补到接近官方 Codex CLI（`apply_patch`、`exec_command`、Responses Lite、`end_turn=false` 续跑、远程 compaction、`fastMode`）。补丁让 Lite 的 `functions` namespace 接受 custom（自由格式）工具，否则 `apply_patch` 在 Lite 下被 schema 校验拒绝。它不能和 `pi-openai-codex-conversion` 同时装，且只影响 `openai-codex` provider。详见 `packages/pi-openai-codex-compat/LOCAL-PATCH.md`。
-
-**pi-gpt-codex 0.1.0**：在本仓库维护的小插件，只在 GPT 模型（`openai-codex` / `openai` Responses 路由）上通过 `before_agent_start` 改写系统提示词选项，并在 `tool_result` 给被截断的 shell 输出补上读取完整日志头部的提示；Claude 等其他模型原样放行。它必须排在 `pi-openai-codex-compat` 之后、`pi-omp-advisor` 和 `pi-repl-py` 之前，所以 `pi/settings.json` 里它俩紧跟 picc。测试：`PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent" npm test --prefix packages/pi-gpt-codex`（5 个单元测试）；另有不连真实模型的端到端测试 `test/live-codex.mjs`（本地 mock Codex 端点 + 真实 pi CLI，Lite 开/关），命令见 `packages/pi-openai-codex-compat/LOCAL-PATCH.md`。会话中途在 GPT 和 Claude 之间切换也已验证（`test/live-switch.mjs`，mock Codex + mock Anthropic，覆盖 `claude-opus-5-5` 和 `claude-sonnet-5` 两条路径、两种切换顺序）：pi 核心按差量重写系统提示词和工具，切到 Claude 后模型实际生效的是 `read/edit/write/bash` 和 pi 默认提示词，切回 GPT 后恢复 Codex 工具和提示词，所以不需要为换模型新开会话。Opus 5 一类支持中途改工具的 Claude 模型，请求顶层 `tools`/`system` 仍保留会话开头的 Codex 版本（为保 prompt cache），后面的消息里用 `tool_removal`/`tool_addition` 和 `Updated/Removed system prompt section` 覆盖；排查时要看这些内联块，不能只看顶层。切换会让 prompt cache 失效一次。
-
-**pi-hud-footer**：npm `pi-hud-footer@0.8.0`（[liao666brant/pi-hud-footer](https://github.com/liao666brant/pi-hud-footer)）+ 本地补丁：去掉 HUD 左侧缩进；两种 HUD 样式显示当前会话名称；新增 `/rename 新名称`（不带参数时弹出输入框）。名称通过 Pi 原生会话 API 保存，恢复会话后仍显示，Pi 自带 `/name` 也会同步刷新 HUD。未命名时不占位置，长名称只在 HUD 中截断；可用 `display.all.sessionName: false` 隐藏。改动见 `patches/pi-hud-footer/0.8.0-local.patch`，详细验证及测试命令见 `packages/pi-hud-footer/LOCAL-PATCH.md`。
-
-**pi-scheduler**：npm `@jl1990/pi-scheduler@0.5.1` + 本地补丁。原有精简工具/唤醒文本、中文本地时间与 display-only 日志保留；新增前台执行/交付 gate、持久 pending wake 和可校验的取消入口。未交付结果在 scheduler 队列中，可暂停、恢复或取消；uncertain 不自动重发。时间解析、cron、锁与恢复结构保留。详见 `packages/pi-scheduler/LOCAL-PATCH.md`。
-
-**pi-subagent-hud 0.1.2**：在本仓库维护的小插件。在 HUD 状态行末尾显示正在运行的 pi-subagents 子 agent（模型、任务、耗时、token）。依赖 `pi/extensions/subagent/config.json` 里的 `inlineToolDisplay: "summary"`、`asyncWidget: false`、`fleetView: false`。说明见它的 README。live 测试通过 `PI_HOST_DIR` 指定 Pi 安装目录，不再依赖某台机器的绝对路径。
-
-**pi-agent-summary-time 0.1.0**：把 `pi-cc-extensions` 回合末尾的 `Ran 3 commands · 36s` 显示为 `Ran 3 commands · 36s · 14:23:45 (UTC+8)`。时间取该摘要会话条目的保存时间，因此重新打开历史会话也不会变成当前时间；强制使用 `Asia/Shanghai`，与本机时区无关。它只覆盖 `agent-summary` 的渲染，不改变原插件统计或保存的数据。Pi 对同一类型采用第一个注册的 renderer，所以它必须排在 `npm:pi-cc-extensions` 前面；如上游改变了摘要条目格式，需要一起更新本地 formatter。`npm test --prefix packages/pi-agent-summary-time` 可运行格式测试。
-
-**pi-fork-save 0.1.0**：`/fork-save [副本名称]` 只保存一份当前分支的快照，不切换当前会话、不启动新 Pi 或后台 agent。菜单默认「当前位置」（完整复制当前分支），也可选到某个较早回合为止；之后的内容和其他分支不会复制。不指定名称时自动生成 `原名 · fork 月-日 时:分`。保存后显示新会话 ID 和 `pi --session ID`，**只复制 ID 到剪贴板**；副本也会出现在 `/resume` 中。原生 `/fork`、`/clone` 不变。它复用 Pi 的 `SessionManager.createBranchedSession()`，保留历史、压缩摘要和标签；副本中历史 token/cost 用量从零开始（不影响原会话或实际账单）；两边后续对话不会同步，工作目录和磁盘文件仍共享。详见 `packages/pi-fork-save/README.md`。
-
-### npm 插件
-
-没有本地改动的插件仍用 npm 名称，版本未锁定。括号里是 2026-10-16 的参考版本：
-
-```text
-pi-cc-extensions (1.0.4)      pi-subagents (0.78.0)         @mrclrchtr/supi-review (8.0.1)
-pi-omp-advisor (0.7.2)        pi-hashline-edit-pro (≥6.5.0) pi-repl-py (0.9.0)
-pi-context (2.3.0)            pi-web-access (0.40.0)        pi-sticky-last-prompt (0.1.2)
-@narumitw/pi-goal (0.54.13)     # /goal：持续工作直到 goal_complete；默认 25 轮自动回复上限
-pi-cc-steer (GitHub main)     # 中途 steering；通过 Pi 的 git: 安装，不在 tools.tsv 单独 clone
+```sh
+node scripts/maintain.mjs status   # 本机 applied / queued / failed 收据
+./bootstrap.sh --check            # 只读查询最新版本、安装渠道和来源分类
+./bootstrap.sh --prepare          # 临时验证，不排队、不安装启动钩子
+node scripts/check-pi-extensions.mjs .  # 已安装组合的隔离加载检查
 ```
 
-pi-subagents 已与 npm 0.78.0 原版逐文件哈希比对（1331 个文件），没有本地改动。
+候选排队不等于当前会话已升级；`pi --version` 表示磁盘安装版本，不证明已有进程已切换。验证覆盖宿主补丁、完整扩展 factory/shutdown 和合成 SDK/UI 回归，**不替代真实 provider、OAuth 或完整 UI 验收**。
 
-**pi-hashline-edit-pro 必须 ≥ 6.5.0：** 6.4.x 在长会话把锚点池用到接近耗尽后，每分配一个新锚点都要同步探测数千次，读一个大文件会让 pi 主线程卡几分钟，而且 Esc 无法取消。上游 6.5.0 的提交 [`44e05ee`](https://github.com/YuGiMob/pi-hashline-edit-pro/commit/44e05ee) 修好了这个问题：池满后跳过注定失败的新锚点探测，回收后游标前移；同时超限文件在分配前就被拒绝。因此不另打本地补丁。2026-10-20 实测，在剩余 441 个新锚点的会话里读取：
+配置使用 ownership 清单和 SHA-256 事务：保留自定义/修改过的代码，只清理哈希未变的旧受管资源。包安装与配置分别备份，不承诺整台机器的原子回滚。启动前发现候选过期会延期；安装中途失败会保留收据与备份，不强行启动混合版本。详见 [部署安全与恢复](docs/deployment-safety.md)。
 
-| 读取 | 6.4.7 | 6.5.0 |
-|---|---|---|
-| 204,135 行 | 321.6 s | 4.8 s |
-| 50,000 行 | 77.5 s | 0.9 s |
+开发回归（`PI_HOST_DIR` 指向实际 Pi package 目录）：
 
-两版锚点都唯一，归属也一致；上游 6.5.0 全量测试 1917/1922 通过，失败的 5 个是 macOS `/private/var` 临时路径断言，与锚点无关。`./setup.sh` 只检查这个版本下限并给出警告，不会自动升级；需要升级时运行 `pi update --extension npm:pi-hashline-edit-pro`，再在运行中的 pi 里 `/reload`。不要用清空 `~/.config/pi-hashline-edit-pro` 或批量 kill node 进程的方式“修复”卡顿，那会丢掉锚点与撤销记录。
-
-当前 `claude-dark` 主题由 `pi/themes/claude-dark.json` 部署，不需要借助 `pi-cc-extensions` 的 `cc-dark`。Pi 还设置 `hideThinkingBlock: true`（隐藏思考块）。
-
-**pi-cc-steer 的行为提示：** `git:github.com/panbergco/pi-cc-steer` 从公开上游 `main` 安装；除了对话中途插入消息，它默认还会替换 Pi 的 `bash` 工具，提供后台命令和 `bg_list` / `bg_output` / `bg_stop`，超时 120 秒的命令会转后台而非直接终止，原有 shell 路径/前缀设置可能被忽略。只要 steering、不想替换 bash 时，启动 Pi 前设置 `PI_CC_STEER_BACKGROUND=0`。`/reload` 会丢掉尚未交给模型的内存消息；详见插件自己的 README。
-
-**定时与后台唤醒：** [`@jl1990/pi-scheduler`](https://github.com/jl1990/pi-scheduler)（本地补丁版 `packages/pi-scheduler`）支持 `/schedule prompt once 10m :: 检查任务进度`、`/schedule shell once 5m :: npm test`（该命令默认只执行并记录结果，不自动唤醒；需由模型用 `schedule_task` 设置 `wakeOn`）、可搜索 `/schedules` 与无参数 `/schedule-cancel`（也支持唯一名称/ID/短ID）；模型也可以通过 `schedule_task` 设置 `scope: "session"`、`maxRuns` 与 shell 的 `wakeOn: "success" | "failure" | "always" | "change"`。定时 shell 由 scheduler 自己执行并按策略唤醒；立即启动的后台 `bash` 则由**已经安装**的 pi-cc-steer 在完成后自动通知、空闲时唤醒，不需要重复安装。两者都要求 Pi 运行才能按时触发。scheduler 把任务保存在本机 `<getAgentDir()>/state/scheduler/tasks.json`，关闭期间不触发但重开同一会话后可能补跑逾期任务；要让任务彻底失效，请 `/schedule-cancel <id>`，不要把本机任务状态提交到仓库。`scope: "session"` 要求持久 Pi 会话，关闭后并不自动删除任务。默认一次性任务或为重复任务设置 `maxRuns`，避免无界自动调用模型。它的依赖（croner、proper-lockfile）由 `./setup.sh` 安装到 `packages/pi-scheduler/node_modules`，当前会话执行 `/reload` 后生效。
-
-## 兼容性
-
-参考环境：herdr **0.9.3**、pi **1.4.0**、Node.js **24.x**。
-
-Herdr 模板使用 `/bin/zsh`，不可用时生成 `/bin/bash` 本机配置；两者都不可用时部署预检拒绝，不修改仓库模板。
-
-## 日常维护
-
-直接编辑仓库里的配置再应用：
-
-```bash
-# 编辑 herdr/config.toml、pi/keybindings.json 等
-./setup.sh --dry-run
-./setup.sh
-git add .
-git commit -m "Tune UI and keybindings"
-git push
+```sh
+PI_HOST_DIR=/path/to/pi-coding-agent \
+  node --test scripts/test/*.test.mjs packages/pi-agents-context/test/*.test.mjs
+bash -n bootstrap.sh setup.sh
+git diff --check
 ```
 
-### 修改 packages/ 里的插件
-
-直接改 `packages/<name>/` 里的代码，用 `./setup.sh` 部署，运行中的 pi 执行 `/reload`。改的是第三方包时，顺手重新生成它的 patch，让 patch 始终反映“相对原版改了什么”：
-
-```bash
-# 以 pi-hud-footer 为例；picc 换成 @ladbabynpm/picc-permission-modes@0.1.3
-tmp=$(mktemp -d)
-(cd "$tmp" && npm pack pi-hud-footer@0.8.0 --silent && tar xzf *.tgz)
-# 临时 Git 工作树保证新文件也进入 patch，并使用 a/、b/ 路径；只覆盖运行代码。
-(cd "$tmp/package" && git init -q && git add extensions)
-cp -R packages/pi-hud-footer/extensions/. "$tmp/package/extensions/"
-(cd "$tmp/package" && git add -N extensions && git diff -- extensions) \
-  > patches/pi-hud-footer/0.8.0-local.patch
-```
-
-### 升级第三方包
-
-普通远程插件由 `./bootstrap.sh` 跟踪最新并验证；`maintenance.json` 中 `patched` 包以仓库源码为权威，自动维护**不查询、不 merge 第三方上游**。需要更新这些 hack 时显式修改仓库代码、测试和对应 patch，不能拿上游原版覆盖。独立自有工具按仓库记录的 commit 初始化，已有不同 checkout 保留并报告，不自动 pull/merge。
-
-维护类型、安装渠道、迁移与备份边界见 [docs/maintenance.md](docs/maintenance.md)。
-
-如果先在工具里调了配置，再把对应白名单文件复制回仓库。`pi/settings.json` 不要整份回拷（会带入 deviceId 和本机路径）；只把要维护的字段改回源文件。
-
-这是个人公有仓库。不要提交 key、登录状态、聊天记录、私有主机地址或机器专用路径。
-
-## 当前验证范围
-
-2026-10-16 最近一次同步后，在 Mac 临时 HOME 中完整运行：
-
-- 从 GitHub clone 了 pi-btw-split（`845ef90`）和 herdr-monitor（`38b164a`）；herdr-monitor 用 Python 3.12 装进 venv。第二次运行没有任何文件变化。
-- `settings.json` 合并后保留 `deviceId`；`pi list` 无报错，能解析 4 个本地包（picc-permission-modes、pi-btw-split、pi-hud-footer、pi-subagent-hud）和 `pi-cc-steer` 的 Git 源；主题文件也部署成功。
-- picc 全套测试：530 通过、4 失败、6 跳过。失败的 4 个与 `LOCAL-PATCH.md` 记录的既有失败完全相同（默认配置目录、bypass 下 deny 规则、`~` 计划路径、Windows 路径），不是这次改动引入的；新增的 parse-noise 测试通过。
-- pi-subagent-hud 单元测试 15/15 通过。
-- herdr 的 plugin/server 命令连到本机正在运行的 herdr，已有 `local.pi-btw-light` 注册指向 `~/tools/pi-btw-split`，所以只警告、没有替换。
-
-尚未在真实 HOME 应用，也未在 Linux 新机器端到端验证（原生模块的 Linux 重编译路径只在 macOS 上用真实编译 + 伪造平台的方式验证过）。
+更完整的设计与验证边界见 [UX 方案](docs/pi-ux-roadmap.md)。提交前检查差异；不提交密钥、登录状态、会话、下载依赖、私有主机或机器专用路径。

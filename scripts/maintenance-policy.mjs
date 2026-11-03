@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { readLaunchHook } from './maintenance-queue.mjs';
 export const PI_PACKAGE = '@earendil-works/pi-coding-agent';
 export const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 export const sourceOf = entry => typeof entry === 'string' ? entry : entry.source;
@@ -22,6 +23,14 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
     if (!fs.existsSync(npm)) return { kind: 'blocked', reason: 'Pi absent; install Node/npm first (no automatic system/Node installation).' };
     return { kind: 'npm', missing: true, manager: npm, node, prefix: path.dirname(path.dirname(node)), bin: path.join(path.dirname(node), 'pi') };
   }
+  const hook = readLaunchHook(bin);
+  if (hook) {
+    const owned = hook.original;
+    try {
+      if (readJson(path.join(owned.host, 'package.json')).name !== PI_PACKAGE || !fs.existsSync(owned.node) || !fs.existsSync(owned.manager ?? owned.real)) throw new Error('Missing owner');
+      return { ...owned, bin, version: readJson(path.join(owned.host, 'package.json')).version, hook };
+    } catch { return { kind: 'blocked', bin, reason: 'Maintenance hook owner changed; refusing installation migration.' }; }
+  }
   const real = realpath(bin);
   // pnpm can expose a shell shim rather than a symlink into package code.
   const pnpmShim = executable('pnpm', env);
@@ -29,7 +38,7 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
     const binDir = run(pnpmShim, ['bin', '-g']), root = run(pnpmShim, ['root', '-g']);
     if (real === path.join(realpath(path.dirname(bin)), path.basename(bin)) && binDir && root && fs.existsSync(binDir) && fs.realpathSync(path.dirname(bin)) === fs.realpathSync(binDir)) {
       const host = path.join(root, PI_PACKAGE);
-      try { if (readJson(path.join(host, 'package.json')).name === PI_PACKAGE) return { kind: 'pnpm', bin, real, host: fs.realpathSync(host), version: readJson(path.join(host, 'package.json')).version, manager: pnpmShim }; } catch {}
+      try { if (readJson(path.join(host, 'package.json')).name === PI_PACKAGE) return { kind: 'pnpm', bin, real, host: fs.realpathSync(host), version: readJson(path.join(host, 'package.json')).version, manager: pnpmShim, node }; } catch {}
     }
   }
   // Official installer launches a versioned release and sets this variable. It is
@@ -70,7 +79,7 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
       try { if (readJson(path.join(dir, 'package.json')).name === PI_PACKAGE) { host = dir; break; } } catch {}
       if (path.dirname(dir) === dir) break;
     }
-    return { kind: 'brew', manager, formula: brew[2], bin, real, host, version: host ? readJson(path.join(host, 'package.json')).version : undefined };
+    return { kind: 'brew', manager, formula: brew[2], node, bin, real, host, version: host ? readJson(path.join(host, 'package.json')).version : undefined };
   }
   let host;
   for (let dir = path.dirname(real); dir !== path.dirname(dir); dir = path.dirname(dir)) {
@@ -83,11 +92,11 @@ export function inspectInstallation({ bin = executable('pi'), node = process.exe
   const pnpm = executable('pnpm', env);
   if (pnpm) {
     const root = run(pnpm, ['root', '-g']);
-    if (root && fs.existsSync(path.join(root, PI_PACKAGE)) && fs.realpathSync(path.join(root, PI_PACKAGE)) === host) return { ...base, kind: 'pnpm', manager: pnpm };
+    if (root && fs.existsSync(path.join(root, PI_PACKAGE)) && fs.realpathSync(path.join(root, PI_PACKAGE)) === host) return { ...base, kind: 'pnpm', manager: pnpm, node };
   }
   const bunPrefix = host.split('/install/global/node_modules/');
   const bun = bunPrefix.length === 2 ? path.join(bunPrefix[0], 'bin/bun') : undefined;
-  if (bun && fs.existsSync(bun)) return { ...base, kind: 'bun', manager: bun };
+  if (bun && fs.existsSync(bun)) return { ...base, kind: 'bun', manager: bun, node };
   const suffix = `/lib/node_modules/${PI_PACKAGE}`;
   if (host.endsWith(suffix)) {
     const prefix = host.slice(0, -suffix.length), manager = path.join(prefix, 'bin/npm'), ownedNode = path.join(prefix, 'bin/node');
