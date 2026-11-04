@@ -14,6 +14,7 @@ const lifecycle = require("./scheduler-lifecycle.cjs");
 const coordination = require("./scheduler-coordination.cjs");
 const { createForegroundGate } = require("./foreground.cjs");
 const { createTaskStore } = require("./task-store.cjs");
+const readiness = require("./readiness.cjs");
 
 const ACTIONS = ["notify", "prompt", "shell", "message"] as const;
 const TYPES = ["once", "interval", "cron"] as const;
@@ -34,6 +35,7 @@ const MAX_PROMPT_STDERR_CHARS = 2_000;
 const LOG_ENTRY_TYPE = "scheduled-task-log";
 const ACTION_LABELS: Record<string, string> = { notify: "提醒", prompt: "唤醒", shell: "命令", message: "消息" };
 
+const AUTOMATIC_WAKE_NOTICE = "自动唤醒，非新增用户授权；先核对最新状态，仅在原授权范围内继续，冲突以用户最新指令为准。";
 type ScheduledTask = Record<string, any>;
 type TimerHandle =
 	| { kind: "timeout"; handle: NodeJS.Timeout }
@@ -89,6 +91,7 @@ function formatDuration(ms: unknown): string {
 }
 
 function shellOutcome(result: Record<string, any>): string {
+	if (result.readiness) return `${({ pending: "尚未就绪", ready: "条件满足", error: "检查器失败" } as Record<string, string>)[result.readiness.state]} · ${result.readiness.summary}`;
 	const parts = [result.killed ? "超时被终止" : `退出码 ${result.code}`];
 	const duration = formatDuration(result.durationMs);
 	if (duration) parts.push(`用时 ${duration}`);
@@ -106,6 +109,7 @@ function shellResultPrompt(task: ScheduledTask, result: Record<string, any>, ins
 	const output = [...fenced("输出", stdout), ...fenced("错误输出", stderr)];
 	return [
 		scheduledPromptHeader(task, "运行完成"),
+		AUTOMATIC_WAKE_NOTICE,
 		`$ ${task.command}`,
 		...(result.cwd && result.cwd !== sessionCwd ? [`目录：${result.cwd}`] : []),
 		shellOutcome(result),
@@ -113,6 +117,18 @@ function shellResultPrompt(task: ScheduledTask, result: Record<string, any>, ins
 		`下一步：${instruction}`,
 	].join("\n");
 }
+function readinessNoticePrompt(task: ScheduledTask, notice: Record<string, any>): string {
+	const label = notice.state === "error" ? "检查器失败 · 后续检查已暂停" : "等待结束 · 条件尚未满足";
+	const result = task.result ?? {};
+	return [scheduledPromptHeader(task, label), AUTOMATIC_WAKE_NOTICE, `检查时间：${notice.createdAt}`,
+		`原因：${notice.summary}`, `$ ${task.command}`, `目录：${result.cwd ?? task.cwd ?? "未知"}`,
+		`退出码：${result.code ?? "未执行/未知"}${result.killed ? " · 超时或被终止" : ""}`,
+		...fenced("输出", truncateMiddle(result.stdout, MAX_PROMPT_STDOUT_CHARS)),
+		...fenced("错误输出", truncateMiddle(result.stderr, MAX_PROMPT_STDERR_CHARS)),
+		"这不代表被监控的工程流程失败。核实检查器与最新证据；修复后显式启用或续期该任务，不要盲目重启被监控流程。",
+	].join("\n");
+}
+
 
 function taskLabel(task: ScheduledTask): string {
 	return task.name || task.title || task.id;
@@ -171,7 +187,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 					&& task.pendingWake.sessionFile === currentSessionFile(ctx)
 					&& (task.pendingWake.ownerPid === process.pid || !isRunOwnerActive({ pid: task.pendingWake.ownerPid })));
 				if (!task) return undefined;
-				if (task.status === "cancelled" || task.expiresAt && Date.parse(task.expiresAt) <= Date.now()) { delete task.pendingWake; return undefined; }
+				if (task.status === "cancelled" || task.expiresAt && Date.parse(task.expiresAt) <= Date.now() && !task.pendingWake.readinessTerminal) { delete task.pendingWake; return undefined; }
 				task.pendingWake.state = "dispatching";
 				task.pendingWake.ownerPid = process.pid;
 				return { taskId: task.id, wakeId: task.pendingWake.id };
@@ -217,7 +233,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			.filter(task => !query || taskChoice(task).toLowerCase().includes(query.toLowerCase()));
 		if (!options.length) { ctx.ui.notify("没有匹配的可管理任务", "info"); return; }
 		const labels = options.map(taskChoice);
-		const id = ctx.ui.custom
+		const id = ctx.mode !== "rpc" && ctx.ui.custom
 			? await ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => createTaskPicker(options.map(task => ({
 				value: task.id, label: `${taskLabel(task)} · #${core.shortTaskId(task.id)}`, description: taskChoice(task),
 			})), theme, done, () => tui.requestRender()))
@@ -236,6 +252,44 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			return core.removeScheduledTask(current, task.id);
 		});
 		rescheduleAll(); return task;
+	}
+	async function editTaskPrompt(ctx: ExtensionContext, selection: { id: string; identity: string }): Promise<void> {
+		if (!ctx.hasUI) throw new Error("/schedule-edit requires UI; use manage_scheduled_task action=update without UI");
+		const generation = sessionGeneration;
+		const snapshot = visibleTasks(ctx).find(task => task.id === selection.id);
+		if (!snapshot || managementIdentity(snapshot) !== selection.identity) throw new Error("任务已变化，请重新选择");
+		if (snapshot.pendingWake && snapshot.pendingWake.state !== "queued") throw new Error("任务交付结果不确定或正在交付；未修改提示词，请先核实交付状态");
+		const fields: Record<string, string> = snapshot.action === "shell"
+			? { followUpPrompt: "通用后续提示", successPrompt: "成功时提示", failurePrompt: "失败时提示" }
+			: snapshot.action === "prompt" ? { prompt: "唤醒提示" } : { message: "消息正文" };
+		const label = Object.keys(fields).length === 1 ? Object.values(fields)[0]
+			: await ctx.ui.select("选择要编辑的提示（不改变命令或唤醒策略）", Object.values(fields));
+		if (!isSessionActive(ctx, generation)) throw new Error("会话已变化；未打开编辑器");
+		const field = Object.keys(fields).find(key => fields[key] === label);
+		if (!field) return;
+		const original = snapshot[field] ?? "";
+		const edited = await ctx.ui.editor(`${taskTitle(snapshot)} · ${fields[field]}`, original);
+		if (edited === undefined || edited === original) return;
+		if (snapshot.action !== "shell" && !edited.trim()) throw new Error("提示词正文不能为空；未保存");
+		const value = snapshot.action === "shell" && !edited.trim() ? undefined : edited;
+		await transactTasks(current => {
+			if (!isSessionActive(ctx, generation)) throw new Error("会话已变化；未保存提示词");
+			const task = current.find(item => item.id === selection.id && taskBelongsToSession(item, ctx));
+			if (!task || managementIdentity(task) !== selection.identity) throw new Error("任务已变化，请重新选择；未覆盖新内容");
+			const next = { ...task, [field]: value };
+			if (task.pendingWake && task.pendingWake.state !== "queued") throw new Error("任务交付状态已变化；未修改提示词");
+			if (task.pendingWake && !task.pendingWake.readinessReport) {
+				const instruction = task.action === "shell" ? core.selectShellFollowUpPrompt(next, task.result ?? {}) : undefined;
+				if (task.action === "shell" && !instruction) throw new Error("待交付结果需要后续提示；请保留提示或显式取消任务");
+				next.pendingWake = { ...task.pendingWake, content: task.action === "shell"
+					? shellResultPrompt(next, task.result ?? {}, instruction!, ctx.cwd)
+					: `${scheduledPromptHeader(next)}\n${AUTOMATIC_WAKE_NOTICE}\n${next.action === "prompt" ? next.prompt : next.message}` };
+			}
+			// Unlike a generic task update, a prompt-only edit preserves a queued one-shot result.
+			Object.assign(task, next, { managementRevision: randomUUID() });
+		});
+		rescheduleAll();
+		ctx.ui.notify(`${taskTitle(snapshot)}：提示词已保存；已交付的消息不会改写`, "info");
 	}
 	function isOwnerActive(owner: Record<string, any> | undefined): boolean {
 		return !(owner?.pid === process.pid && abandonedAttempts.has(owner?.attemptId)) && isRunOwnerActive(owner);
@@ -258,8 +312,29 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		);
 	}
 
+	function materializeReadinessNotices(current: ScheduledTask[]): void {
+		const ctx = activeCtx;
+		if (!ctx) return;
+		const sessionFile = currentSessionFile(ctx);
+		if (!sessionFile) return;
+		for (const task of current) {
+			const notice = task.readinessNotice;
+			if (!notice || !taskBelongsToSession(task, ctx) || notice.sessionFile && notice.sessionFile !== sessionFile) continue;
+			if (task.pendingWake && task.pendingWake.state !== "queued") continue; // never replace an uncertain send
+			task.pendingWake = { id: notice.id, content: readinessNoticePrompt(task, notice), sessionFile,
+				ownerPid: process.pid, state: "queued", createdAt: notice.createdAt, readinessTerminal: true, readinessReport: true };
+			if (task.result?.attemptId === notice.id) { task.result.wakeDisposition = "pending"; task.result.wakeReason = notice.reason; }
+			const history = task.history?.find((run: any) => run.attemptId === notice.id);
+			if (history) { history.wakeDisposition = "pending"; history.wakeReason = notice.reason; }
+			delete task.readinessNotice;
+		}
+	}
 	async function transactTasks<T>(mutator: (current: ScheduledTask[]) => T | Promise<T>): Promise<T> {
-		const transaction = await store.transact(mutator);
+		const transaction = await store.transact(async (current: ScheduledTask[]) => {
+			const result = await mutator(current);
+			materializeReadinessNotices(current);
+			return result;
+		});
 		if (transaction.revision >= stateRevision) {
 			tasks = transaction.tasks;
 			stateRevision = transaction.revision;
@@ -303,6 +378,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 					core.expireOverdueTasks(current.filter((item) => taskBelongsToSession(item, ctx)), new Date());
 				});
 				if (isSessionActive(ctx, generation)) rescheduleAll(generation);
+				await flushWakes(ctx, generation);
 			}, ctx, generation, "Scheduler expiry failed");
 		}, Math.max(0, Math.min(deadline - Date.now(), MAX_TIMER_DELAY_MS)));
 		expiryHandles.set(task.id, timer);
@@ -320,7 +396,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const upcoming = core.pendingTasks(visibleTasks(ctx)).slice(0, 3);
+		const visible = visibleTasks(ctx);
+		const upcoming = [...visible.filter(task => task.resultMode === "readiness" && task.pendingWake), ...core.pendingTasks(visible)]
+			.filter((task, index, all) => all.findIndex(item => item.id === task.id) === index).slice(0, 3);
 		if (upcoming.length === 0) {
 			ctx.ui.setWidget("scheduler", undefined);
 			return;
@@ -329,9 +407,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		// local patch: one compact Chinese line per task, local wall-clock time.
 		const lines: string[] = [];
 		for (const task of upcoming) {
-			const when = task.nextRun ? `${core.formatRelativeZh(task.nextRun)}（${core.formatClock(task.nextRun)}）` : "无下次运行";
+			const when = task.enabled === false ? (task.lastReadiness?.state === "error" ? "已暂停 · 待报告" : "等待已结束 · 待报告") : task.nextRun ? `${core.formatRelativeZh(task.nextRun)}（${core.formatClock(task.nextRun)}）` : "无下次运行";
 			const runs = task.runCount ? ` · 已运行 ${task.runCount} 次` : "";
-			const last = task.lastStatus === "error" ? " · 上次失败" : "";
+			const labels: Record<string, string> = { pending: "尚未就绪", ready: "条件满足", error: "检查器失败", ended: "等待结束" };
+			const last = task.lastReadiness ? ` · ${labels[task.lastReadiness.state] ?? task.lastReadiness.state} · 最近 ${core.formatClock(task.lastReadiness.checkedAt)}` : task.lastStatus === "error" ? " · 上次失败" : "";
 			lines.push(`⏰ ${taskLabel(task)} · ${ACTION_LABELS[task.action] ?? task.action} · ${when}${runs}${last}`);
 		}
 		ctx.ui.setWidget("scheduler", lines, { placement: "belowEditor" });
@@ -350,7 +429,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		if (!isSessionActive(ctx, generation)) return;
 		if (task.enabled === false || task.status !== "pending") return;
 		if (!taskBelongsToSession(task, ctx)) return;
-		if (task.pendingWake) return; // retain one result until delivered/cancelled; no catch-up burst
+		if (task.pendingWake || task.readinessNotice) return; // retain one result until delivered/cancelled; no catch-up burst
 		clearHandle(task.id);
 
 		if (task.type === "cron" && (task.foregroundDeferredAt !== task.nextRun || Date.parse(task.nextRun) > Date.now())) {
@@ -415,7 +494,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			isOwnerActive,
 			recoverInterrupted: (current: ScheduledTask[], now: Date, options: any) => {
 				core.expireOverdueTasks(current, now);
-				return core.recoverInterruptedTasks(current, now, options);
+				materializeReadinessNotices(current);
+				const recovered = core.recoverInterruptedTasks(current, now, options);
+				materializeReadinessNotices(current);
+				return recovered;
 			},
 			now: () => new Date(),
 			install: (nextTasks: ScheduledTask[], revision: number) => {
@@ -424,6 +506,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			},
 			reconcile: () => rescheduleAll(generation),
 		});
+		if (currentSessionFile(ctx) && tasks.some(task => task.readinessNotice && (!task.pendingWake || task.pendingWake.state === "queued")
+			&& taskBelongsToSession(task, ctx) && (!task.readinessNotice.sessionFile || task.readinessNotice.sessionFile === currentSessionFile(ctx)))) {
+			await transactTasks(() => {});
+		}
 		// Retry detached work only after a successful refresh, even when the
 		// revision is unchanged. Never spin on a past-due task and a broken store.
 		if (rescheduleAfterRefresh && isSessionActive(ctx, generation)) rescheduleAll(generation);
@@ -497,13 +583,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		if (task.action === "notify") {
 			const message = task.message ?? "Scheduled reminder";
 			// local patch: the persisted log entry below replaces the transient ctx.ui.notify line.
-			logEntry(`🔔 ${taskTitle(task)}：${message}`, "notice"); // local patch
+			logEntry(`🔔 ${taskTitle(task)}：${core.taskSummary(task)}`, "notice", message); // full body is available on expansion
 			return { ok: true, delivered: "notify", wakeReason: "notify", wakeDisposition: "not-requested" };
 		}
 
 		if (task.action === "prompt" || task.action === "message") {
 			if (task.action === "message" && task.triggerTurn === false) {
-				recordMessage(`⏰ ${task.message}`, { task }, false);
+				recordMessage(`${scheduledPromptHeader(task)}\n${AUTOMATIC_WAKE_NOTICE}\n${task.message}`, { task }, false);
 				return { ok: true, wakeDisposition: "not-requested" };
 			}
 			return { ok: true, wakeReason: task.action, wakeDisposition: "pending" };
@@ -518,6 +604,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			runningCommands.set(task.id, controller);
 			let result;
 			try { result = await pi.exec("bash", ["-lc", task.command], { cwd, timeout, signal: controller.signal }); }
+			catch (error: any) {
+				if (task.resultMode !== "readiness") throw error;
+				result = { error: error?.message ?? String(error), stdout: "", stderr: "" };
+			}
 			finally { if (runningCommands.get(task.id) === controller) runningCommands.delete(task.id); }
 			const durationMs = Date.now() - startedAt;
 			const wakeOnChangeFingerprint = core.shellResultFingerprint({
@@ -538,6 +628,10 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				stdout: truncateMiddle(result.stdout ?? "", MAX_STORED_OUTPUT_CHARS),
 				stderr: truncateMiddle(result.stderr ?? "", MAX_STORED_OUTPUT_CHARS),
 			};
+			if (task.resultMode === "readiness") {
+				shellResult.readiness = readiness.classify(result);
+				shellResult.ok = shellResult.readiness.state !== "error";
+			}
 
 			if (!isActive()) return { ...shellResult, outputSuppressed: true, wakeReason: task.wakeOn ?? "never", wakeDisposition: "session-suppressed" };
 
@@ -573,7 +667,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				const candidate = current.find((item) => item.id === taskId);
 				if (!candidate || candidate.enabled === false || candidate.status !== "pending") return undefined;
 				if (!taskBelongsToSession(candidate, ctx)) return undefined;
-				if (candidate.pendingWake) return undefined;
+				if (candidate.pendingWake || candidate.readinessNotice) return undefined;
 				if (candidate.action !== "notify" && !(candidate.action === "shell" && candidate.backgroundExecution === true) && foreground.reason(ctx)) {
 					if (candidate.type === "cron" && Date.parse(candidate.nextRun) <= Date.now()) candidate.foregroundDeferredAt = candidate.nextRun;
 					return undefined;
@@ -627,7 +721,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				// command, including A -> B -> A edits while it was running.
 				result.superseded = persisted.executionRevision !== task?.executionRevision
 					|| persisted.action !== task?.action || persisted.command !== task?.command
-					|| (persisted.cwd ?? fallbackCwd) !== (task?.cwd ?? fallbackCwd);
+					|| (persisted.cwd ?? fallbackCwd) !== (task?.cwd ?? fallbackCwd) || persisted.resultMode !== task?.resultMode;
 				if (task?.action === "shell" && !result.superseded
 					&& persisted.enabled !== false && persisted.status === "running") {
 					result.wakeReason = persisted.wakeOn ?? "never";
@@ -646,22 +740,32 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				}
 				if (!isSessionActive(ctx, generation) && result.wakeDisposition === "pending") result.wakeDisposition = "session-suppressed";
 				core.markScheduledTaskCompleted(current, persisted.id, new Date(), result, { ok: result.ok !== false });
-				if (persisted.status !== "cancelled" && !result.superseded && isSessionActive(ctx, generation)) {
+				const retainedReady = persisted.resultMode === "readiness" && result.readiness?.state === "ready" && wakeTask && task?.runOwner?.sessionFile;
+				if (persisted.status !== "cancelled" && !result.superseded && !persisted.readinessNotice && persisted.result?.readiness?.state !== "error" && (isSessionActive(ctx, generation) || retainedReady)) {
 					const instruction = task?.action === "shell" && wakeTask ? core.selectShellFollowUpPrompt(wakeTask, result) : undefined;
 					const content = instruction ? shellResultPrompt(wakeTask!, result, instruction, fallbackCwd)
-						: task?.action === "prompt" ? `${scheduledPromptHeader(task)}\n${task.prompt}`
-						: task?.action === "message" && task.triggerTurn !== false ? `⏰ ${task.message}` : undefined;
-					if (content) persisted.pendingWake = { id: attemptId, content, sessionFile: currentSessionFile(ctx), ownerPid: process.pid, state: "queued", createdAt: new Date().toISOString() };
+						: task?.action === "prompt" ? `${scheduledPromptHeader(persisted)}\n${AUTOMATIC_WAKE_NOTICE}\n${persisted.prompt}`
+						: task?.action === "message" && task.triggerTurn !== false ? `${scheduledPromptHeader(persisted)}\n${AUTOMATIC_WAKE_NOTICE}\n${persisted.message}` : undefined;
+					if (content) {
+						persisted.pendingWake = { id: attemptId, content, sessionFile: retainedReady || currentSessionFile(ctx), ownerPid: process.pid, state: "queued", createdAt: new Date().toISOString(), ...(retainedReady ? { readinessTerminal: true } : {}) };
+						if (retainedReady) {
+							persisted.result.wakeDisposition = "pending";
+							const history = persisted.history?.find((run: any) => run.attemptId === attemptId);
+							if (history) history.wakeDisposition = "pending";
+						}
+					}
 				}
 			});
 			await flushWakes(ctx, generation);
-			result.wakeDisposition = tasks.find(item => item.id === taskId)?.result?.wakeDisposition ?? result.wakeDisposition;
+			const savedResult = tasks.find(item => item.id === taskId)?.result;
+			result.wakeDisposition = savedResult?.wakeDisposition ?? result.wakeDisposition;
+			result.readinessQuiet = savedResult?.readinessQuiet;
 			// local patch: when the agent was not woken, leave one display-only line in the chat.
-			if (task.action === "shell" && !result.outputSuppressed && !["delivered", "pending"].includes(result.wakeDisposition)
+			if (task.action === "shell" && !result.outputSuppressed && !result.readinessQuiet && !["delivered", "pending"].includes(result.wakeDisposition)
 				&& isSessionActive(ctx, generation)) {
 				const output = [result.stdout, result.stderr].map((text) => text?.trimEnd()).filter(Boolean).join("\n");
 				logEntry(
-					`🖥️ ${taskTitle(task)} 运行完成 · ${shellOutcome(result)}`,
+					`${task.resultMode === "readiness" ? "⏳" : "🖥️"} ${taskTitle(task)} 运行完成 · ${shellOutcome(result)}`,
 					result.ok === false ? "warning" : "info",
 					[`$ ${task.command}`, truncateMiddle(output.trimEnd(), 1_500)].filter(Boolean).join("\n"),
 				);
@@ -676,7 +780,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				if (persisted?.runOwner?.attemptId !== attemptId) return;
 				const superseded = persisted.executionRevision !== task?.executionRevision
 					|| persisted.action !== task?.action || persisted.command !== task?.command
-					|| (persisted.cwd ?? fallbackCwd) !== (task?.cwd ?? fallbackCwd);
+					|| (persisted.cwd ?? fallbackCwd) !== (task?.cwd ?? fallbackCwd) || persisted.resultMode !== task?.resultMode;
 				core.markScheduledTaskFailed(current, persisted.id, new Date(), error, { superseded });
 				failedTask = { ...persisted };
 			});
@@ -734,6 +838,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	function cleanupVisibleTasks(current: ScheduledTask[], ctx: ExtensionContext): ScheduledTask[] {
 		const removable = current
 			.filter((task) => taskBelongsToSession(task, ctx))
+			.filter((task) => !task.readinessNotice && !task.pendingWake?.readinessTerminal)
 			.filter((task) => task.enabled === false || ["fired", "cancelled", "failed"].includes(task.status));
 		const removableIds = new Set(removable.map((task) => task.id));
 		current.splice(0, current.length, ...current.filter((task) => !removableIds.has(task.id)));
@@ -792,13 +897,14 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 
 		if (interrupted.length > 0 && ctx.hasUI) {
 			ctx.ui.notify(
-				`Recovered ${interrupted.length} task(s) interrupted before completion; recurring tasks were rescheduled`,
+				`恢复 ${interrupted.length} 个中断检查；readiness 检查已暂停并排队报告，其他循环任务按原策略处理`,
 				"warning",
 			);
 		}
 
 		rescheduleAll(generation);
 		startStateRefresh(generation);
+		await flushWakes(ctx, generation);
 		const catchUpOptions = core.parseCatchUpOptions(process.env);
 		runInBackground(() => catchUpOverdueCronTasks(ctx, generation, catchUpOptions), ctx, generation, "Failed to catch up missed cron tasks");
 	});
@@ -862,7 +968,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				if (!args.trim() && ctx.hasUI) {
 					const selection = await chooseTask(ctx);
 					if (!selection) return;
-					const action = await ctx.ui.select("任务操作", ["取消调度和待交付结果", "停用", "启用", "删除", "终止本机正在运行的命令"]);
+					const action = await ctx.ui.select("任务操作", ["编辑提示词", "取消调度和待交付结果", "停用", "启用", "删除", "终止本机正在运行的命令"]);
+					if (action === "编辑提示词") { await editTaskPrompt(ctx, selection); return; }
 					if (action === "终止本机正在运行的命令") {
 						const controller = runningCommands.get(selection.id);
 						if (!controller) { ctx.ui.notify("当前进程不拥有此命令，未终止任何进程", "warning"); return; }
@@ -882,6 +989,17 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			} catch (error: any) {
 				ctx.ui.notify(error?.message ?? String(error), "error");
 			}
+		},
+	});
+
+	pi.registerCommand("schedule-edit", {
+		description: "Edit a task's prompt in a multiline editor; use a unique name/id/short id or omit to select",
+		handler: async (args, ctx) => {
+			try {
+				if (!ctx.hasUI) throw new Error("/schedule-edit requires UI; use manage_scheduled_task action=update without UI");
+				const selection = await chooseTask(ctx, args.trim());
+				if (selection) await editTaskPrompt(ctx, selection);
+			} catch (error: any) { ctx.ui.notify(error?.message ?? String(error), "error"); }
 		},
 	});
 
@@ -990,7 +1108,8 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		description: "Do something later or repeatedly while Pi is open: notify the user, wake yourself with a prompt, or run a shell command and get woken with its output.",
 		promptSnippet: "Schedule reminders, self-wakeups, or shell polling (CI, deploys) for later",
 		promptGuidelines: [
-			"For polling with schedule_task, use action='shell' type='interval' with followUpPrompt (and wakeOn/stopOn), and bound it with maxRuns or expiresIn.",
+			"For waiting checks, opt into shell resultMode='readiness': exit 0; stdout exactly one JSON object with state=pending|ready|error and nonempty summary (max 1000 chars; stdout max 8192 bytes); logs to stderr. wakeOn success/always (default success); stopOn success/never (default success). Errors pause and report; bound polling with maxRuns/expiresIn.",
+			"For schedule_task, write brief wake instructions in the conversation's language with normal spacing and lists: what to check, evidence location and essential limits. Reference existing handoffs rather than copying history; recheck old snapshots.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(ACTIONS, { description: "notify: show message; prompt: wake you with prompt; shell: run command" }),
@@ -1000,12 +1119,13 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			message: Type.Optional(Type.String({ description: "notify text" })),
 			prompt: Type.Optional(Type.String()),
 			command: Type.Optional(Type.String()),
+			resultMode: Type.Optional(StringEnum(["exitCode", "readiness"] as const, { description: "readiness: stdout JSON {state: pending|ready|error, summary: string}; nonzero/invalid/timeout pauses and reports. Default exitCode." })),
 			cwd: Type.Optional(Type.String()),
 			backgroundExecution: Type.Optional(Type.Boolean({ description: "explicitly allow shell execution during foreground work; result still waits" })),
 			timeoutMs: Type.Optional(Type.Number({ minimum: 1000, description: "default 300000" })),
 			followUpPrompt: Type.Optional(Type.String({ description: "shell: what to do with the output when woken" })),
-			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed" })),
-			stopOn: Type.Optional(StringEnum(STOP_ON, { description: "shell: stop recurring after this result" })),
+			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed. readiness: success (default) or always; errors always report." })),
+			stopOn: Type.Optional(StringEnum(STOP_ON, { description: "shell: stop recurring after this result; readiness: success=ready (default), or never" })),
 			maxRuns: Type.Optional(Type.Number({ minimum: 1 })),
 			expiresIn: Type.Optional(Type.String({ description: "e.g. '2h'" })),
 			backoff: Type.Optional(Type.Object({ factor: Type.Number(), maxInterval: Type.String() }, { description: "interval only, e.g. {factor:2,maxInterval:'30m'}" })),
@@ -1028,7 +1148,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		},
 		renderCall(args, theme) {
 			return new Text(
-				`${theme.fg("toolTitle", theme.bold("schedule_task"))} ${theme.fg("muted", args.action ?? "prompt")}/${theme.fg("muted", args.type ?? "once")} ${theme.fg("accent", args.schedule ?? (args as any).when ?? "")}`,
+				`${theme.fg("toolTitle", theme.bold("schedule_task"))} ${theme.fg("muted", String(args.action ?? "prompt"))}/${theme.fg("muted", String(args.type ?? "once"))} ${theme.fg("accent", String(args.schedule ?? (args as any).when ?? ""))}`,
 				0,
 				0,
 			);
@@ -1089,6 +1209,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			id: Type.Optional(Type.String({ description: "id, unique prefix or exact name; not needed for cleanup" })),
 			schedule: Type.Optional(Type.String()),
 			wakeOn: Type.Optional(StringEnum(WAKE_ON)),
+			resultMode: Type.Optional(StringEnum(["exitCode", "readiness"] as const)),
 			timeoutMs: Type.Optional(Type.Number({ minimum: 1000 })),
 			backoff: Type.Optional(Type.Union([Type.Object({ factor: Type.Number(), maxInterval: Type.String() }), Type.Null()])),
 			expiresIn: Type.Optional(Type.Union([Type.String(), Type.Null()])),

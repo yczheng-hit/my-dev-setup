@@ -77,3 +77,25 @@ test("installed Pi executes scheduled shell stdout/stderr and reports timeout", 
 		await pi.close();
 	}
 });
+
+
+test("installed Pi validates readiness schema and retains a real malformed-checker notice without a session destination", opts, async () => {
+	const pi = await startLivePi();
+	try {
+		const schedule = pi.tool("schedule_task");
+		assert.equal(pi.valid(schedule.parameters, { action: "shell", resultMode: "typo" }), false);
+		assert.equal(pi.valid(schedule.parameters, { action: "shell", resultMode: "readiness" }), true);
+		const made = await schedule.execute("readiness", { action: "shell", resultMode: "readiness", type: "interval", schedule: "0.05s", command: "printf 'invalid JSON'", scope: "cwd", maxRuns: 3 }, undefined, undefined);
+		const deadline = Date.now() + 4000;
+		let task;
+		do {
+			task = JSON.parse(require("node:fs").readFileSync(pi.stateFile, "utf8")).tasks.find(t => t.id === made.details.task.id);
+			if (task?.readinessNotice) break;
+			await new Promise(resolve => setTimeout(resolve, 25));
+		} while (Date.now() < deadline);
+		assert.equal(task.enabled, false); assert.equal(task.status, "failed"); assert.equal(task.runCount, 1);
+		assert.equal(task.result.readiness.state, "error"); assert.equal(task.readinessNotice.state, "error");
+		// In-memory session has no persisted destination; retain the durable notice, never pretend delivery.
+		assert.equal(task.pendingWake, undefined);
+	} finally { await pi.close(); }
+});

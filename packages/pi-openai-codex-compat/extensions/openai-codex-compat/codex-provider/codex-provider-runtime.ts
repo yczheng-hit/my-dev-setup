@@ -1,3 +1,4 @@
+import { withCompactionGuidance } from "../../compaction-guidance.ts";
 import { requireJsonRecord, requireJsonValues } from "../codex-protocol.ts";
 import { isFunction, isNonNullObject, isString } from "../value-contracts.ts";
 import { randomUUID } from "node:crypto";
@@ -625,7 +626,7 @@ export class CodexProviderRuntime {
         template: options.template,
         modelId: options.model.id,
         history: options.history,
-        instructions: options.instructions,
+        instructions: withCompactionGuidance(options.instructions),
         sessionId:
           options.requestOptions.cacheRetention === "none" ? undefined : codexCacheKey(sessionId),
         priority: options.priority,

@@ -1,6 +1,7 @@
 const { realpathSync } = require("node:fs");
 const { createRequire } = require("node:module");
 const { createHash, randomUUID } = require("node:crypto");
+const readiness = require("./readiness.cjs");
 
 function loadCroner() {
 	try {
@@ -46,6 +47,8 @@ function normalizeRunHistory(value) {
 		const outcome = { status: entry.outcome.status, killed: entry.outcome.killed === true };
 		if (Number.isSafeInteger(entry.outcome.exitCode)) outcome.exitCode = entry.outcome.exitCode;
 		if (typeof entry.outcome.error === "string") outcome.error = entry.outcome.error.slice(0, 1000);
+		if (["pending", "ready", "error"].includes(entry.outcome.readinessState)) outcome.readinessState = entry.outcome.readinessState;
+		if (typeof entry.outcome.readinessSummary === "string") outcome.readinessSummary = entry.outcome.readinessSummary.slice(0, 1000);
 		const clean = { attemptId: entry.attemptId, startedAt: new Date(entry.startedAt).toISOString(), completedAt: new Date(entry.completedAt).toISOString(), durationMs: entry.durationMs, outcome };
 		if (typeof entry.wakeReason === "string") clean.wakeReason = entry.wakeReason.slice(0, 120);
 		if (["delivered", "pending", "suppressed", "failed", "no-followup", "session-suppressed", "not-requested"].includes(entry.wakeDisposition)) clean.wakeDisposition = entry.wakeDisposition;
@@ -63,7 +66,7 @@ function appendRunHistory(task, now, result = {}, status) {
 	const entry = {
 		attemptId, startedAt: task.startedAt, completedAt: now.toISOString(),
 		durationMs: Math.max(0, now.getTime() - Date.parse(task.startedAt)),
-		outcome: { status, exitCode: result?.code, killed: result?.killed, error: result?.error },
+		outcome: { status, exitCode: result?.code, killed: result?.killed, error: result?.error, readinessState: result?.readiness?.state, readinessSummary: result?.readiness?.summary },
 		wakeReason: result?.wakeReason, wakeDisposition: result?.wakeDisposition, wakeError: result?.wakeError,
 	};
 	task.history = normalizeRunHistory([...history, entry]);
@@ -77,6 +80,12 @@ function asDate(value) {
 
 function compactSpaces(text) {
 	return String(text ?? "").trim().replace(/\s+/g, " ");
+}
+
+// Body text is data: validate emptiness without flattening newlines or indentation.
+function optionalBody(value) {
+	const text = String(value ?? "");
+	return text.trim() ? text : "";
 }
 
 function unitToMs(unit) {
@@ -309,8 +318,8 @@ function getScheduleInput(input) {
 }
 
 function splitScheduleCommand(args, nowValue = new Date()) {
-	const text = compactSpaces(args);
-	if (!text) throw new Error("Usage: /schedule [notify|prompt|shell|message] <when> <payload>");
+	const text = String(args ?? "");
+	if (!text.trim()) throw new Error("Usage: /schedule [notify|prompt|shell|message] <when> <payload>");
 
 	const parseLeft = (leftText) => {
 		const tokens = compactSpaces(leftText).split(" ").filter(Boolean);
@@ -333,12 +342,12 @@ function splitScheduleCommand(args, nowValue = new Date()) {
 	const separatorIndex = text.indexOf("::");
 	if (separatorIndex >= 0) {
 		const left = compactSpaces(text.slice(0, separatorIndex));
-		const payload = compactSpaces(text.slice(separatorIndex + 2));
-		if (!left || !payload) throw new Error("Usage with separator: /schedule [action] <when> :: <payload>");
+		const payload = text.slice(separatorIndex + 2).replace(/^ /, ""); // optional separator space, not body normalization
+		if (!left || !payload.trim()) throw new Error("Usage with separator: /schedule [action] <when> :: <payload>");
 		return { ...parseLeft(left), payload };
 	}
 
-	const tokens = text.split(" ");
+	const tokens = compactSpaces(text).split(" ");
 	let action = "notify";
 	let restTokens = tokens;
 	if (VALID_ACTIONS.has(tokens[0].toLowerCase())) {
@@ -377,6 +386,7 @@ function createScheduledTask(input, nowValue = new Date(), idFn = generateId) {
 	const validated = validateTaskSchedule(type, schedule, now);
 	const enabled = input.enabled === undefined ? true : Boolean(input.enabled);
 	const hasShellPrompt = Boolean(input.followUpPrompt || input.successPrompt || input.failurePrompt);
+	const readinessSettings = readiness.settings({ ...input, action });
 	if (input.stopOn !== undefined && action !== "shell") throw new Error("stopOn is only supported for shell scheduled tasks");
 
 	const task = {
@@ -405,31 +415,33 @@ function createScheduledTask(input, nowValue = new Date(), idFn = generateId) {
 	if (input.maxRuns !== undefined) task.maxRuns = normalizeMaxRuns(input.maxRuns);
 	if (input.expiresIn !== undefined) task.expiresAt = expiryAtFromInput(input.expiresIn, now);
 
-	const message = compactSpaces(input.message ?? input.payload ?? "");
-	const prompt = compactSpaces(input.prompt ?? input.payload ?? input.message ?? "");
+	const message = String(input.message ?? input.payload ?? "");
+	const prompt = String(input.prompt ?? input.payload ?? input.message ?? "");
 	const command = compactSpaces(input.command ?? input.payload ?? "");
 
 	if (action === "notify") {
-		if (!message) throw new Error("message is required for notify scheduled tasks");
+		if (!message.trim()) throw new Error("message is required for notify scheduled tasks");
 		task.message = message;
 	} else if (action === "prompt") {
-		if (!prompt) throw new Error("prompt is required for prompt scheduled tasks");
+		if (!prompt.trim()) throw new Error("prompt is required for prompt scheduled tasks");
 		task.prompt = prompt;
 	} else if (action === "shell") {
 		if (!command) throw new Error("command is required for shell scheduled tasks");
 		task.command = command;
 		const timeoutMs = validateTimeoutMs(input.timeoutMs);
 		if (timeoutMs !== undefined) task.timeoutMs = timeoutMs;
-		const followUpPrompt = compactSpaces(input.followUpPrompt ?? "");
-		const successPrompt = compactSpaces(input.successPrompt ?? "");
-		const failurePrompt = compactSpaces(input.failurePrompt ?? "");
+		const followUpPrompt = optionalBody(input.followUpPrompt ?? "");
+		const successPrompt = optionalBody(input.successPrompt ?? "");
+		const failurePrompt = optionalBody(input.failurePrompt ?? "");
 		if (followUpPrompt) task.followUpPrompt = followUpPrompt;
 		if (successPrompt) task.successPrompt = successPrompt;
 		if (failurePrompt) task.failurePrompt = failurePrompt;
 		task.wakeOn = normalizeWakeOn(input.wakeOn, hasShellPrompt);
 		task.stopOn = normalizeStopOn(input.stopOn);
+		if (input.resultMode !== undefined) task.resultMode = input.resultMode;
+		if (readinessSettings) Object.assign(task, readinessSettings);
 	} else if (action === "message") {
-		if (!message) throw new Error("message is required for message scheduled tasks");
+		if (!message.trim()) throw new Error("message is required for message scheduled tasks");
 		task.message = message;
 		if (input.triggerTurn !== undefined) task.triggerTurn = Boolean(input.triggerTurn);
 	}
@@ -438,7 +450,7 @@ function createScheduledTask(input, nowValue = new Date(), idFn = generateId) {
 }
 
 function taskSummary(task) {
-	const raw = task.command ?? task.prompt ?? task.message ?? "";
+	const raw = compactSpaces(task.command ?? task.prompt ?? task.message ?? "");
 	return raw.length > 100 ? `${raw.slice(0, 97)}...` : raw;
 }
 
@@ -547,6 +559,13 @@ function normalizeTask(task, nowValue = new Date()) {
 		delete migrated.stopOn;
 	}
 
+	try {
+		const policy = readiness.settings({ ...migrated, wakeOn: task.wakeOn, stopOn: task.stopOn });
+		if (policy) Object.assign(migrated, policy);
+	} catch (error) {
+		migrated.enabled = false; migrated.status = "failed"; migrated.nextRun = undefined;
+		migrated.lastStatus = "error"; migrated.lastError = error.message;
+	}
 	if (migrated.pendingWake) {
 		const wake = migrated.pendingWake;
 		if (!wake || typeof wake.id !== 'string' || typeof wake.content !== 'string' || !['queued', 'dispatching', 'uncertain'].includes(wake.state) || typeof wake.sessionFile !== 'string' || !Number.isSafeInteger(wake.ownerPid)) delete migrated.pendingWake;
@@ -595,6 +614,7 @@ function expireOverdueTasks(tasks, nowValue = new Date()) {
 	for (const task of tasks) {
 		if (isTerminal(task) || task.status === "running" || !task.expiresAt || !Number.isFinite(Date.parse(task.expiresAt))) continue;
 		if (Date.parse(task.expiresAt) <= now.getTime()) {
+			if (task.enabled !== false) readiness.endWaiting(task, now, "expiresIn");
 			task.enabled = false;
 			task.status = "expired";
 			task.expiredAt = now.toISOString();
@@ -680,6 +700,7 @@ function cancelScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	if (task.status === "cancelled") throw new Error(`Scheduled task ${task.id} is already cancelled`);
 	task.enabled = false;
 	delete task.pendingWake;
+	delete task.readinessNotice;
 	task.managementRevision = randomUUID();
 	task.status = "cancelled";
 	task.cancelledAt = now.toISOString();
@@ -693,6 +714,7 @@ function disableScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	if (!task) throw new Error(`Scheduled task not found: ${idOrPrefix}`);
 	task.enabled = false;
 	delete task.pendingWake;
+	delete task.readinessNotice;
 	task.managementRevision = randomUUID();
 	task.disabledAt = now.toISOString();
 	task.nextRun = undefined;
@@ -704,8 +726,10 @@ function enableScheduledTask(tasks, idOrPrefix, nowValue = new Date()) {
 	if (!task) throw new Error(`Scheduled task not found: ${idOrPrefix}`);
 	if (task.status === "expired") throw new Error(`Scheduled task ${task.id} is expired; renew expiresIn before enabling`);
 	if (!canClaimTask(task, nowValue)) throw new Error(`Scheduled task ${task.id} is expired; renew expiresIn before enabling`);
+	if (task.resultMode === "readiness") readiness.settings(task);
 	if (task.status === "cancelled" || task.status === "failed" || task.status === "fired") task.status = "pending";
 	delete task.stopReason;
+	if (task.resultMode === "readiness") readiness.clearTracking(task);
 	task.enabled = true;
 	task.managementRevision = randomUUID();
 	const validated = validateTaskSchedule(task.type ?? "once", task.schedule ?? task.whenText ?? task.dueAt, nowValue);
@@ -730,6 +754,8 @@ function removeScheduledTask(tasks, idOrPrefix) {
 function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Date()) {
 	const task = findTask(tasks, idOrPrefix);
 	if (!task) throw new Error(`Scheduled task not found: ${idOrPrefix}`);
+	const nextReadiness = readiness.settings({ ...task, ...updates, action: updates.action ?? task.action,
+		...(updates.resultMode === "readiness" && task.resultMode !== "readiness" ? { wakeOn: updates.wakeOn ?? "success", stopOn: updates.stopOn ?? "success" } : {}) });
 	const scheduleChanged = updates.schedule !== undefined || updates.when !== undefined || updates.whenText !== undefined || updates.type !== undefined;
 	const resetBackoff = scheduleChanged || updates.backoff !== undefined || updates.enabled === true;
 	let nextBackoff = task.backoff;
@@ -749,7 +775,13 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 
 	const nextAction = updates.action !== undefined ? normalizeAction(updates.action) : task.action;
 	if (updates.stopOn !== undefined && nextAction !== "shell") throw new Error("stopOn is only supported for shell scheduled tasks");
+	for (const field of nextAction === "prompt" ? ["prompt"] : ["notify", "message"].includes(nextAction) ? ["message"] : []) {
+		if (!String(updates[field] !== undefined ? updates[field] ?? "" : task[field] ?? "").trim()) throw new Error(`${field} is required for ${nextAction} scheduled tasks`);
+	}
 	if (nextAction !== task.action) task.executionRevision = randomUUID();
+	if (nextReadiness && scheduleChanged) task.executionRevision = randomUUID();
+	if (updates.resultMode !== undefined && updates.resultMode !== task.resultMode) task.executionRevision = randomUUID();
+	if (updates.resultMode !== undefined) task.resultMode = updates.resultMode;
 	if (updates.action !== undefined) task.action = nextAction;
 	if (updates.type !== undefined) task.type = normalizeType(updates.type);
 	if (updates.scope !== undefined) task.scope = normalizeScope(updates.scope);
@@ -765,6 +797,8 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 	}
 	// Any explicit edit invalidates not-yet-delivered work and stale management selections.
 	task.managementRevision = randomUUID();
+	delete task.readinessNotice;
+	if (updates.resultMode !== undefined || updates.command !== undefined || updates.cwd !== undefined || updates.enabled === true || renewed) readiness.clearTracking(task);
 	delete task.foregroundDeferredAt;
 	delete task.pendingWake;
 	if (updates.backgroundExecution !== undefined) task.backgroundExecution = updates.backgroundExecution === true;
@@ -789,9 +823,9 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 		if (nextBackoff === undefined) delete task.backoff;
 		else task.backoff = nextBackoff;
 	}
-	if (updates.followUpPrompt !== undefined) task.followUpPrompt = compactSpaces(updates.followUpPrompt) || undefined;
-	if (updates.successPrompt !== undefined) task.successPrompt = compactSpaces(updates.successPrompt) || undefined;
-	if (updates.failurePrompt !== undefined) task.failurePrompt = compactSpaces(updates.failurePrompt) || undefined;
+	if (updates.followUpPrompt !== undefined) task.followUpPrompt = optionalBody(updates.followUpPrompt) || undefined;
+	if (updates.successPrompt !== undefined) task.successPrompt = optionalBody(updates.successPrompt) || undefined;
+	if (updates.failurePrompt !== undefined) task.failurePrompt = optionalBody(updates.failurePrompt) || undefined;
 	if (updates.wakeOn !== undefined) {
 		const wakeOn = normalizeWakeOn(updates.wakeOn, true);
 		if (wakeOn === "change" && task.wakeOn !== "change") {
@@ -806,8 +840,8 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 		delete task.stopReason;
 	}
 	if (updates.action !== undefined && task.action !== "shell") delete task.stopOn;
-	if (updates.prompt !== undefined) task.prompt = compactSpaces(updates.prompt);
-	if (updates.message !== undefined) task.message = compactSpaces(updates.message);
+	if (updates.prompt !== undefined) task.prompt = String(updates.prompt ?? "");
+	if (updates.message !== undefined) task.message = String(updates.message ?? "");
 	if (updates.command !== undefined) {
 		const command = compactSpaces(updates.command);
 		if (command !== task.command) {
@@ -819,6 +853,8 @@ function updateScheduledTask(tasks, idOrPrefix, updates = {}, nowValue = new Dat
 		task.command = command;
 	}
 	if (updates.triggerTurn !== undefined) task.triggerTurn = Boolean(updates.triggerTurn);
+	if (nextReadiness) Object.assign(task, nextReadiness);
+	if (nextReadiness && updates.enabled === true && isTerminal(task)) task.status = "pending";
 
 	if (scheduleChanged || updates.backoff !== undefined) {
 		const schedule = compactSpaces(updates.schedule ?? updates.whenText ?? updates.when ?? task.schedule ?? task.whenText ?? "");
@@ -849,12 +885,18 @@ function markScheduledTaskRunning(tasks, idOrPrefix, nowValue = new Date(), opti
 	task.lastStatus = "running";
 	task.startedAt = now.toISOString();
 	if (options.runOwner) task.runOwner = { ...options.runOwner, startedAt: now.toISOString() };
+	if (task.resultMode === "readiness" && task.runOwner) task.runOwner.readinessExecutionRevision = task.executionRevision ?? null;
 	task.runAttemptId = options.runOwner?.attemptId ?? randomUUID();
 	return task;
 }
 
 function finishTaskAfterRun(task, now, ok, result) {
 	const remainDisabled = task.enabled === false;
+	if (task.resultMode === "readiness") {
+		result ??= {};
+		readiness.finish(task, now, result, !remainDisabled && result.superseded !== true);
+		ok = result.readiness.state !== "error";
+	}
 	appendRunHistory(task, now, result, result?.interrupted ? "interrupted" : (ok ? "success" : "error"));
 	delete task.interruptedRun;
 	delete task.startedAt;
@@ -865,7 +907,9 @@ function finishTaskAfterRun(task, now, ok, result) {
 	task.lastStatus = ok ? "success" : "error";
 	if (ok) delete task.lastError;
 	if (result !== undefined) task.result = result;
+	if (task.readinessNotice?.state === "error") return task;
 	if (task.expiresAt && Date.parse(task.expiresAt) <= now.getTime()) {
+		if (!remainDisabled && result?.superseded !== true) readiness.endWaiting(task, now, "expiresIn", result?.attemptId);
 		task.enabled = false;
 		task.status = "expired";
 		task.expiredAt = now.toISOString();
@@ -875,8 +919,9 @@ function finishTaskAfterRun(task, now, ok, result) {
 
 	const reachedMaxRuns = task.maxRuns !== undefined && task.runCount >= task.maxRuns;
 	const stopOn = task.action === "shell" ? normalizeStopOn(task.stopOn) : "never";
-	const stoppedOnResult = result?.superseded !== true && stopOn !== "never" && ((stopOn === "success" && ok) || (stopOn === "failure" && !ok));
+	const stoppedOnResult = result?.superseded !== true && stopOn !== "never" && ((stopOn === "success" && ok && (task.resultMode !== "readiness" || result?.readiness?.state === "ready")) || (stopOn === "failure" && !ok));
 	if (task.type === "once" || reachedMaxRuns || (!remainDisabled && stoppedOnResult)) {
+		if (!remainDisabled && result?.superseded !== true) readiness.endWaiting(task, now, reachedMaxRuns ? "maxRuns" : "once", result?.attemptId);
 		task.enabled = false;
 		task.status = ok ? "fired" : "failed";
 		if (stoppedOnResult) task.stopReason = `Stopped because stopOn=${stopOn} matched the ${ok ? "successful" : "failed"} shell result`;
@@ -973,7 +1018,9 @@ function recoverInterruptedTasks(tasks, nowValue = new Date(), options = {}) {
 			continue;
 		}
 		task.interruptedRun = true;
-		markScheduledTaskFailed(tasks, task.id, now, error);
+		const superseded = task.runOwner && Object.hasOwn(task.runOwner, "readinessExecutionRevision")
+			&& task.runOwner.readinessExecutionRevision !== (task.executionRevision ?? null);
+		markScheduledTaskFailed(tasks, task.id, now, error, { superseded });
 	}
 	return interrupted;
 }
@@ -1003,6 +1050,7 @@ function hasShellFollowUpPrompt(task) {
 }
 
 function shouldWakeForShellResult(task, result) {
+	if (task.resultMode === "readiness") return result.readiness?.state === "ready" || task.wakeOn === "always";
 	if (!hasShellFollowUpPrompt(task) && !task.wakeOn) return false;
 	const wakeOn = normalizeWakeOn(task.wakeOn, hasShellFollowUpPrompt(task));
 	const ok = shellResultOk(result);
@@ -1021,6 +1069,7 @@ function shouldWakeForShellResult(task, result) {
 }
 
 function selectShellFollowUpPrompt(task, result) {
+	if (task.resultMode === "readiness" && result.readiness?.state === "pending") return task.followUpPrompt || "检查仍未就绪，核对最新状态后继续原授权范围内的等待。";
 	const ok = shellResultOk(result);
 	if (ok && task.successPrompt) return task.successPrompt;
 	if (!ok && task.failurePrompt) return task.failurePrompt;
@@ -1129,6 +1178,7 @@ function formatScheduleZh(task) {
 function describeTask(task, nowValue = new Date()) {
 	const parts = [ACTION_ZH[task.action] ?? task.action, formatScheduleZh(task)];
 	const next = formatNextRun(task, nowValue);
+	if (task.resultMode === "readiness") parts[0] = "等待结果";
 	if (next && task.enabled !== false && !isTerminal(task)) parts.push(`下次 ${next}`);
 	if (task.maxRuns) parts.push(`最多 ${task.maxRuns} 次`);
 	if (task.backoff) parts.push(`退避 ×${task.backoff.factor}`);
@@ -1142,7 +1192,8 @@ function formatTaskLine(task, nowValue = new Date()) {
 	const label = task.name || task.title;
 	const state = task.pendingWake ? `待交付/${task.pendingWake.state}` : task.enabled === false ? "已停用" : STATUS_ZH[task.status] ?? task.status;
 	const runs = `已运行 ${task.runCount ?? 0} 次${task.lastStatus ? `，上次${LAST_ZH[task.lastStatus] ?? task.lastStatus}` : ""}`;
-	return `- ${task.id}${label ? `「${label}」` : ""} [${state}] ${runs} · ${describeTask(task, nowValue)}`;
+	const reading = task.lastReadiness ? ` · ${{ pending: "尚未就绪", ready: "条件满足", error: "检查器失败 · 已暂停", ended: "等待结束" }[task.lastReadiness.state] ?? task.lastReadiness.state}: ${compactSpaces(task.lastReadiness.summary).slice(0, 120)} · ${formatClock(task.lastReadiness.checkedAt, nowValue)}` : "";
+	return `- ${task.id}${label ? `「${label}」` : ""} [${state}] ${runs}${reading} · ${describeTask(task, nowValue)}`;
 }
 
 function formatTaskList(tasks, nowValue = new Date(), options = {}) {
@@ -1153,7 +1204,7 @@ function formatTaskList(tasks, nowValue = new Date(), options = {}) {
 		lines.push(formatTaskLine(task, nowValue));
 		if (options.includeHistory && task.history?.length) {
 			for (const run of task.history) {
-				const outcome = run.outcome?.killed ? "超时" : LAST_ZH[run.outcome?.status] ?? run.outcome?.status ?? "未知";
+				const outcome = run.outcome?.readinessState ? ({ pending: "尚未就绪", ready: "条件满足", error: "检查器失败" }[run.outcome.readinessState] ?? run.outcome.readinessState) : run.outcome?.killed ? "超时" : LAST_ZH[run.outcome?.status] ?? run.outcome?.status ?? "未知";
 				const code = run.outcome?.exitCode !== undefined && run.outcome?.exitCode !== 0 ? ` 退出码 ${run.outcome.exitCode}` : "";
 				const wake = run.wakeDisposition && WAKE_ZH[run.wakeDisposition] ? ` · ${WAKE_ZH[run.wakeDisposition]}` : "";
 				const error = run.outcome?.error ? ` · ${String(run.outcome.error).slice(0, 120)}` : "";

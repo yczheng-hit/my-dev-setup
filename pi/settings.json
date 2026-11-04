@@ -15,6 +15,7 @@
   "packages": [
     "repo:packages/pi-agents-context",
     "repo:packages/pi-agent-summary-time",
+    "repo:packages/pi-compaction-guidance",
     "repo:packages/pi-fork-save",
     "npm:pi-cc-extensions",
     "repo:packages/picc-permission-modes",

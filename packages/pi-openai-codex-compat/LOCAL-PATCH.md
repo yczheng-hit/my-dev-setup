@@ -32,6 +32,12 @@ Pi 对未知工具不会触发 `tool_call` / `tool_result`，因此通过 `conte
 
 离线回归使用真实 Pi Session/ExtensionRunner/调度器和合成模型：先成功 `apply_patch`，切到普通 Completions 后故意误用一次，再用当前工具成功并切回 Codex；验证请求序列化含纠正说明、旧调用不执行、原始历史仍保留原错误。提示只能改善恢复，不保证任意实际 endpoint/model 都不再误用。
 
+### 压缩时保护用户要求
+
+`extensions/compaction-guidance.ts` 保存唯一一份短规则；在 `CodexProviderRuntime.performCompaction()` 构造原生请求时幂等追加。手动／Pi 阈值／溢出／provider 百分比各入口共用，普通回合不追加；手动 customInstructions 保留。规则不要求 Markdown、不改 checkpoint、retained-context 或失败即取消策略。普通模型由 `pi-compaction-guidance` 复用 Pi 摘要函数处理；它跳过 Codex，避免双重压缩。
+
+离线请求与真实 SDK 合成会话回归：`scripts/test/compaction-guidance.test.mjs`；证明指导确实发送、checkpoint 原样保留，不代表实际后端摘要质量验收。
+
 ## 验证
 
 不连真实模型，用本地 mock 的 Codex Responses 端点跑真实 pi CLI（Lite 开 / 关各一次）：

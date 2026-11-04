@@ -2,7 +2,7 @@
 
 Run `npm test` with Node.js 24+ (the runtime fixtures use `node:module.stripTypeScriptTypes`). The multiprocess tests require a POSIX system and `bash`.
 
-The default suite covers core policies, extension lifecycle, in-flight edits, cancellation, expiry, history, and shared-store contention/recovery using separate Node processes. Those fixtures stub Pi's API; the multiprocess fixture executes real shell commands.
+The default suite covers opt-in readiness (protocol errors, pending/ready, limits, durable feedback, repair), core policies, extension lifecycle, in-flight edits, cancellation, expiry, history, and shared-store contention/recovery using separate Node processes. Those fixtures stub Pi's API; the multiprocess fixture executes real shell commands.
 
 To also test the installed Pi SDK, run:
 

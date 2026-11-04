@@ -29,7 +29,8 @@ agent 按 [AGENTS.md](AGENTS.md) 检查、临时验证并**直接更新磁盘安
 | AGENTS-only 上下文 | [pi-agents-context](packages/pi-agents-context/README.md)：AGENTS 与受信任 `.agents/rules`，不自动导入 Claude 文件 |
 | 权限与独立审核模型 | [picc-permission-modes](packages/picc-permission-modes/LOCAL-PATCH.md)：手动 plan、审批反馈、独立 auto reviewer；审核角色不改变主模型 |
 | GPT/Codex 适配 | [Codex compat](packages/pi-openai-codex-compat/LOCAL-PATCH.md)＋`pi-gpt-codex`：工具、提示词与 Responses 路由适配 |
-| 前台优先调度 | [pi-scheduler](packages/pi-scheduler/LOCAL-PATCH.md)：草稿/弹窗/模型回合期间延迟唤醒，可暂停、取消，交付不明时不自动重发 |
+| 前台优先调度 | [pi-scheduler](packages/pi-scheduler/LOCAL-PATCH.md)：草稿/弹窗/模型回合期间延迟唤醒，可暂停、取消、`/schedule-edit` 多行改提示；显式 readiness 区分等待/就绪/检查器故障，故障暂停并报告；交付不明不自动重发 |
+| 压缩信息保护 | [pi-compaction-guidance](packages/pi-compaction-guidance/README.md)：保留用户要求，合并重复自动检查；与 Codex 原生 checkpoint 分路径 |
 | 未读回复导航 | [pi-unread-navigation](packages/pi-unread-navigation/README.md)：fullscreen 中优先定位最早未读最终回复 |
 | 会话与子任务 HUD | [HUD footer](packages/pi-hud-footer/LOCAL-PATCH.md)、[subagent HUD](packages/pi-subagent-hud/README.md)、UTC+8 回合摘要 |
 | Herdr 编号与状态 | [pane-id](packages/herdr-pane-id/README.md)＋[subagents 标签适配器](packages/pi-subagents-herdr-labels/README.md)：保留编号、状态颜色和审批提示 |

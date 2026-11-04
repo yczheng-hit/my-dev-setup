@@ -90,6 +90,7 @@ test("scheduler core resolves croner when loaded through a preserved symlink", (
 		const linkedCore = join(tmp, "node_modules", "@jl1990", "pi-scheduler", "extensions", "scheduler", "scheduler-core.cjs");
 		mkdirSync(dirname(linkedCore), { recursive: true });
 		symlinkSync(resolve(__dirname, "..", "extensions", "scheduler", "scheduler-core.cjs"), linkedCore);
+		symlinkSync(resolve(__dirname, "..", "extensions", "scheduler", "readiness.cjs"), join(dirname(linkedCore), "readiness.cjs"));
 
 		const script = [
 			`const core = require(${JSON.stringify(linkedCore)});`,

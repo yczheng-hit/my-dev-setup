@@ -31,7 +31,7 @@ test("schedule_task schema stays slim but still accepts legacy aliases", async (
 		for (const alias of ["when", "whenText", "payload", "title", "triggerTurn", "successPrompt", "failurePrompt"]) {
 			assert.ok(!props.includes(alias), `${alias} is not advertised`);
 		}
-		assert.equal(h.tools.schedule_task.promptGuidelines.length, 1);
+		assert.equal(h.tools.schedule_task.promptGuidelines.length, 2);
 		const prepared = h.tools.schedule_task.prepareArguments({ action: "notify", whenText: "10m", message: "x" });
 		const created = await h.call("schedule_task", prepared);
 		assert.equal(created.details.task.schedule, "10m");
@@ -49,7 +49,7 @@ test("shell wake is one compact block: no empty stderr, no duplicate model messa
 		await until(async () => (await h.tasks())[0]?.history?.[0]?.wakeDisposition === "delivered", "wake delivered");
 		assert.equal(h.wakes.length, 1);
 		const text = h.wakes[0].text;
-		assert.match(text, /^⏰ 定时任务 task_\S+「CI」 运行完成 · \d{2}:\d{2}\n\$ make ci\n退出码 1 · 用时 \d/);
+		assert.match(text, /^⏰ 定时任务 task_\S+「CI」 运行完成 · \d{2}:\d{2}\n自动唤醒，非新增用户授权[^\n]*\n\$ make ci\n退出码 1 · 用时 \d/);
 		assert.match(text, /输出：\n```\nbuild failed\n```\n下一步：Fix it\.$/);
 		assert.doesNotMatch(text, /错误输出|STDERR|Scheduled for|Action:|目录：/);
 		assert.equal(h.messages.length, 0, "nothing else enters model context");
@@ -85,7 +85,7 @@ test("prompt wake has a one-line header and stored output is capped", async () =
 		await h.call("schedule_task", { action: "shell", schedule: "0.02s", command: "spam", followUpPrompt: "Summarise." });
 		await until(async () => h.wakes.length === 2, "both woke");
 		const prompt = h.wakes.find((wake) => /Check the deploy/.test(wake.text)).text;
-		assert.match(prompt, /^⏰ 定时任务 task_\S+ 到点 · \d{2}:\d{2}\nCheck the deploy\.$/);
+		assert.match(prompt, /^⏰ 定时任务 task_\S+ 到点 · \d{2}:\d{2}\n自动唤醒，非新增用户授权[^\n]*\nCheck the deploy\.$/);
 		const shell = h.wakes.find((wake) => /spam/.test(wake.text)).text;
 		assert.ok(shell.length < 6_500, `shell wake is ${shell.length} chars`);
 		assert.match(shell, /…省略 \d+ 字符…/);

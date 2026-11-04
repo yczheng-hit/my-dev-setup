@@ -58,7 +58,48 @@ For recurring shell tasks, `stopOn` may be `success`, `failure`, or `never` (the
 
 Recurring tasks do not stop when an external goal completes unless configured with `stopOn`. Cancel them when finished, or bound them with `maxRuns`.
 
-Use `expiresIn: "2h"` to stop starting new runs after two hours. The absolute deadline persists across restarts. Expiry is silent and visible as `expired` in task history; an already-running command finishes with its usual wake policy. Renew an expired task with a new `expiresIn`, or set it to `null` in `manage_scheduled_task` to clear the deadline and resume it.
+Use `expiresIn: "2h"` to stop starting new runs after two hours. The absolute deadline persists across restarts. For ordinary shell tasks, expiry is silent and visible as `expired` in task history; an already-running command finishes with its usual wake policy. Renew an expired task with a new `expiresIn`, or set it to `null` in `manage_scheduled_task` to clear the deadline and resume it.
+
+## Wait for readiness explicitly (local extension)
+
+Use `resultMode: "readiness"` when waiting for a report, file or flow. This is opt-in: existing tasks and ordinary shell exit-code policies are unchanged. Repair a broken checker before migrating it; the scheduler never guesses the meaning of an existing command.
+
+```json
+{
+  "action": "shell",
+  "resultMode": "readiness",
+  "type": "interval",
+  "schedule": "5m",
+  "command": "./check-readiness.sh",
+  "wakeOn": "success",
+  "stopOn": "success",
+  "followUpPrompt": "Read the final report and continue within the existing authorization.",
+  "expiresIn": "2h"
+}
+```
+
+The checker must exit **0** and write exactly one JSON object to stdout. Put diagnostic logs on stderr:
+
+```json
+{"state":"pending","summary":"The flow is running; no final report yet"}
+```
+
+Use `ready` when the condition is satisfied, or `error` when the checker cannot determine the state. Only `state` and `summary` are accepted; summary must be nonblank and at most 1000 characters, and stdout at most 8192 UTF-8 bytes. Missing/malformed output, nonzero exit, timeout, killed execution, truncated output or execution exceptions are checker errors—even if stdout claims `ready`. Exit 1 is **not** a synonym for pending.
+
+| Policy | `pending` | `ready` | Checker error |
+| --- | --- | --- | --- |
+| `wakeOn: "success"` (default) | Keep waiting | Wake | Pause checks and report |
+| `wakeOn: "always"` | Wake on every check | Wake | Pause checks and report |
+
+`stopOn: "success"` (default) means **ready**, not just exit 0. `stopOn: "never"` continues after ready. Other wake/stop policies are rejected in readiness mode. `successPrompt` applies only to ready; pending uses `followUpPrompt` or a default instruction. Error/limit reports have fixed diagnostic instructions and do not depend on `failurePrompt` or the success wake filter.
+
+- A checker error disables **this scheduled check**, not the monitored flow or main session. Repair `command`/`cwd` via `manage_scheduled_task action=update`, then explicitly `enable`. A repair alone does not resume polling.
+- `maxRuns`, `expiresIn`, or a one-shot pending check ends waiting with a report that the condition is not yet satisfied. This is not evidence that the monitored work failed. Renew an elapsed deadline before enabling; raise an exhausted run limit to allow more attempts. Limits remain lifetime counters.
+- Reports use the durable wake queue and respect drafts, busy turns and pause. Expiry does not delete a queued terminal report. Restart resumes queued delivery; ambiguous dispatch is retained as `uncertain`, never automatically replayed. Pi must be running; this is not an external alarm service.
+- Unchanged pending checks suppress only repeated display-only chat lines. Every execution still counts, updates the widget/time and bounded history; `wakeOn: "always"` still wakes every time.
+- `/schedule-edit` edits future prompts without changing the checker or policy. A queued fixed error/limit report remains unchanged; dispatching/uncertain delivery still rejects editing. Generic task updates invalidate queued work as before; explicit cancel/disable/remove discards it. Cleanup preserves undelivered readiness terminal reports.
+
+A logically broken checker that repeatedly outputs a valid `pending` still needs its own tests and a waiting limit. The protocol cannot infer that the checker is wrong.
 
 ## Scheduling options
 
@@ -89,7 +130,7 @@ Use `successPrompt` or `failurePrompt` for outcome-specific instructions, or `fo
 
 `change` stores a SHA-256 fingerprint of the complete (untruncated) shell result in task state. The first run establishes the baseline without waking; repeated identical results stay quiet. Editing the command, working directory, or opting into `change` starts a new baseline. If that first run matches `stopOn`, the task stops silently; use `success` or `failure` when the stopping result must wake the agent.
 
-**Exit status matters.** A command that prints a failed CI pipeline may still exit 0. For CI polling, use a command or wrapper that maps pipeline states to the intended exit status; pending is not automatically a separate state.
+**Exit status matters.** A command that prints a failed CI pipeline may still exit 0. In default exit-code mode, map pipeline states to the intended exit status. For a separate pending/ready/checker-error protocol, explicitly use readiness mode above.
 
 ## Manage tasks
 
@@ -128,7 +169,7 @@ On restart, overdue one-shot and interval tasks run. Cron catches up the most re
 | `PI_SCHEDULER_CATCHUP_WINDOW_H` | `24` hours |
 | `PI_SCHEDULER_CATCHUP_MAX` | `5` tasks per startup; `0` disables cron catch-up |
 
-Interrupted executions are recorded as failed: one-shot tasks remain failed, while recurring tasks are rescheduled. Shell commands run with your local user permissions.
+Interrupted executions are recorded as failed: one-shot tasks remain failed, while ordinary recurring tasks are rescheduled. Interrupted readiness checks instead pause and report the checker failure. Shell commands run with your local user permissions.
 
 ## Development
 

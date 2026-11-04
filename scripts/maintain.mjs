@@ -151,7 +151,7 @@ async function prepare(repo, agentDir, target, installation) {
     candidateSettings(repo, target, stageAgent, agentDir);
     run(runtimeNode, [path.join(repo, 'scripts/check-pi-extensions.mjs'), repo, '--host', host, '--agent-dir', stageAgent, '--settings', path.join(stageAgent, 'settings.json')], { env });
     const tests = ['scripts/test/herdr-prompts.test.mjs', 'scripts/test/scheduler-delivery.test.mjs',
-      'scripts/test/ux-composition.test.mjs', 'scripts/test/codex-tool-switch.test.mjs', 'scripts/test/codex-tool-recovery.test.mjs', 'packages/pi-agents-context/test/context.test.mjs',
+      'scripts/test/ux-composition.test.mjs', 'scripts/test/codex-tool-switch.test.mjs', 'scripts/test/codex-tool-recovery.test.mjs', 'scripts/test/compaction-guidance.test.mjs', 'packages/pi-scheduler/test/prompt-edit.test.cjs', 'packages/pi-scheduler/test/readiness.test.cjs', 'packages/pi-agents-context/test/context.test.mjs',
       'packages/pi-unread-navigation/test/extension.test.mjs'].map(file => path.join(repo, file));
     for (const file of tests) if (!fs.existsSync(file)) throw new Error(`Required candidate regression is missing: ${file}`);
     run(runtimeNode, ['--test', ...tests], { env: { ...env, PI_HOST_DIR: host } });

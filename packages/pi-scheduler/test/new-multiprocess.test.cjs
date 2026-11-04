@@ -82,3 +82,40 @@ test("surviving process refresh recovers a crashed owner and an expired deadline
 			} finally { await h.close(); }
 		}
 });
+
+
+test("two processes retain one readiness failure notice and never replay uncertain delivery", async () => {
+	const h = await createMultiprocessHarness(ROOT);
+	try {
+		const first = h.worker("checker"), second = h.worker("peer");
+		await first.call("start");
+		await first.call("schedule", { action: "shell", resultMode: "readiness", type: "interval", schedule: "0.3s", scope: "cwd", command: `${shellCommand(h.markerFile)}; printf 'bad JSON'`, maxRuns: 3 });
+		await second.call("start");
+		await waitFor(async () => (await h.tasks()).tasks[0]?.pendingWake?.state === "uncertain", "failure notice dispatched once");
+		const task = (await h.tasks()).tasks[0];
+		assert.equal(task.enabled, false); assert.equal(task.runCount, 1); assert.equal(task.result.readiness.state, "error");
+		assert.match(task.pendingWake.content, /检查器失败.*暂停/);
+		assert.equal((await fs.readFile(h.markerFile, "utf8")).trim().split("\n").length, 1);
+		const wakeId = task.pendingWake.id;
+		await first.call("shutdown"); await second.call("start");
+		const restored = (await h.tasks()).tasks[0];
+		assert.equal(restored.pendingWake.id, wakeId); assert.equal(restored.pendingWake.state, "uncertain");
+	} finally { await h.close(); }
+});
+
+test("surviving process recovers interrupted readiness check into paused failure, not another execution", async () => {
+	const h = await createMultiprocessHarness(ROOT);
+	try {
+		const owner = h.worker("checker"), survivor = h.worker("survivor");
+		await owner.call("start");
+		await owner.call("schedule", { action: "shell", resultMode: "readiness", type: "interval", schedule: "0.1s", scope: "cwd", command: `${shellCommand(h.markerFile)}; sleep 20`, expiresIn: "30s" });
+		await waitFor(async () => (await h.tasks()).tasks[0]?.runOwner?.pid === owner.child.pid, "checker claimed");
+		await survivor.call("start"); h.crash(owner); await owner.exitPromise;
+		await waitFor(async () => (await h.tasks()).tasks[0]?.pendingWake?.state === "uncertain", "recovery report", 12_000);
+		const task = (await h.tasks()).tasks[0];
+		assert.equal(task.enabled, false); assert.equal(task.status, "failed"); assert.equal(task.runCount, 1);
+		assert.equal(task.history[0].outcome.readinessState, "error"); assert.match(task.pendingWake.content, /interrupted/);
+		const executions = await fs.readFile(h.markerFile, "utf8").catch(() => "");
+		assert.ok(executions.trim().split("\n").filter(Boolean).length <= 1);
+	} finally { await h.close(); }
+});

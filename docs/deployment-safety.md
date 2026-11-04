@@ -18,7 +18,7 @@ PI_HOST_DIR="$(npm root -g)/@earendil-works/pi-coding-agent" \
 - 保留扩展只复制代码和 package manifest，配置仅使用仓库版本，不复制真实扩展 JSON、凭据、session 或日志；显式路径只供只读加载。独立 cwd/HOME/agent-dir，清除凭据与 Herdr 身份变量，禁用 Jiti 磁盘缓存；不触发 session_start、模型或工具。真实 runner + 空的内存 SessionManager 负责 shutdown 清理。因此验证的是部署后代码组合，不代表真实配置/provider 可用性。
 - Node 24 permission model 只允许写临时目录，禁止子进程；显式阻止常用 JS 网络入口。为检查真实 tree-sitter 等原生依赖保留 `--allow-addons`，所以**这不是运行恶意扩展的安全沙箱**；原生代码可能绕过 Node 权限。只检查你已信任的配置包。
 - 返回码：`0` 完整通过；`1` 加载/清理/冲突失败；`2` 缺包或配置版本不满足，组合不完整；`3` 找不到兼容 Pi host。缺失不当作通过，且绝不静默安装。
-- 这证明 factory 初始化与清理组合，不证明真实 provider、OAuth、完整交互 UI 或业务行为端到端正确。当前 Pi 1.4 本机组合：23 配置包、29 factories（含保留的本机扩展，移除受管 legacy Claude rules）、missing=0、failed=0。
+- 这证明 factory 初始化与清理组合，不证明真实 provider、OAuth、完整交互 UI 或业务行为端到端正确。本轮 Pi 1.5 组合：24 配置包、30 factories（含保留的本机扩展），missing=0、failed=0。
 
 ## 配置事务与 ownership inventory
 
@@ -58,6 +58,10 @@ node scripts/managed-deploy.mjs --restore /path/to/transaction-UUID --apply
 ## 跨功能离线会话
 
 `scripts/test/ux-composition.test.mjs` 使用真实 Pi SessionManager/ExtensionRunner/ModelRuntime、合成持久会话、内存 providers 与无输出的原生 fullscreen layout。验证 AGENTS/rules、独立 reviewer 认证与主模型隔离、BTW 注册、HUD/未读导航共存，以及草稿阻塞、取消 shell 待交付结果、安全窗口只唤醒一次与 shutdown 清理。没有真实凭据、用户会话或 Herdr server；不能代替真实 provider/OAuth 与部署后交互验收。
+
+压缩与定时提示回归见 `scripts/test/compaction-guidance.test.mjs` 和 `packages/pi-scheduler/test/prompt-edit.test.cjs`：合成重复唤醒、原始约束与用户修订；验证普通原生摘要的切点／迭代／split-turn、Codex opaque checkpoint 与 Lite／百分比入口，以及多行编辑、取消／并发拒绝和 queued 交付保留。测试不替代真实摘要质量验收。
+
+readiness 回归见 `packages/pi-scheduler/test/readiness.test.cjs`、`new-multiprocess.test.cjs` 与 installed-Pi live 测试：显式三态协议、故障暂停、成功过滤下仍报告、等待超限、前台忙碌/重启/不确定交付和进程中断恢复。普通 shell 行为保持原样，不自动迁移旧检查任务，也不证明远端工程检查脚本正确。
 
 ## 回归
 

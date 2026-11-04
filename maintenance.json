@@ -21,6 +21,7 @@
     "packages/pi-scheduler": { "kind": "patched", "upstream": "@jl1990/pi-scheduler", "policy": "repository-only" },
     "packages/pi-agents-context": { "kind": "owned", "policy": "repository-only" },
     "packages/pi-agent-summary-time": { "kind": "owned", "policy": "repository-only" },
+    "packages/pi-compaction-guidance": { "kind": "owned", "policy": "repository-only" },
     "packages/pi-fork-save": { "kind": "owned", "policy": "repository-only" },
     "packages/pi-gpt-codex": { "kind": "owned", "policy": "repository-only" },
     "packages/pi-unread-navigation": { "kind": "owned", "policy": "repository-only" },

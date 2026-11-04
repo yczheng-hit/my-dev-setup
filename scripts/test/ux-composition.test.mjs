@@ -57,6 +57,7 @@ test('AGENTS + independent reviewer + BTW + scheduler + unread + HUD share one s
       });
     }
     const packages = ['pi-agents-context', 'picc-permission-modes', 'pi-gpt-codex', 'pi-scheduler', 'pi-unread-navigation', 'pi-hud-footer', 'pi-subagent-hud'].map((name) => path.join(repo, 'packages', name));
+    packages.push(path.join(repo, 'packages/pi-compaction-guidance'));
     packages.push(path.join(repo, 'tools/pi-btw-split'));
     const settings = sdk.SettingsManager.inMemory({ packages, compaction: { enabled: false } }, { projectTrusted: true });
     const loader = new sdk.DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,

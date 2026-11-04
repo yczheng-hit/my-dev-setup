@@ -1,0 +1,7 @@
+{
+  "name": "pi-compaction-guidance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "pi": { "extensions": ["./extensions/index.ts"] }
+}
