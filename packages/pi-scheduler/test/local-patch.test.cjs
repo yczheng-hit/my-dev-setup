@@ -108,3 +108,32 @@ test("manage update still accepts unlisted schedule_task fields", async () => {
 		assert.match(updated.content[0].text, /^已更新 task_\S+「renamed」：命令 · 每 1h/);
 	} finally { await h.close(); }
 });
+
+test("shell mode is disabled by default: schema omits shell, creation rejects shell, and legacy shell tasks wake foreground AI", async () => {
+	let shellExecCalls = 0;
+	const h = await harness(__dirname + "/..", async () => { shellExecCalls++; return { code: 0, stdout: "should not run", stderr: "" }; }, { allowShell: false });
+	try {
+		await h.start();
+		const props = Object.keys(h.tools.schedule_task.parameters.properties);
+		assert.deepEqual([...h.tools.schedule_task.parameters.properties.action.enum], ["prompt", "notify", "message"]);
+		for (const field of ["command", "resultMode", "backgroundExecution", "timeoutMs", "followUpPrompt", "wakeOn", "stopOn"]) {
+			assert.ok(!props.includes(field), `${field} is omitted when shell mode is disabled`);
+		}
+		await assert.rejects(() => h.call("schedule_task", { action: "shell", schedule: "1m", command: "echo hi" }), /shell 定时模式已关闭/);
+
+		// A legacy persisted shell task in tasks.json wakes the foreground AI instead of running a background shell
+		const { createTaskStore } = require("../extensions/scheduler/task-store.cjs");
+		const store = createTaskStore({ stateFile: h.stateFile, sanitize: core.sanitizeTasks });
+		await store.transact((tasks) => {
+			tasks.push(core.createScheduledTask({ action: "shell", scope: "cwd", cwd: h.context.cwd, schedule: "0.02s", command: "check-status", name: "legacy-shell" }, new Date()));
+		});
+		await h.events.session_shutdown({}, h.context);
+		await h.start();
+		await until(() => h.wakes.length === 1, "legacy shell task converted to foreground prompt wake");
+		assert.equal(shellExecCalls, 0, "background shell command must not execute");
+		assert.equal(h.entries.filter((e) => String(e.data?.text).startsWith("🖥")).length, 0, "no display-only shell completion log");
+		assert.match(h.wakes[0].text, /命令：check-status/);
+	} finally {
+		await h.close();
+	}
+});

@@ -17,6 +17,7 @@ const { createTaskStore } = require("./task-store.cjs");
 const readiness = require("./readiness.cjs");
 
 const ACTIONS = ["notify", "prompt", "shell", "message"] as const;
+const FOREGROUND_ACTIONS = ["prompt", "notify", "message"] as const;
 const TYPES = ["once", "interval", "cron"] as const;
 const SCOPES = ["session", "cwd", "global"] as const;
 const WAKE_ON = ["always", "failure", "success", "never", "change"] as const;
@@ -138,6 +139,7 @@ function taskLabel(task: ScheduledTask): string {
 type LogEntryData = { text: string; level?: "info" | "notice" | "warning" | "error"; detail?: string };
 
 export default function schedulerExtension(pi: ExtensionAPI) {
+	const shellEnabled = process.env.PI_SCHEDULER_ALLOW_SHELL === "1";
 	let tasks: ScheduledTask[] = [];
 	let handles = new Map<string, TimerHandle>();
 	let expiryHandles = new Map<string, NodeJS.Timeout>();
@@ -587,12 +589,12 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			return { ok: true, delivered: "notify", wakeReason: "notify", wakeDisposition: "not-requested" };
 		}
 
-		if (task.action === "prompt" || task.action === "message") {
+		if (task.action === "prompt" || task.action === "message" || (!shellEnabled && task.action === "shell")) {
 			if (task.action === "message" && task.triggerTurn === false) {
 				recordMessage(`${scheduledPromptHeader(task)}\n${AUTOMATIC_WAKE_NOTICE}\n${task.message}`, { task }, false);
 				return { ok: true, wakeDisposition: "not-requested" };
 			}
-			return { ok: true, wakeReason: task.action, wakeDisposition: "pending" };
+			return { ok: true, wakeReason: task.action === "shell" ? "prompt" : task.action, wakeDisposition: "pending" };
 		}
 
 		if (task.action === "shell") {
@@ -722,7 +724,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				result.superseded = persisted.executionRevision !== task?.executionRevision
 					|| persisted.action !== task?.action || persisted.command !== task?.command
 					|| (persisted.cwd ?? fallbackCwd) !== (task?.cwd ?? fallbackCwd) || persisted.resultMode !== task?.resultMode;
-				if (task?.action === "shell" && !result.superseded
+				if (shellEnabled && task?.action === "shell" && !result.superseded
 					&& persisted.enabled !== false && persisted.status === "running") {
 					result.wakeReason = persisted.wakeOn ?? "never";
 					if (persisted.wakeOn !== "change") {
@@ -740,10 +742,14 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				}
 				if (!isSessionActive(ctx, generation) && result.wakeDisposition === "pending") result.wakeDisposition = "session-suppressed";
 				core.markScheduledTaskCompleted(current, persisted.id, new Date(), result, { ok: result.ok !== false });
-				const retainedReady = persisted.resultMode === "readiness" && result.readiness?.state === "ready" && wakeTask && task?.runOwner?.sessionFile;
+				const retainedReady = shellEnabled && persisted.resultMode === "readiness" && result.readiness?.state === "ready" && wakeTask && task?.runOwner?.sessionFile;
 				if (persisted.status !== "cancelled" && !result.superseded && !persisted.readinessNotice && persisted.result?.readiness?.state !== "error" && (isSessionActive(ctx, generation) || retainedReady)) {
-					const instruction = task?.action === "shell" && wakeTask ? core.selectShellFollowUpPrompt(wakeTask, result) : undefined;
+					const legacyShellBody = !shellEnabled && task?.action === "shell"
+						? [persisted.followUpPrompt || persisted.successPrompt || persisted.failurePrompt || persisted.prompt || "请检查以下定时任务状态并决定下一步：", persisted.command ? `命令：${persisted.command}` : ""].filter(Boolean).join("\n")
+						: undefined;
+					const instruction = shellEnabled && task?.action === "shell" && wakeTask ? core.selectShellFollowUpPrompt(wakeTask, result) : undefined;
 					const content = instruction ? shellResultPrompt(wakeTask!, result, instruction, fallbackCwd)
+						: legacyShellBody ? `${scheduledPromptHeader(persisted)}\n${AUTOMATIC_WAKE_NOTICE}\n${legacyShellBody}`
 						: task?.action === "prompt" ? `${scheduledPromptHeader(persisted)}\n${AUTOMATIC_WAKE_NOTICE}\n${persisted.prompt}`
 						: task?.action === "message" && task.triggerTurn !== false ? `${scheduledPromptHeader(persisted)}\n${AUTOMATIC_WAKE_NOTICE}\n${persisted.message}` : undefined;
 					if (content) {
@@ -761,7 +767,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 			result.wakeDisposition = savedResult?.wakeDisposition ?? result.wakeDisposition;
 			result.readinessQuiet = savedResult?.readinessQuiet;
 			// local patch: when the agent was not woken, leave one display-only line in the chat.
-			if (task.action === "shell" && !result.outputSuppressed && !result.readinessQuiet && !["delivered", "pending"].includes(result.wakeDisposition)
+			if (shellEnabled && task.action === "shell" && !result.outputSuppressed && !result.readinessQuiet && !["delivered", "pending"].includes(result.wakeDisposition)
 				&& isSessionActive(ctx, generation)) {
 				const output = [result.stdout, result.stderr].map((text) => text?.trimEnd()).filter(Boolean).join("\n");
 				logEntry(
@@ -799,6 +805,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	}
 
 	async function createAndSchedule(input: Record<string, any>, ctx: ExtensionContext): Promise<ScheduledTask> {
+		if (!shellEnabled && (String(input.action ?? "").trim().toLowerCase() === "shell" || (input.command !== undefined && !input.prompt && !input.message))) {
+			throw new Error("shell 定时模式已关闭；请使用 action: 'prompt' 让定时任务唤醒前台 AI 执行检查");
+		}
 		const scope = input.scope ?? "session";
 		const sessionFile = scope === "session" ? currentSessionFile(ctx) : undefined;
 		if (scope === "session" && !sessionFile) {
@@ -824,6 +833,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 
 	function parseCommandTask(args: string, ctx: ExtensionContext): Record<string, any> {
 		const parsed = core.splitScheduleCommand(args, new Date());
+		if (!shellEnabled && parsed.action === "shell") {
+			throw new Error("shell 定时模式已关闭；请使用 /schedule prompt <时间> :: <唤醒指令>");
+		}
 		const base: Record<string, any> = {
 			action: parsed.action,
 			type: parsed.type,
@@ -1105,27 +1117,44 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 		// local patch: slim model-facing metadata. Aliases and rarely used fields (when, payload, title,
 		// description, enabled, triggerTurn, successPrompt, failurePrompt) are no longer advertised but are
 		// still accepted: TypeBox objects allow extra properties and the core reads them as before.
-		description: "Do something later or repeatedly while Pi is open: notify the user, wake yourself with a prompt, or run a shell command and get woken with its output.",
-		promptSnippet: "Schedule reminders, self-wakeups, or shell polling (CI, deploys) for later",
-		promptGuidelines: [
-			"For waiting checks, opt into shell resultMode='readiness': exit 0; stdout exactly one JSON object with state=pending|ready|error and nonempty summary (max 1000 chars; stdout max 8192 bytes); logs to stderr. wakeOn success/always (default success); stopOn success/never (default success). Errors pause and report; bound polling with maxRuns/expiresIn.",
-			"For schedule_task, write brief wake instructions in the conversation's language with normal spacing and lists: what to check, evidence location and essential limits. Reference existing handoffs rather than copying history; recheck old snapshots.",
-		],
+		description: shellEnabled
+			? "Do something later or repeatedly while Pi is open: notify the user, wake yourself with a prompt, or run a shell command and get woken with its output."
+			: "Do something later or repeatedly while Pi is open: wake the foreground AI with a prompt (default) or show a notification to the user.",
+		promptSnippet: shellEnabled
+			? "Schedule reminders, self-wakeups, or shell polling (CI, deploys) for later"
+			: "Schedule foreground AI wakeups (for CI, deploys, or status checks) or user reminders for later",
+		promptGuidelines: shellEnabled
+			? [
+				"For waiting checks, opt into shell resultMode='readiness': exit 0; stdout exactly one JSON object with state=pending|ready|error and nonempty summary (max 1000 chars; stdout max 8192 bytes); logs to stderr. wakeOn success/always (default success); stopOn success/never (default success). Errors pause and report; bound polling with maxRuns/expiresIn.",
+				"For schedule_task, write brief wake instructions in the conversation's language with normal spacing and lists: what to check, evidence location and essential limits. Reference existing handoffs rather than copying history; recheck old snapshots.",
+			]
+			: [
+				"For waiting checks, polling (CI, deploys, background jobs), or deferred follow-ups, always use schedule_task with action='prompt' so the foreground AI wakes up and runs checks directly; background shell tasks are disabled; bound polling with maxRuns/expiresIn.",
+				"For schedule_task, write brief wake instructions in the conversation's language with normal spacing and lists: what to check, evidence location and essential limits. Reference existing handoffs rather than copying history; recheck old snapshots.",
+			],
 		parameters: Type.Object({
-			action: StringEnum(ACTIONS, { description: "notify: show message; prompt: wake you with prompt; shell: run command" }),
+			action: StringEnum(shellEnabled ? ACTIONS : FOREGROUND_ACTIONS, {
+				description: shellEnabled
+					? "notify: show message; prompt: wake you with prompt; shell: run command"
+					: "prompt: wake foreground AI with prompt; notify: show message; message: append message",
+			}),
 			type: Type.Optional(StringEnum(TYPES, { description: "default once" })),
 			schedule: Type.Optional(Type.String({ description: "once: '10m', '14:30', 'tomorrow 9am', ISO time; interval: '5m'; cron: '0 9 * * 1-5'" })),
 			name: Type.Optional(Type.String()),
 			message: Type.Optional(Type.String({ description: "notify text" })),
-			prompt: Type.Optional(Type.String()),
-			command: Type.Optional(Type.String()),
-			resultMode: Type.Optional(StringEnum(["exitCode", "readiness"] as const, { description: "readiness: stdout JSON {state: pending|ready|error, summary: string}; nonzero/invalid/timeout pauses and reports. Default exitCode." })),
-			cwd: Type.Optional(Type.String()),
-			backgroundExecution: Type.Optional(Type.Boolean({ description: "explicitly allow shell execution during foreground work; result still waits" })),
-			timeoutMs: Type.Optional(Type.Number({ minimum: 1000, description: "default 300000" })),
-			followUpPrompt: Type.Optional(Type.String({ description: "shell: what to do with the output when woken" })),
-			wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed. readiness: success (default) or always; errors always report." })),
-			stopOn: Type.Optional(StringEnum(STOP_ON, { description: "shell: stop recurring after this result; readiness: success=ready (default), or never" })),
+			prompt: Type.Optional(Type.String({ description: "wake instructions for the foreground AI" })),
+			...(shellEnabled
+				? {
+					command: Type.Optional(Type.String()),
+					resultMode: Type.Optional(StringEnum(["exitCode", "readiness"] as const, { description: "readiness: stdout JSON {state: pending|ready|error, summary: string}; nonzero/invalid/timeout pauses and reports. Default exitCode." })),
+					cwd: Type.Optional(Type.String()),
+					backgroundExecution: Type.Optional(Type.Boolean({ description: "explicitly allow shell execution during foreground work; result still waits" })),
+					timeoutMs: Type.Optional(Type.Number({ minimum: 1000, description: "default 300000" })),
+					followUpPrompt: Type.Optional(Type.String({ description: "shell: what to do with the output when woken" })),
+					wakeOn: Type.Optional(StringEnum(WAKE_ON, { description: "shell: default always with followUpPrompt, else never; change = output changed. readiness: success (default) or always; errors always report." })),
+					stopOn: Type.Optional(StringEnum(STOP_ON, { description: "shell: stop recurring after this result; readiness: success=ready (default), or never" })),
+				}
+				: {}),
 			maxRuns: Type.Optional(Type.Number({ minimum: 1 })),
 			expiresIn: Type.Optional(Type.String({ description: "e.g. '2h'" })),
 			backoff: Type.Optional(Type.Object({ factor: Type.Number(), maxInterval: Type.String() }, { description: "interval only, e.g. {factor:2,maxInterval:'30m'}" })),
@@ -1238,6 +1267,9 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 				const updates: Record<string, any> = { ...params };
 				delete updates.action;
 				delete updates.id;
+				if (!shellEnabled && (String((params as any).taskAction ?? "").trim().toLowerCase() === "shell" || updates.command !== undefined)) {
+					throw new Error("shell 定时模式已关闭；请使用 action: 'prompt' 让定时任务唤醒前台 AI 执行检查");
+				}
 				if (updates.scope === "session") {
 					updates.sessionFile = currentSessionFile(ctx);
 					if (!updates.sessionFile) throw new Error("Session-scoped tasks require a persisted Pi session");

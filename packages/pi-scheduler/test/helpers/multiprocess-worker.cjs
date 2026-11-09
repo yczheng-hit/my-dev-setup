@@ -40,7 +40,7 @@ const pi = {
 };
 const sandbox = {
   require: localRequire,
-  process: { ...process, env: { ...process.env, PI_SCHEDULER_STATE_FILE: stateFile } },
+  process: { ...process, env: { ...process.env, PI_SCHEDULER_ALLOW_SHELL: process.env.PI_SCHEDULER_ALLOW_SHELL ?? "1", PI_SCHEDULER_STATE_FILE: stateFile } },
   console, setTimeout, clearTimeout, setInterval, clearInterval,
   AbortController,
   Cron: localRequire("croner").Cron, randomUUID, getAgentDir: () => path.dirname(stateFile), join: path.join,

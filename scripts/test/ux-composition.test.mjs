@@ -104,13 +104,14 @@ test('AGENTS + independent reviewer + BTW + scheduler + unread + HUD share one s
     const tools = sdk.wrapRegisteredTools(session.extensionRunner.getAllRegisteredTools(), session.extensionRunner);
     const schedule = tools.find((tool) => tool.name === 'schedule_task');
     const stateFile = path.join(agentDir, 'state/scheduler/tasks.json');
+    await assert.rejects(() => schedule.execute('synthetic-shell-blocked', { action: 'shell', command: 'printf fixture-output', schedule: '0.01s', scope: 'session' }), /shell 定时模式已关闭/);
     draft = 'unsubmitted steer';
-    const queued = await schedule.execute('synthetic-schedule', { action: 'shell', command: 'printf fixture-output', backgroundExecution: true, type: 'once', schedule: '0.01s', wakeOn: 'always', name: 'cancel me', scope: 'session' });
+    const queued = await schedule.execute('synthetic-schedule', { action: 'prompt', prompt: 'cancel me prompt', type: 'once', schedule: '0.01s', name: 'cancel me', scope: 'session' });
     const readTask = () => JSON.parse(fs.readFileSync(stateFile)).tasks.find((task) => task.id === queued.details.task.id);
-    await until(() => readTask()?.pendingWake, 'shell result pending while typing');
+    await delay(100);
     assert.equal(calls.length, 1, 'scheduler never jumps ahead of the human draft');
     await session.prompt('/schedule-cancel cancel me'); draft = '';
-    await delay(650); assert.equal(calls.length, 1); assert.equal(readTask().pendingWake, undefined);
+    await delay(650); assert.equal(calls.length, 1); assert.equal(readTask().status, 'cancelled');
     draft = 'second draft';
     await schedule.execute('synthetic-prompt', { action: 'prompt', prompt: 'scheduled check', type: 'once', schedule: '0.01s', name: 'safe wake', scope: 'session' });
     await delay(500); assert.equal(calls.length, 1);

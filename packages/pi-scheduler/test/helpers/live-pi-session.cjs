@@ -31,8 +31,10 @@ async function startLivePi() {
 	const stateFile = path.join(agentDir, "tasks.json");
 	const previousOffline = process.env.PI_OFFLINE;
 	const previousStateFile = process.env.PI_SCHEDULER_STATE_FILE;
+	const previousAllowShell = process.env.PI_SCHEDULER_ALLOW_SHELL;
 	process.env.PI_OFFLINE = "1";
 	process.env.PI_SCHEDULER_STATE_FILE = stateFile;
+	process.env.PI_SCHEDULER_ALLOW_SHELL = process.env.PI_SCHEDULER_ALLOW_SHELL ?? "1";
 	let session;
 	async function close() {
 		try { await session?.extensionRunner?.emit({ type: "session_shutdown" }); }
@@ -43,6 +45,8 @@ async function startLivePi() {
 				else process.env.PI_OFFLINE = previousOffline;
 				if (previousStateFile === undefined) delete process.env.PI_SCHEDULER_STATE_FILE;
 				else process.env.PI_SCHEDULER_STATE_FILE = previousStateFile;
+				if (previousAllowShell === undefined) delete process.env.PI_SCHEDULER_ALLOW_SHELL;
+				else process.env.PI_SCHEDULER_ALLOW_SHELL = previousAllowShell;
 				fs.rmSync(cwd, { recursive: true, force: true });
 				fs.rmSync(agentDir, { recursive: true, force: true });
 			}
