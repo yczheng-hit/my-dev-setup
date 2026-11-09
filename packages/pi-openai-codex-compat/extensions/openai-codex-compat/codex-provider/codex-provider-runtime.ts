@@ -256,10 +256,10 @@ export class CodexProviderRuntime {
   }
 
   private responsesLiteEnabled(sessionId: string | undefined): boolean {
-    return (
-      (sessionId ? this.scopes.get(sessionId)?.config.responsesLite : undefined) ??
-      DEFAULT_CONFIG.responsesLite
-    );
+    const scoped = sessionId ? this.scopes.get(sessionId)?.config.responsesLite : undefined;
+    if (scoped !== undefined) return scoped;
+    const latestScope = [...this.scopes.values()].at(-1)?.config.responsesLite;
+    return latestScope ?? DEFAULT_CONFIG.responsesLite;
   }
 
   private agentTurn(sessionId: string | undefined): ActiveAgentTurn {
@@ -703,6 +703,9 @@ export class CodexProviderRuntime {
     agentTurn: ActiveAgentTurn,
     responsesLiteEnabled: boolean,
   ): Promise<JsonRecord> {
+    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") {
+      return body;
+    }
     const sessionId = options.sessionId;
     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
     const threshold = scope?.config.autoCompactAtPercent;

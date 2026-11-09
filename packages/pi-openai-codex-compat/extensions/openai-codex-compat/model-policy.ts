@@ -75,6 +75,7 @@ export function codexModelPolicyApi(pi: ExtensionAPI): CodexModelPolicyApi {
 }
 
 function activeBranchHasCheckpoint(ctx: CodexModelPolicyContext): boolean {
+  if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return false;
   return hasNativeCheckpointEntry(ctx.sessionManager.getBranch());
 }
 

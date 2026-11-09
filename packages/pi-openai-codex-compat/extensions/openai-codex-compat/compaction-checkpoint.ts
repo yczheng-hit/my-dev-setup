@@ -555,28 +555,33 @@ export function providerHistory(options: {
     throw new Error("The latest Codex compaction checkpoint is corrupt.");
   }
   if (checkpoint.kind === "found") {
-    if (checkpoint.data.modelId !== options.wireModel.id) {
+    if (
+      process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION === "1" &&
+      checkpoint.data.modelId !== options.wireModel.id
+    ) {
       throw new Error(
         `The latest Codex compaction checkpoint belongs to ${checkpoint.data.modelId}, not ${options.wireModel.id}.`,
       );
     }
-    const checkpointEntry = branch[checkpoint.entryIndex];
-    const initialSystemMessage =
-      checkpointEntry?.type === "compaction" ? checkpointEntry.systemMessage : undefined;
-    return [
-      ...checkpoint.data.history.map((item) => structuredClone(item)),
-      ...encodeSessionEntries({
-        model: options.wireModel,
-        entries: branch.slice(checkpoint.entryIndex + 1),
-        grammarToolInputProperties: options.grammarToolInputProperties ?? new Map(),
-        imageDetail: options.imageDetail ?? "auto",
-        nativeAssistantItems,
-        entryMessages,
-        ...(initialSystemMessage ? { initialSystemMessage } : {}),
-        ...(options.requestMessages ? { requestMessages: options.requestMessages } : {}),
-      }),
-      ...recoveredPrefix,
-    ];
+    if (checkpoint.data.modelId === options.wireModel.id) {
+      const checkpointEntry = branch[checkpoint.entryIndex];
+      const initialSystemMessage =
+        checkpointEntry?.type === "compaction" ? checkpointEntry.systemMessage : undefined;
+      return [
+        ...checkpoint.data.history.map((item) => structuredClone(item)),
+        ...encodeSessionEntries({
+          model: options.wireModel,
+          entries: branch.slice(checkpoint.entryIndex + 1),
+          grammarToolInputProperties: options.grammarToolInputProperties ?? new Map(),
+          imageDetail: options.imageDetail ?? "auto",
+          nativeAssistantItems,
+          entryMessages,
+          ...(initialSystemMessage ? { initialSystemMessage } : {}),
+          ...(options.requestMessages ? { requestMessages: options.requestMessages } : {}),
+        }),
+        ...recoveredPrefix,
+      ];
+    }
   }
 
   const messages = convertToLlm(

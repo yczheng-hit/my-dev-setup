@@ -6,9 +6,10 @@ import { withCompactionGuidance } from "../guidance.ts";
 /** Keep Pi's preparation, summary format, iterative merge, split-turn handling and file tracking. */
 export default function compactionGuidance(pi: ExtensionAPI): void {
   pi.on("session_before_compact", async (event, ctx) => {
-    // Codex owns opaque checkpoints, including provider-internal percentage compaction.
-    // Virtual routing is also host-owned: the public registry has no direct-route API.
-    if (!ctx.model || ctx.model.provider === "openai-codex" || ctx.model.api === "pi-virtual") return;
+    // Use unified readable text compaction for all physical models (including openai-codex)
+    // unless native opaque Codex checkpoints are explicitly opted into.
+    const useNativeCodexCheckpoint = process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION === "1";
+    if (!ctx.model || (useNativeCodexCheckpoint && ctx.model.provider === "openai-codex") || ctx.model.api === "pi-virtual") return;
     if (event.signal.aborted) return { cancel: true };
     const model = ctx.model;
     const settings = SettingsManager.inMemory(pi.getSettings());

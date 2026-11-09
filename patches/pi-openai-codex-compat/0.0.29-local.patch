@@ -17,7 +17,7 @@ index 0000000..6adafc4
 +    : [instructions, COMPACTION_GUIDANCE].filter(Boolean).join("\n\n");
 +}
 diff --git a/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts b/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts
-index 3363ac1..890bed3 100644
+index 3363ac1..abc764d 100644
 --- a/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts
 +++ b/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts
 @@ -1,3 +1,4 @@
@@ -25,6 +25,21 @@ index 3363ac1..890bed3 100644
  import { requireJsonRecord, requireJsonValues } from "../codex-protocol.ts";
  import { isFunction, isNonNullObject, isString } from "../value-contracts.ts";
  import { randomUUID } from "node:crypto";
+@@ -255,10 +256,10 @@ export class CodexProviderRuntime {
+   }
+
+   private responsesLiteEnabled(sessionId: string | undefined): boolean {
+-    return (
+-      (sessionId ? this.scopes.get(sessionId)?.config.responsesLite : undefined) ??
+-      DEFAULT_CONFIG.responsesLite
+-    );
++    const scoped = sessionId ? this.scopes.get(sessionId)?.config.responsesLite : undefined;
++    if (scoped !== undefined) return scoped;
++    const latestScope = [...this.scopes.values()].at(-1)?.config.responsesLite;
++    return latestScope ?? DEFAULT_CONFIG.responsesLite;
+   }
+
+   private agentTurn(sessionId: string | undefined): ActiveAgentTurn {
 @@ -625,7 +626,7 @@ export class CodexProviderRuntime {
          template: options.template,
          modelId: options.model.id,
@@ -34,6 +49,72 @@ index 3363ac1..890bed3 100644
          sessionId:
            options.requestOptions.cacheRetention === "none" ? undefined : codexCacheKey(sessionId),
          priority: options.priority,
+@@ -702,6 +703,9 @@ export class CodexProviderRuntime {
+     agentTurn: ActiveAgentTurn,
+     responsesLiteEnabled: boolean,
+   ): Promise<JsonRecord> {
++    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") {
++      return body;
++    }
+     const sessionId = options.sessionId;
+     const scope = sessionId ? this.scopes.get(sessionId) : undefined;
+     const threshold = scope?.config.autoCompactAtPercent;
+diff --git a/extensions/openai-codex-compat/compaction-checkpoint.ts b/extensions/openai-codex-compat/compaction-checkpoint.ts
+index 4571ee7..c10d947 100644
+--- a/extensions/openai-codex-compat/compaction-checkpoint.ts
++++ b/extensions/openai-codex-compat/compaction-checkpoint.ts
+@@ -555,28 +555,33 @@ export function providerHistory(options: {
+     throw new Error("The latest Codex compaction checkpoint is corrupt.");
+   }
+   if (checkpoint.kind === "found") {
+-    if (checkpoint.data.modelId !== options.wireModel.id) {
++    if (
++      process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION === "1" &&
++      checkpoint.data.modelId !== options.wireModel.id
++    ) {
+       throw new Error(
+         `The latest Codex compaction checkpoint belongs to ${checkpoint.data.modelId}, not ${options.wireModel.id}.`,
+       );
+     }
+-    const checkpointEntry = branch[checkpoint.entryIndex];
+-    const initialSystemMessage =
+-      checkpointEntry?.type === "compaction" ? checkpointEntry.systemMessage : undefined;
+-    return [
+-      ...checkpoint.data.history.map((item) => structuredClone(item)),
+-      ...encodeSessionEntries({
+-        model: options.wireModel,
+-        entries: branch.slice(checkpoint.entryIndex + 1),
+-        grammarToolInputProperties: options.grammarToolInputProperties ?? new Map(),
+-        imageDetail: options.imageDetail ?? "auto",
+-        nativeAssistantItems,
+-        entryMessages,
+-        ...(initialSystemMessage ? { initialSystemMessage } : {}),
+-        ...(options.requestMessages ? { requestMessages: options.requestMessages } : {}),
+-      }),
+-      ...recoveredPrefix,
+-    ];
++    if (checkpoint.data.modelId === options.wireModel.id) {
++      const checkpointEntry = branch[checkpoint.entryIndex];
++      const initialSystemMessage =
++        checkpointEntry?.type === "compaction" ? checkpointEntry.systemMessage : undefined;
++      return [
++        ...checkpoint.data.history.map((item) => structuredClone(item)),
++        ...encodeSessionEntries({
++          model: options.wireModel,
++          entries: branch.slice(checkpoint.entryIndex + 1),
++          grammarToolInputProperties: options.grammarToolInputProperties ?? new Map(),
++          imageDetail: options.imageDetail ?? "auto",
++          nativeAssistantItems,
++          entryMessages,
++          ...(initialSystemMessage ? { initialSystemMessage } : {}),
++          ...(options.requestMessages ? { requestMessages: options.requestMessages } : {}),
++        }),
++        ...recoveredPrefix,
++      ];
++    }
+   }
+
+   const messages = convertToLlm(
 diff --git a/extensions/openai-codex-compat/index.ts b/extensions/openai-codex-compat/index.ts
 index 6fc5043..01e944e 100644
 --- a/extensions/openai-codex-compat/index.ts
@@ -56,6 +137,49 @@ index 6fc5043..01e944e 100644
    registerCodexSettings(pi, {
      getConfig: resolveConfig,
      hasPersistentSessions: commandTools.hasPersistentSessions,
+diff --git a/extensions/openai-codex-compat/model-policy.ts b/extensions/openai-codex-compat/model-policy.ts
+index d13ca85..9039ac6 100644
+--- a/extensions/openai-codex-compat/model-policy.ts
++++ b/extensions/openai-codex-compat/model-policy.ts
+@@ -75,6 +75,7 @@ export function codexModelPolicyApi(pi: ExtensionAPI): CodexModelPolicyApi {
+ }
+
+ function activeBranchHasCheckpoint(ctx: CodexModelPolicyContext): boolean {
++  if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return false;
+   return hasNativeCheckpointEntry(ctx.sessionManager.getBranch());
+ }
+
+diff --git a/extensions/openai-codex-compat/remote-compaction.ts b/extensions/openai-codex-compat/remote-compaction.ts
+index 3c26ac3..5883470 100644
+--- a/extensions/openai-codex-compat/remote-compaction.ts
++++ b/extensions/openai-codex-compat/remote-compaction.ts
+@@ -249,17 +249,25 @@ export default function registerRemoteCompaction(
+   pi.onContext((event, ctx) => {
+     runtime.captureScope(ctx);
+     const checkpoint = searchCheckpoint(ctx.sessionManager.getBranch());
+-    if (checkpoint.kind === "absent") return undefined;
++    if (checkpoint.kind !== "found") return undefined;
++    if (
++      process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1" &&
++      ctx.model?.id !== checkpoint.data.modelId
++    ) {
++      return undefined;
++    }
+     return {
+       messages: event.messages.filter((message) => message.role !== "compactionSummary"),
+     };
+   });
+
+   pi.onBeforeProviderHeaders((event, ctx) => {
++    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return;
+     if (selectedCodexModel(ctx.model)) appendFeatureHeader(event.headers);
+   });
+
+   pi.onSessionBeforeCompact(async (event, ctx) => {
++    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return undefined;
+     if (!selectedCodexModel(ctx.model)) return undefined;
+     if (event.signal.aborted) return { cancel: true };
+     runtime.captureScope(ctx);
 diff --git a/extensions/openai-codex-compat/responses-tool-schema.ts b/extensions/openai-codex-compat/responses-tool-schema.ts
 index 9fbc767..4e547bc 100644
 --- a/extensions/openai-codex-compat/responses-tool-schema.ts

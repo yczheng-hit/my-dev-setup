@@ -70,10 +70,12 @@ test('initial and split-turn summaries both receive guidance with native split h
     if (split) assert.match(result.compaction.summary, /Turn Context \(split turn\)/);
   }
 });
-test('ordinary adapter skips Codex/virtual and cancels abort/error without text fallback', { skip: !host }, async () => {
+test('ordinary adapter handles Codex by default, skips virtual, and cancels abort/error without text fallback', { skip: !host }, async () => {
   const h = harness();
-  for (const model of [{ ...plain, provider: 'openai-codex' }, { ...plain, api: 'pi-virtual' }]) assert.equal(await h.run({}, { ...h.ctx, model }), undefined);
-  const controller = new AbortController(); controller.abort(); assert.deepEqual(await h.run({ signal: controller.signal }), { cancel: true }); assert.equal(h.requests.length, 0);
+  assert.equal(await h.run({}, { ...h.ctx, model: { ...plain, api: 'pi-virtual' } }), undefined);
+  const codexRes = await h.run({}, { ...h.ctx, model: { ...plain, provider: 'openai-codex' } });
+  assert.match(codexRes.compaction.summary, /## Goal/);
+  const controller = new AbortController(); controller.abort(); assert.deepEqual(await h.run({ signal: controller.signal }), { cancel: true });
   for (const stop of ['error', 'length']) {
     const failed = harness(stop); assert.deepEqual(await failed.run({}), { cancel: true }); assert.equal(failed.requests.length, 1); assert.equal(failed.notices.length, 1);
   }
@@ -122,7 +124,7 @@ test('real SDK compaction appends once, retains recent entries and updates prior
   }
 });
 
-test('Codex manual/threshold/overflow hooks and internal percentage path retain opaque checkpoints with one guidance append', { skip: !host }, async () => {
+test('Codex defaults to unified text compaction and only creates opaque checkpoints when opted in', { skip: !host }, async () => {
   const codex = { ...plain, provider: 'openai-codex', api: 'openai-codex-responses', apis: ['openai-codex-responses'], id: 'gpt-6.1-sol' };
   const token = `e30.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'SYNTHETIC_ONLY' } })).toString('base64url')}.sig`;
   const runtime = new Runtime({ appendEntry() {}, getAllTools: () => [] }, () => ({ ...config, responsesLite: false, autoCompactAtPercent: 80 }), 'synthetic-installation');
@@ -136,41 +138,53 @@ test('Codex manual/threshold/overflow hooks and internal percentage path retain 
   const ctx = { model: codex, getSystemPrompt: () => 'original stable prompt', getContextUsage: () => ({ tokens: 90, percent: 90 }), hasUI: true,
     ui: { notify(text) { if (text.includes('failed:')) throw new Error(text); } }, sessionManager: { getSessionId: () => 'synthetic-session', getBranch: () => [], getLeafId: () => 'leaf', appendCompaction() {} },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: token }) } };
-  for (const reason of ['manual', 'threshold', 'overflow']) {
-    const result = await hook({ reason, willRetry: reason === 'overflow', branchEntries: [], customInstructions: 'manual focus', preparation: { firstKeptEntryId: 'boundary', tokensBefore: 90 }, signal: new AbortController().signal }, ctx);
-    assert.equal(result.compaction.details.kind, 'openai-codex-compat-remote-compaction');
-    assert.ok(result.compaction.details.history.some(item => item.type === 'compaction' && item.encrypted_content === 'SYNTHETIC_OPAQUE_CHECKPOINT'));
-    assert.equal(result.compaction.firstKeptEntryId, 'boundary'); assert.ok(!result.compaction.summary.includes('## Goal'));
-    assert.match(payloads.at(-1).instructions, /manual focus/);
+
+  // Default: native opaque checkpoint compaction is disabled so Codex uses unified text summaries
+  delete process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION;
+  assert.equal(await hook({ reason: 'manual', willRetry: false, branchEntries: [], customInstructions: 'manual focus', preparation: { firstKeptEntryId: 'boundary', tokensBefore: 90 }, signal: new AbortController().signal }, ctx), undefined);
+
+  const prev = process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION;
+  process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION = '1';
+  try {
+    for (const reason of ['manual', 'threshold', 'overflow']) {
+      const result = await hook({ reason, willRetry: reason === 'overflow', branchEntries: [], customInstructions: 'manual focus', preparation: { firstKeptEntryId: 'boundary', tokensBefore: 90 }, signal: new AbortController().signal }, ctx);
+      assert.equal(result.compaction.details.kind, 'openai-codex-compat-remote-compaction');
+      assert.ok(result.compaction.details.history.some(item => item.type === 'compaction' && item.encrypted_content === 'SYNTHETIC_OPAQUE_CHECKPOINT'));
+      assert.equal(result.compaction.firstKeptEntryId, 'boundary'); assert.ok(!result.compaction.summary.includes('## Goal'));
+      assert.match(payloads.at(-1).instructions, /manual focus/);
+    }
+    // Lite keeps the guidance in its native developer envelope, with the trigger intact.
+    runtime.captureScope({ ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => 'synthetic-lite' } });
+    runtime.updateSessionConfig('synthetic-lite', { ...config, responsesLite: true });
+    const lite = await runtime.compact({ model: codex, requestOptions: { apiKey: token, sessionId: 'synthetic-lite' }, history,
+      instructions: withGuidance('original stable prompt'), grammarToolInputProperties: new Map(), template: {}, priority: false,
+      compactionMetadata: metadata('manual', 'user_requested', 'standalone_turn'), compactionDecision: { reason: 'manual', willRetry: false } });
+    assert.ok(lite.checkpoint.history.some(item => item.type === 'compaction'));
+    assert.equal(payloads.at(-1).instructions, undefined, 'Lite moves instructions into a developer message');
+    assert.ok(payloads.at(-1).input.some(item => item.type === 'additional_tools'));
+    // Exercise the actual provider-internal percentage entry, not just the public compact method.
+    const appended = []; ctx.sessionManager.appendCompaction = (...args) => appended.push(args);
+    runtime.captureScope(ctx);
+    const body = { instructions: 'original stable prompt', input: history, tools: [], stream: true };
+    const options = { apiKey: token, sessionId: 'synthetic-session', transport: 'sse' };
+    // Percentage split uses an empty synthetic branch: no unsampled user entries to isolate.
+    await runtime.maybeCompactPercentage(codex, { messages: [{ role: 'system', content: 'original stable prompt' }] }, options, body, new Map(), runtime.agentTurn('synthetic-session'), false);
+    assert.equal(appended.length, 1); assert.equal(appended[0][3].kind, 'openai-codex-compat-remote-compaction');
+    assert.equal(payloads.length, 5);
+    for (const payload of payloads) {
+      const instructions = [payload.instructions ?? '', ...payload.input.filter(item => item.type === 'message' && item.role === 'developer').flatMap(item => item.content.map(part => part.text ?? ''))].filter(Boolean).join('\n');
+      assert.equal(instructions.split(guidance).length - 1, 1); assert.equal(payload.input.at(-1).type, 'compaction_trigger');
+      assert.ok(instructions.startsWith('original stable prompt')); assert.ok(!instructions.includes('Use this EXACT format'));
+    }
+    const before = payloads.length;
+    const controller = new AbortController(); controller.abort();
+    assert.deepEqual(await hook({ signal: controller.signal }, ctx), { cancel: true }); assert.equal(payloads.length, before);
+    ctx.hasUI = false;
+    runtime.transport.request = async function* () { throw new Error('synthetic endpoint failure'); };
+    const failure = await hook({ reason: 'manual', branchEntries: [], preparation: { firstKeptEntryId: 'boundary', tokensBefore: 90 }, signal: new AbortController().signal }, ctx);
+    assert.deepEqual(failure, { cancel: true }, 'native error never creates a local text summary');
+  } finally {
+    if (prev === undefined) delete process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION;
+    else process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION = prev;
   }
-  // Lite keeps the guidance in its native developer envelope, with the trigger intact.
-  runtime.captureScope({ ...ctx, sessionManager: { ...ctx.sessionManager, getSessionId: () => 'synthetic-lite' } });
-  runtime.updateSessionConfig('synthetic-lite', { ...config, responsesLite: true });
-  const lite = await runtime.compact({ model: codex, requestOptions: { apiKey: token, sessionId: 'synthetic-lite' }, history,
-    instructions: withGuidance('original stable prompt'), grammarToolInputProperties: new Map(), template: {}, priority: false,
-    compactionMetadata: metadata('manual', 'user_requested', 'standalone_turn'), compactionDecision: { reason: 'manual', willRetry: false } });
-  assert.ok(lite.checkpoint.history.some(item => item.type === 'compaction'));
-  assert.equal(payloads.at(-1).instructions, undefined, 'Lite moves instructions into a developer message');
-  assert.ok(payloads.at(-1).input.some(item => item.type === 'additional_tools'));
-  // Exercise the actual provider-internal percentage entry, not just the public compact method.
-  const appended = []; ctx.sessionManager.appendCompaction = (...args) => appended.push(args);
-  runtime.captureScope(ctx);
-  const body = { instructions: 'original stable prompt', input: history, tools: [], stream: true };
-  const options = { apiKey: token, sessionId: 'synthetic-session', transport: 'sse' };
-  // Percentage split uses an empty synthetic branch: no unsampled user entries to isolate.
-  await runtime.maybeCompactPercentage(codex, { messages: [{ role: 'system', content: 'original stable prompt' }] }, options, body, new Map(), runtime.agentTurn('synthetic-session'), false);
-  assert.equal(appended.length, 1); assert.equal(appended[0][3].kind, 'openai-codex-compat-remote-compaction');
-  assert.equal(payloads.length, 5);
-  for (const payload of payloads) {
-    const instructions = [payload.instructions ?? '', ...payload.input.filter(item => item.type === 'message' && item.role === 'developer').flatMap(item => item.content.map(part => part.text ?? ''))].filter(Boolean).join('\n');
-    assert.equal(instructions.split(guidance).length - 1, 1); assert.equal(payload.input.at(-1).type, 'compaction_trigger');
-    assert.ok(instructions.startsWith('original stable prompt')); assert.ok(!instructions.includes('Use this EXACT format'));
-  }
-  const before = payloads.length;
-  const controller = new AbortController(); controller.abort();
-  assert.deepEqual(await hook({ signal: controller.signal }, ctx), { cancel: true }); assert.equal(payloads.length, before);
-  ctx.hasUI = false;
-  runtime.transport.request = async function* () { throw new Error('synthetic endpoint failure'); };
-  const failure = await hook({ reason: 'manual', branchEntries: [], preparation: { firstKeptEntryId: 'boundary', tokensBefore: 90 }, signal: new AbortController().signal }, ctx);
-  assert.deepEqual(failure, { cancel: true }, 'native error never creates a local text summary');
 });

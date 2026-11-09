@@ -249,17 +249,25 @@ export default function registerRemoteCompaction(
   pi.onContext((event, ctx) => {
     runtime.captureScope(ctx);
     const checkpoint = searchCheckpoint(ctx.sessionManager.getBranch());
-    if (checkpoint.kind === "absent") return undefined;
+    if (checkpoint.kind !== "found") return undefined;
+    if (
+      process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1" &&
+      ctx.model?.id !== checkpoint.data.modelId
+    ) {
+      return undefined;
+    }
     return {
       messages: event.messages.filter((message) => message.role !== "compactionSummary"),
     };
   });
 
   pi.onBeforeProviderHeaders((event, ctx) => {
+    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return;
     if (selectedCodexModel(ctx.model)) appendFeatureHeader(event.headers);
   });
 
   pi.onSessionBeforeCompact(async (event, ctx) => {
+    if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return undefined;
     if (!selectedCodexModel(ctx.model)) return undefined;
     if (event.signal.aborted) return { cancel: true };
     runtime.captureScope(ctx);
