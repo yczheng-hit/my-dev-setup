@@ -38,6 +38,7 @@
     "repo:packages/pi-subagent-hud",
     "git:github.com/panbergco/pi-cc-steer"
   ],
+  "treeFilterMode": "user-only",
   "hideThinkingBlock": true,
   "theme": "claude-dark",
   "showHardwareCursor": true,

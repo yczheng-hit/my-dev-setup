@@ -214,9 +214,9 @@ test(
 			shouldAbort = true;
 			await f.session.prompt("第二条发错的指令 --typo");
 
-			// Editor has the mistaken prompt restored, and session leaf is rewound to Turn 1!
+			// Editor has the mistaken prompt restored, and projected context omits the aborted turn without session_tree
 			assert.equal(f.getDraft(), "第二条发错的指令 --typo");
-			assert.equal(f.sm.getLeafId(), leafAfterTurn1);
+			assert.ok(!JSON.stringify(f.sm.buildSessionContext().messages).includes("第二条发错的指令 --typo"));
 			assert.ok(f.notices.some((n) => n.text.includes("已取消并退回输入框")));
 
 			// Turn 2 retried after fixing typo: model context should NOT contain the aborted prompt

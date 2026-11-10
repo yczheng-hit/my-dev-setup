@@ -1,10 +1,10 @@
 /**
  * Restore the just-submitted interactive prompt to the editor when cancelled with Esc
- * before any tool executes, and rewind the aborted prompt from the active session branch.
+ * before any tool executes, and omit the aborted prompt from model context via native
+ * context_edit entries (without navigating the session tree or closing /btw).
  */
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ContextEditEntryDraft, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
-const RESTORE_CMD = "undo-prompt";
 const STEER_INTERRUPT_ENTRY = "cc-steer.interrupted";
 
 interface ActiveRun {
@@ -14,13 +14,6 @@ interface ActiveRun {
 	toolExecuted: boolean;
 	midTurnInputSeen: boolean;
 	completedTurns: number;
-}
-
-interface PendingRewind {
-	userEntryId: string;
-	preRunLeafId: string | null;
-	expectedLeafId: string | null;
-	rawText: string;
 }
 
 function findAbortedUserEntry(branch: SessionEntry[], preRunLeafId: string | null): SessionEntry | null | "unsafe" {
@@ -66,11 +59,9 @@ function findAbortedUserEntry(branch: SessionEntry[], preRunLeafId: string | nul
 
 export default function escRestoreInput(pi: ExtensionAPI) {
 	let activeRun: ActiveRun | undefined;
-	let pendingRewind: PendingRewind | undefined;
 
 	const reset = () => {
 		activeRun = undefined;
-		pendingRewind = undefined;
 	};
 
 	pi.on("session_start", reset);
@@ -119,59 +110,40 @@ export default function escRestoreInput(pi: ExtensionAPI) {
 		const aborted = stopReason === "aborted" || Boolean(ctx.signal?.aborted);
 		if (!aborted && stopReason !== "error") {
 			activeRun.completedTurns += 1;
+			return;
 		}
+
+		if (!aborted || !activeRun.started) return;
+		if (activeRun.toolExecuted || activeRun.completedTurns > 0 || activeRun.midTurnInputSeen) return;
+		if (!ctx.hasUI || ctx.hasPendingMessages() || ctx.ui.getEditorText().trim() !== "") return;
+
+		const target = findAbortedUserEntry(ctx.sessionManager.getBranch(), activeRun.preRunLeafId);
+		if (!target || target === "unsafe") return;
+
+		const edits: ContextEditEntryDraft[] = [
+			{ type: "context_edit", targetId: target.id, replacement: null },
+		];
+		if (event.messageEntryId) {
+			edits.push({ type: "context_edit", targetId: event.messageEntryId, replacement: null });
+		}
+		return {
+			entries: [...(event.entries ?? []), ...edits],
+		};
 	});
 
 	pi.on("agent_settled", (event, ctx) => {
 		const run = activeRun;
 		activeRun = undefined;
-		pendingRewind = undefined;
 
 		if (!event.aborted || !run || !run.started) return;
 		if (run.toolExecuted || run.completedTurns > 0 || run.midTurnInputSeen) return;
 		if (!ctx.hasUI) return;
 		if (ctx.hasPendingMessages() || ctx.ui.getEditorText().trim() !== "") return;
 
-		const branch = ctx.sessionManager.getBranch();
-		const target = findAbortedUserEntry(branch, run.preRunLeafId);
+		const target = findAbortedUserEntry(ctx.sessionManager.getBranch(), run.preRunLeafId);
 		if (target === "unsafe") return;
 
-		if (target === null) {
-			ctx.ui.setEditorText(run.rawText);
-			ctx.ui.notify("已取消并退回输入框", "info");
-			return;
-		}
-
-		pendingRewind = {
-			userEntryId: target.id,
-			preRunLeafId: run.preRunLeafId,
-			expectedLeafId: ctx.sessionManager.getLeafId(),
-			rawText: run.rawText,
-		};
-		pi.sendUserMessage(`/${RESTORE_CMD}`, { expandPromptTemplates: true });
-	});
-
-	pi.registerCommand(RESTORE_CMD, {
-		description: "撤回刚中断的用户输入并恢复到输入框",
-		handler: async (_args, ctx) => {
-			const target = pendingRewind;
-			pendingRewind = undefined;
-			if (!target || !ctx.hasUI) return;
-			if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
-
-			const currentDraft = ctx.ui.getEditorText();
-			if (currentDraft.trim() !== "" && currentDraft !== target.rawText) return;
-			if (ctx.sessionManager.getLeafId() !== target.expectedLeafId) return;
-
-			const branch = ctx.sessionManager.getBranch();
-			const check = findAbortedUserEntry(branch, target.preRunLeafId);
-			if (check === "unsafe" || !check || check.id !== target.userEntryId) return;
-
-			const result = await ctx.navigateTree(target.userEntryId, { summarize: false });
-			if (result.cancelled) return;
-
-			ctx.ui.setEditorText(target.rawText);
-			ctx.ui.notify("已取消并退回输入框", "info");
-		},
+		ctx.ui.setEditorText(run.rawText);
+		ctx.ui.notify("已取消并退回输入框", "info");
 	});
 }
