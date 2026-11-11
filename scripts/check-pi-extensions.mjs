@@ -86,7 +86,7 @@ async function worker(options) {
     fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, bytes);
   }
   // Only desired repository config; never copy live user config, auth, sessions, or project data.
-  for (const name of ['pi-cc-extensions.json', 'openai-codex-compat.json']) {
+  for (const name of ['pi-cc-extensions.json', 'openai-codex-compat.json', 'sol-pi.json']) {
     const source = path.join(repo, 'pi', name);
     if (fs.existsSync(source)) fs.copyFileSync(source, path.join(agentDir, name));
   }

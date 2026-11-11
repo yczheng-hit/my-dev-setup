@@ -16,12 +16,14 @@ function fixture() {
   const settings = JSON.parse(fs.readFileSync(path.join(repo, 'pi/settings.json')));
   const remotes = settings.packages.filter(entry => !(typeof entry === 'string' ? entry : entry.source).startsWith('repo:')).map(entry => {
     const source = typeof entry === 'string' ? entry : entry.source;
-    if (source.startsWith('git:')) return { source, kind: 'remote-git', identity: 'github.com/panbergco/pi-cc-steer', resolved: `${source}@${'a'.repeat(40)}`, commit: 'a'.repeat(40) };
+    if (source.startsWith('git:')) return { source, kind: 'remote-git', identity: source.slice(4), resolved: `${source}@${'a'.repeat(40)}`, commit: 'a'.repeat(40) };
     const name = source.slice(4); return { source, kind: 'remote-npm', name, version: '9.9.9', integrity: 'sha512-fixture', resolved: `${source}@9.9.9` };
   });
   const lock = { host: { version: '1.5.0' }, remotes };
   const stageAgent = path.join(stage, 'agent');
-  fs.mkdirSync(path.join(stageAgent, 'git/github.com/panbergco/pi-cc-steer'), { recursive: true });
+  for (const item of remotes.filter(item => item.kind === 'remote-git')) {
+    fs.mkdirSync(path.join(stageAgent, 'git', item.identity), { recursive: true });
+  }
   fs.writeFileSync(path.join(host, 'sentinel'), 'old host');
   fs.mkdirSync(path.join(agentDir, 'npm'), { recursive: true }); fs.writeFileSync(path.join(agentDir, 'npm/old'), 'old npm');
   const hashline = path.join(root, 'hashline'); fs.mkdirSync(hashline); fs.writeFileSync(path.join(hashline, 'hash-store.sqlite'), 'synthetic undo');

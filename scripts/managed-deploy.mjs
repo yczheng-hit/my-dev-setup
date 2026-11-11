@@ -132,6 +132,7 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     if (old) preserved.set(target, old);
   };
   for (const name of ['AGENTS.md', 'keybindings.json', 'pi-cc-extensions.json', 'WATCHDOG.yml']) add(path.join(agentDir, name), source(name));
+  if (exists(path.join(repo, 'pi/sol-pi.json'))) add(path.join(agentDir, 'sol-pi.json'), source('sol-pi.json'));
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
   seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');
   merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'));

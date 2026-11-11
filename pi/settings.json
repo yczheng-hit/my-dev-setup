@@ -36,7 +36,8 @@
     "npm:pi-sticky-last-prompt",
     "repo:packages/pi-hud-footer",
     "repo:packages/pi-subagent-hud",
-    "git:github.com/panbergco/pi-cc-steer"
+    "git:github.com/panbergco/pi-cc-steer",
+    "git:github.com/yczheng-hit/SoL-Pi"
   ],
   "treeFilterMode": "user-only",
   "hideThinkingBlock": true,
