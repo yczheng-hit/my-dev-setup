@@ -4,13 +4,20 @@
   "defaultThinkingLevel": "high",
   "externalEditor": "vi",
   "enabledModels": [
-    "anthropic/claude-opus-5-5",
-    "anthropic/claude-fable-5-1",
-    "anthropic/claude-sonnet-5-5",
-    "anthropic/claude-haiku-5-5",
-    "openai-codex/gpt-6-astra",
-    "openai-codex/gpt-6-luna",
-    "openai-codex/gpt-6.1-sol"
+    "nvidia-inference/azure/openai/eccn-gpt-6.1-terra",
+    "local/opus",
+    "local/sonnet",
+    "local/haiku",
+    "nvidia-inference/openai/openai/eccn-gpt-6-astra",
+    "nvidia-inference/openai/openai/eccn-gpt-6-sol",
+    "nvidia-inference/openai/openai/eccn-gpt-6.1-sol",
+    "nvidia-inference/us/azure/openai/eccn-gpt-5.6-sol",
+    "nvidia-inference/azure/openai/eccn-gpt-6.1-sol",
+    "nvidia-inference/nvidia/deepseek-ai/eccn-deepseek-v4.1-flash-1017",
+    "nvidia-inference/nvidia/zai-org/eccn-glm-5.3",
+    "nvidia-inference/nvidia/nvidia/eccn-nemotron-3-ultra",
+    "nvidia-inference/gcp/google/eccn-gemini-4-argon",
+    "nvidia-inference/xai/xai/eccn-grok-4.7"
   ],
   "packages": [
     "repo:packages/pi-agents-context",
@@ -37,7 +44,7 @@
     "repo:packages/pi-hud-footer",
     "repo:packages/pi-subagent-hud",
     "git:github.com/panbergco/pi-cc-steer",
-    "git:github.com/yczheng-hit/SoL-Pi"
+    "git:github.com/yczheng-hit/pi-ambient-compact"
   ],
   "treeFilterMode": "user-only",
   "hideThinkingBlock": true,

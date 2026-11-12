@@ -7,9 +7,10 @@
   "cacheWriteReadRatio": 12.5,
   "liveCompact": {
     "enabled": true,
+    "strategy": "dynamic-ai",
     "thresholds": {
       "startRatio": 0.7,
-      "targetRatio": 0.7,
+      "targetRatio": 0.5,
       "ceilingRatio": 0.8
     },
     "protection": {
@@ -19,6 +20,14 @@
     "observation": {
       "minBytes": 10240,
       "excerptTargetBytes": 8192
+    },
+    "summary": {
+      "provider": "nvidia-inference",
+      "model": "azure/openai/eccn-gpt-6.1-terra"
+    },
+    "verification": {
+      "provider": "nvidia-inference",
+      "model": "azure/openai/eccn-gpt-6.1-terra"
     }
   }
 }

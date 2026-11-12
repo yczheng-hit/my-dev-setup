@@ -117,7 +117,7 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
   const merge = (name, target, transform = value => value) => add(target, json({ ...readObject(target), ...transform(JSON.parse(source(name))) }));
   const settingsPath = path.join(agentDir, 'settings.json'), localSettings = readObject(settingsPath);
   const settings = { ...localSettings, ...JSON.parse(source('settings.json')) };
-  for (const key of ['defaultProvider', 'defaultModel', 'defaultThinkingLevel', 'externalEditor']) {
+  for (const key of ['defaultProvider', 'defaultModel', 'defaultThinkingLevel', 'externalEditor', 'enabledModels']) {
     if (Object.hasOwn(localSettings, key)) settings[key] = localSettings[key];
   }
   settings.packages = (settings.packages ?? []).map(entry => {
@@ -132,7 +132,7 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     if (old) preserved.set(target, old);
   };
   for (const name of ['AGENTS.md', 'keybindings.json', 'pi-cc-extensions.json', 'WATCHDOG.yml']) add(path.join(agentDir, name), source(name));
-  if (exists(path.join(repo, 'pi/sol-pi.json'))) add(path.join(agentDir, 'sol-pi.json'), source('sol-pi.json'));
+  if (exists(path.join(repo, 'pi/sol-pi.json'))) seedConfig(path.join(agentDir, 'sol-pi.json'), source('sol-pi.json'), 'config');
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
   seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');
   merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'));
