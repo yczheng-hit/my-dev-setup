@@ -1,1 +1,1 @@
-Search with ripgrep: use the `grep` tool or `rg` in bash.
+Prefer `rg` (ripgrep) for searching; fall back to `grep` only when `rg` is unavailable.

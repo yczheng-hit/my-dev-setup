@@ -81,14 +81,20 @@ function errorResult(
 	};
 }
 
+import { createToolLoadoutDietController } from "./tool-loadout-diet.ts";
+
 export default function questionnaire(pi: ExtensionAPI) {
+	const diet = createToolLoadoutDietController(pi);
+
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
 			"Ask the user one or more questions. Use for clarifying requirements, getting preferences, or confirming decisions. For single questions, shows a simple option list. For multiple questions, shows a tab-based interface.",
 		parameters: QuestionnaireParams,
-
+		prepareLoadout(loadout) {
+			return diet.prepareLoadout(loadout);
+		},
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (ctx.mode !== "tui") {
 				return errorResult("Error: UI not available (running in non-interactive mode)");
