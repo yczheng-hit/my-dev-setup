@@ -1,7 +1,9 @@
 {
   "app.thinking.cycle": [
-    "ctrl+e",
     "alt+t"
   ],
-  "tui.editor.cursorLineEnd": "end"
+  "tui.editor.cursorLineEnd": [
+    "end",
+    "ctrl+e"
+  ]
 }
