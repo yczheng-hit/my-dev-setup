@@ -36,7 +36,6 @@
     "npm:pi-repl-py",
     "npm:pi-context",
     "repo:packages/pi-scheduler",
-    "repo:packages/pi-unread-navigation",
     "npm:@narumitw/pi-goal",
     "repo:tools/pi-btw-split",
     "npm:pi-web-access",
