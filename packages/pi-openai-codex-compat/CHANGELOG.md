@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- Add the `applyPatchModels` setting (JSON string or array, comma-separated,
+  `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH_MODELS`) so `apply_patch` can replace Pi's edit tools on models other
+  than `openai-codex`. Matching uses the case-insensitive globs already used elsewhere for a model's `id`,
+  `provider/id`, and `api`, later patterns win, and a `!pattern` entry excludes one model from a broader glob.
+  The default `openai-codex/*` keeps earlier behavior. On non-Codex models the extension adds a short
+  `apply_patch` format section to the system prompt.
+- Add an `apply_patch models` row to `/codex-settings` that lists the current model, `settings.json`
+  `enabledModels`, every available model, and configured patterns; Up/Down selects, Enter toggles the
+  highlighted model between `apply_patch` and the Pi edit tool set, and Ctrl+S saves.
+
+### Changed
+
+- Saving `/codex-settings` now mirrors `applyPatchModels` into `pi-hashline-edit-pro`'s `disableOnModels`
+  (`~/.config/pi-hashline-edit-pro/config.json`, honoring `PI_HASHLINE_DIR` and `XDG_CONFIG_HOME`) and
+  reloads the session after a patch-gate change, so the anchored `read`, `grep`, and `replace`-family tools
+  switch off and back on with `apply_patch`.
+
 ## 0.0.29 - 2026-10-22
 
 ### Added

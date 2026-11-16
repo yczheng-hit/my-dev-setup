@@ -32,6 +32,14 @@ Pi 对未知工具不会触发 `tool_call` / `tool_result`，因此通过 `conte
 
 离线回归使用真实 Pi Session/ExtensionRunner/调度器和合成模型：先成功 `apply_patch`，切到普通 Completions 后故意误用一次，再用当前工具成功并切回 Codex；验证请求序列化含纠正说明、旧调用不执行、原始历史仍保留原错误。提示只能改善恢复，不保证任意实际 endpoint/model 都不再误用。
 
+### `apply_patch` 可对任意模型开启
+
+上游只在 `openai-codex` provider 上启用 `apply_patch`。本仓库加 `applyPatchModels`（JSON 字符串或数组，环境变量 `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH_MODELS`）：用与包内其他模型门控一致的大小写不敏感 glob 匹配模型的 `id`、`provider/id`、`api`，后写规则优先，`!pattern` 可从大范围 glob 里排除单个模型；默认 `openai-codex/*`，不配置时行为与上游一致。非 Codex 模型额外在系统提示词追加一段 `apply_patch` 格式说明。
+
+`/codex-settings` 新增 `apply_patch models` 行：列表依次是当前模型、`settings.json` 的 `enabledModels`、运行时可用模型、已配置 pattern；上下键移动，回车把高亮模型在 `apply_patch` 与 Pi 编辑工具之间切换，`Ctrl+S` 保存。保存时同步把同一组 pattern 写进 `pi-hashline-edit-pro` 的 `disableOnModels`（`~/.config/pi-hashline-edit-pro/config.json`，尊重 `PI_HASHLINE_DIR` / `XDG_CONFIG_HOME`），工具闸门变化后自动 reload，使带锚点的 `read`/`grep`/`replace` 系列与 `apply_patch` 严格互斥。
+
+离线回归：`scripts/test/apply-patch-models.test.mjs`。含真实 Pi `AgentSession` + 两个插件（本包 + `pi-hashline-edit-pro`）的端到端用例：模型间来回切换、同一模型开/关，均断言激活工具集合与 `read` 输出是否带 `abcde│` 锚点，并真实执行一次 `apply_patch` 改文件。
+
 ### 压缩时保护用户要求
 
 `extensions/compaction-guidance.ts` 保存唯一一份短规则；在 `CodexProviderRuntime.performCompaction()` 构造原生请求时幂等追加。手动／Pi 阈值／溢出／provider 百分比各入口共用，普通回合不追加；手动 customInstructions 保留。规则不要求 Markdown、不改 checkpoint、retained-context 或失败即取消策略。普通模型由 `pi-compaction-guidance` 复用 Pi 摘要函数处理；它跳过 Codex，避免双重压缩。
@@ -64,5 +72,5 @@ PI_HOST_DIR=/path/to/pi-coding-agent \
 ## 和其他插件的关系
 
 - `@nijaru/pi-fast-mode` 在本包接管 `openai-codex` 流之后不生效（实测 `service_tier` 为空，不论加载顺序），已从 `pi/settings.json` 移除，改用本包的 `fastMode`。
-- `pi-hashline-edit-pro` 的 `read` 输出带行锚点，只配合它自己的 `edit`；Codex 模型改用 `apply_patch`，所以 `pi/pi-hashline-edit-pro.json` 的 `disableOnModels` 对 `openai-codex/*` 关闭它。
+- `pi-hashline-edit-pro` 的 `read` 输出带行锚点，只配合它自己的 `edit`；用 `apply_patch` 的模型必须对它关掉这套工具。`applyPatchModels` 会同步写进 `pi-hashline-edit-pro` 的 `disableOnModels`，`scripts/managed-deploy.mjs` 也保留机器上已同步的 `disableOnModels`，不被 `pi/pi-hashline-edit-pro.json` 的仓库值覆盖。
 - `picc-permission-modes` 已补丁：`apply_patch` / `exec_command` 走和 `edit` / `write` / `bash` 同一道权限闸（见它的 LOCAL-PATCH.md）。

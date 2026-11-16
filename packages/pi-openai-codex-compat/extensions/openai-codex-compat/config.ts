@@ -5,7 +5,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { isObject } from "./codex-protocol.ts";
-
+import { DEFAULT_APPLY_PATCH_MODELS, parseApplyPatchModels } from "./apply-patch-models.ts";
 export const WEB_SEARCH_MODE_SCHEMA = {
   enum: ["disabled", "cached", "indexed", "live"],
 } as const;
@@ -51,6 +51,8 @@ export interface CodexCompatConfig {
   responsesLite: boolean;
   /** Replace Pi's active edit and write tools with the extension's apply_patch tool. */
   applyPatch: boolean;
+  /** Comma-separated model patterns that use apply_patch instead of edit/hashline. */
+  applyPatchModels: string;
   /** Show exact model-facing apply_patch feedback while its TUI result is collapsed. */
   applyPatchDebug: boolean;
   /** Persist failed apply_patch requests and their complete pre-execution snapshots for review. */
@@ -80,6 +82,7 @@ export const CONFIG_ENVIRONMENT_VARIABLES = {
   fastMode: `${ENV_PREFIX}FAST_MODE`,
   responsesLite: `${ENV_PREFIX}RESPONSES_LITE`,
   applyPatch: `${ENV_PREFIX}APPLY_PATCH`,
+  applyPatchModels: `${ENV_PREFIX}APPLY_PATCH_MODELS`,
   applyPatchDebug: `${ENV_PREFIX}APPLY_PATCH_DEBUG`,
   applyPatchDiagnostics: `${ENV_PREFIX}APPLY_PATCH_DIAGNOSTICS`,
   toolBackground: `${ENV_PREFIX}TOOL_BACKGROUND`,
@@ -97,6 +100,7 @@ export type ConfigLayer = {
   fastMode?: boolean;
   responsesLite?: boolean;
   applyPatch?: boolean;
+  applyPatchModels?: string;
   applyPatchDebug?: boolean;
   applyPatchDiagnostics?: boolean;
   toolBackground?: CodexToolBackground;
@@ -115,6 +119,7 @@ export const DEFAULT_CONFIG: CodexCompatConfig = {
   fastMode: false,
   responsesLite: false,
   applyPatch: true,
+  applyPatchModels: DEFAULT_APPLY_PATCH_MODELS,
   applyPatchDebug: false,
   applyPatchDiagnostics: false,
   toolBackground: "subtle",
@@ -182,6 +187,10 @@ export function parseEnvironmentConfig(environment: Environment = process.env): 
 
   const applyPatch = environmentBoolean(environment, CONFIG_ENVIRONMENT_VARIABLES.applyPatch);
   if (applyPatch !== undefined) layer.applyPatch = applyPatch;
+  const applyPatchModelsRaw = environment[CONFIG_ENVIRONMENT_VARIABLES.applyPatchModels];
+  if (applyPatchModelsRaw !== undefined) {
+    layer.applyPatchModels = parseApplyPatchModels(applyPatchModelsRaw) ?? "";
+  }
 
   const applyPatchDebug = environmentBoolean(
     environment,
@@ -284,6 +293,8 @@ export function parseConfig(value: unknown): ConfigLayer {
   const applyPatch = value["applyPatch"];
   if (isBoolean(applyPatch)) layer.applyPatch = applyPatch;
 
+  const applyPatchModels = parseApplyPatchModels(value["applyPatchModels"]);
+  if (applyPatchModels !== undefined) layer.applyPatchModels = applyPatchModels;
   const applyPatchDebug = value["applyPatchDebug"];
   if (isBoolean(applyPatchDebug)) layer.applyPatchDebug = applyPatchDebug;
 
@@ -367,6 +378,9 @@ export function resolveConfig(
   if (isBoolean(merged.fastMode)) config.fastMode = merged.fastMode;
   if (isBoolean(merged.responsesLite)) config.responsesLite = merged.responsesLite;
   if (isBoolean(merged.applyPatch)) config.applyPatch = merged.applyPatch;
+  if (typeof merged.applyPatchModels === "string") {
+    config.applyPatchModels = merged.applyPatchModels;
+  }
   if (isBoolean(merged.applyPatchDebug)) config.applyPatchDebug = merged.applyPatchDebug;
   if (isBoolean(merged.applyPatchDiagnostics)) {
     config.applyPatchDiagnostics = merged.applyPatchDiagnostics;
@@ -414,6 +428,7 @@ export function configLayer(config: CodexCompatConfig): ConfigLayer {
     fastMode: config.fastMode,
     responsesLite: config.responsesLite,
     applyPatch: config.applyPatch,
+    applyPatchModels: config.applyPatchModels,
     applyPatchDebug: config.applyPatchDebug,
     applyPatchDiagnostics: config.applyPatchDiagnostics,
     toolBackground: config.toolBackground,

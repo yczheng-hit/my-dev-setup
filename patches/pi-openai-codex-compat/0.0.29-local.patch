@@ -16,6 +16,334 @@ index 0000000..6adafc4
 +    ? instructions
 +    : [instructions, COMPACTION_GUIDANCE].filter(Boolean).join("\n\n");
 +}
+diff --git a/extensions/openai-codex-compat/apply-patch-models.ts b/extensions/openai-codex-compat/apply-patch-models.ts
+new file mode 100644
+index 0000000..f6003ed
+--- /dev/null
++++ b/extensions/openai-codex-compat/apply-patch-models.ts
+@@ -0,0 +1,322 @@
++import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
++import { homedir } from "node:os";
++import { dirname, join } from "node:path";
++import { randomUUID } from "node:crypto";
++import { getAgentDir } from "@earendil-works/pi-coding-agent";
++import { isObject } from "./codex-protocol.ts";
++
++export const DEFAULT_APPLY_PATCH_MODELS = "openai-codex/*";
++
++export interface ModelIdentifierLike {
++  provider?: string;
++  id?: string;
++  api?: string;
++}
++
++export function splitApplyPatchModels(
++  value: string | readonly string[] | undefined = DEFAULT_APPLY_PATCH_MODELS,
++): string[] {
++  const raw =
++    typeof value === "string"
++      ? value.split(",")
++      : Array.isArray(value)
++        ? value
++        : [DEFAULT_APPLY_PATCH_MODELS];
++  const seen = new Set<string>();
++  const result: string[] = [];
++  for (const item of raw) {
++    if (typeof item !== "string") continue;
++    const trimmed = item.trim();
++    if (!trimmed) continue;
++    const lower = trimmed.toLowerCase();
++    if (seen.has(lower)) continue;
++    seen.add(lower);
++    result.push(trimmed);
++  }
++  return result;
++}
++
++export function formatApplyPatchModels(patterns: readonly string[]): string {
++  return splitApplyPatchModels(patterns).join(", ");
++}
++
++export function parseApplyPatchModels(value: unknown): string | undefined {
++  if (typeof value === "string") {
++    return formatApplyPatchModels(value.split(","));
++  }
++  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
++    return formatApplyPatchModels(value);
++  }
++  return undefined;
++}
++
++function globToRegExp(glob: string): RegExp {
++  let source = "^";
++  for (const char of glob) {
++    if (char === "*") source += ".*";
++    else if (char === "?") source += ".";
++    else source += /[.*+?^${}()|[\]\\]/.test(char) ? `\\${char}` : char;
++  }
++  return new RegExp(`${source}$`, "i");
++}
++
++export function modelCandidateLabels(model: ModelIdentifierLike): string[] {
++  const labels: string[] = [];
++  if (typeof model.id === "string" && model.id.length > 0) {
++    labels.push(model.id);
++    if (typeof model.provider === "string" && model.provider.length > 0) {
++      labels.push(`${model.provider}/${model.id}`);
++    }
++  }
++  if (typeof model.api === "string" && model.api.length > 0) {
++    labels.push(model.api);
++  }
++  return labels;
++}
++
++function matchesGlob(model: ModelIdentifierLike, glob: string): boolean {
++  const regex = globToRegExp(glob);
++  return modelCandidateLabels(model).some((label) => regex.test(label));
++}
++
++export function isApplyPatchModel(
++  model: ModelIdentifierLike | undefined,
++  patternsInput: string | readonly string[] | undefined = DEFAULT_APPLY_PATCH_MODELS,
++): boolean {
++  if (!model) return false;
++  const patterns = splitApplyPatchModels(patternsInput);
++  if (patterns.length === 0) return false;
++
++  let matched = false;
++  for (const pattern of patterns) {
++    if (pattern.startsWith("!")) {
++      const negative = pattern.slice(1).trim();
++      if (negative && matchesGlob(model, negative)) {
++        matched = false;
++      }
++    } else if (matchesGlob(model, pattern)) {
++      matched = true;
++    }
++  }
++  return matched;
++}
++
++function parseModelKey(modelKey: string): ModelIdentifierLike {
++  const slash = modelKey.indexOf("/");
++  if (slash <= 0) return { id: modelKey };
++  return {
++    provider: modelKey.slice(0, slash),
++    id: modelKey.slice(slash + 1),
++  };
++}
++
++export function toggleModelInApplyPatchModels(
++  currentValue: string | readonly string[] | undefined,
++  targetKey: string,
++  knownModelKeys: readonly string[] = [],
++): string {
++  const trimmedTarget = targetKey.trim();
++  if (!trimmedTarget) return formatApplyPatchModels(splitApplyPatchModels(currentValue));
++
++  const patterns = splitApplyPatchModels(currentValue);
++
++  if (trimmedTarget.includes("*")) {
++    const regex = globToRegExp(trimmedTarget);
++    const hasWildcard = patterns.some((p) => p.toLowerCase() === trimmedTarget.toLowerCase());
++    if (hasWildcard) {
++      return formatApplyPatchModels(
++        patterns.filter(
++          (p) => p.toLowerCase() !== trimmedTarget.toLowerCase() && !regex.test(p),
++        ),
++      );
++    }
++    const filtered = patterns.filter((p) => !regex.test(p));
++    return formatApplyPatchModels([...filtered, trimmedTarget]);
++  }
++
++  const targetModel = parseModelKey(trimmedTarget);
++  const currentlyEnabled = isApplyPatchModel(targetModel, patterns);
++
++  if (!currentlyEnabled) {
++    const withoutNegative = patterns.filter(
++      (p) => p.toLowerCase() !== `!${trimmedTarget}`.toLowerCase(),
++    );
++    return formatApplyPatchModels([...withoutNegative, trimmedTarget]);
++  }
++
++  const next: string[] = [];
++  for (const pattern of patterns) {
++    if (pattern.toLowerCase() === trimmedTarget.toLowerCase()) {
++      continue;
++    }
++    if (!pattern.startsWith("!") && matchesGlob(targetModel, pattern)) {
++      const expanded = knownModelKeys.filter(
++        (candidate) =>
++          !candidate.includes("*") &&
++          candidate.toLowerCase() !== trimmedTarget.toLowerCase() &&
++          matchesGlob(parseModelKey(candidate), pattern),
++      );
++      if (expanded.length > 0) {
++        next.push(...expanded);
++      } else {
++        next.push(pattern, `!${trimmedTarget}`);
++      }
++      continue;
++    }
++    next.push(pattern);
++  }
++  return formatApplyPatchModels(next);
++}
++
++export function collectSelectableModelKeys(options: {
++  currentModel?: ModelIdentifierLike | undefined;
++  availableModels?: readonly ModelIdentifierLike[] | undefined;
++  agentDir?: string | undefined;
++  patterns?: string | readonly string[] | undefined;
++}): { key: string; isCurrent: boolean; isWildcard: boolean }[] {
++  const seen = new Set<string>();
++  const items: { key: string; isCurrent: boolean; isWildcard: boolean }[] = [];
++
++  const currentKey =
++    options.currentModel?.provider && options.currentModel?.id
++      ? `${options.currentModel.provider}/${options.currentModel.id}`
++      : undefined;
++
++  const add = (key: string, isWildcard = key.includes("*")) => {
++    const trimmed = key.trim();
++    if (!trimmed) return;
++    const lower = trimmed.toLowerCase();
++    if (seen.has(lower)) return;
++    seen.add(lower);
++    items.push({
++      key: trimmed,
++      isCurrent: currentKey !== undefined && lower === currentKey.toLowerCase(),
++      isWildcard,
++    });
++  };
++
++  if (currentKey) add(currentKey, false);
++
++  const dir = options.agentDir ?? getAgentDir();
++  const settingsPath = join(dir, "settings.json");
++  if (existsSync(settingsPath)) {
++    try {
++      const parsed: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
++      if (isObject(parsed) && Array.isArray(parsed["enabledModels"])) {
++        for (const entry of parsed["enabledModels"]) {
++          if (typeof entry === "string") add(entry);
++        }
++      }
++    } catch {
++      // Ignore invalid settings.json while collecting model choices.
++    }
++  }
++
++  for (const model of options.availableModels ?? []) {
++    if (model.provider && model.id) {
++      add(`${model.provider}/${model.id}`, false);
++    }
++  }
++
++  add("openai-codex/*", true);
++
++  for (const pattern of splitApplyPatchModels(options.patterns)) {
++    if (!pattern.startsWith("!")) add(pattern, pattern.includes("*"));
++  }
++
++  return items;
++}
++
++export function buildApplyPatchModelSelectItems(options: {
++  currentModel?: ModelIdentifierLike | undefined;
++  availableModels?: readonly ModelIdentifierLike[] | undefined;
++  agentDir?: string | undefined;
++  patterns?: string | readonly string[] | undefined;
++}): { value: string; label: string }[] {
++  const entries = collectSelectableModelKeys(options);
++  const patterns = splitApplyPatchModels(options.patterns);
++
++  return entries.map((entry) => {
++    const enabled = entry.isWildcard
++      ? patterns.some((p) => p.toLowerCase() === entry.key.toLowerCase())
++      : isApplyPatchModel(parseModelKey(entry.key), patterns);
++    const badge = enabled ? "[apply_patch]    " : "[edit (hashline)]";
++    const suffix = entry.isCurrent
++      ? " (current)"
++      : entry.key === "openai-codex/*"
++        ? " (all Codex models)"
++        : "";
++    return {
++      value: entry.key,
++      label: `${badge}  ${entry.key}${suffix}`,
++    };
++  });
++}
++
++export function formatApplyPatchModelsSummary(
++  patternsInput: string | readonly string[] | undefined,
++  currentModel?: ModelIdentifierLike | undefined,
++): string {
++  const patterns = splitApplyPatchModels(patternsInput);
++  const currentStatus = currentModel
++    ? isApplyPatchModel(currentModel, patterns)
++      ? "current: apply_patch"
++      : "current: edit"
++    : undefined;
++  const countLabel = `${patterns.length} rule${patterns.length === 1 ? "" : "s"}`;
++  return currentStatus ? `${currentStatus} (${countLabel})` : countLabel;
++}
++
++export function hashlineConfigPath(overrideDir?: string): string {
++  if (overrideDir) return join(overrideDir, "config.json");
++  const envDir = process.env["PI_HASHLINE_DIR"];
++  if (envDir && envDir.length > 0) return join(envDir, "config.json");
++  const home =
++    process.env["HOME"] && process.env["HOME"].length > 0 ? process.env["HOME"] : homedir();
++  const base =
++    process.platform !== "win32" &&
++    process.env["XDG_CONFIG_HOME"] &&
++    process.env["XDG_CONFIG_HOME"].length > 0
++      ? process.env["XDG_CONFIG_HOME"]
++      : join(home, ".config");
++  return join(base, "pi-hashline-edit-pro", "config.json");
++}
++
++export function syncHashlineDisableOnModels(
++  patternsInput: string | readonly string[] | undefined,
++  applyPatchEnabled: boolean,
++  overrideDir?: string,
++): void {
++  const filePath = hashlineConfigPath(overrideDir);
++  let existing: Record<string, unknown> = {};
++  if (existsSync(filePath)) {
++    try {
++      const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
++      if (isObject(parsed)) existing = { ...parsed };
++    } catch {
++      existing = {};
++    }
++  }
++  existing["disableOnModels"] = applyPatchEnabled ? splitApplyPatchModels(patternsInput) : [];
++  mkdirSync(dirname(filePath), { recursive: true });
++  const tempPath = `${filePath}.${randomUUID()}.tmp`;
++  try {
++    writeFileSync(tempPath, `${JSON.stringify(existing, null, 2)}\n`, { mode: 0o600 });
++    renameSync(tempPath, filePath);
++  } finally {
++    rmSync(tempPath, { force: true });
++  }
++}
++
++export const NON_CODEX_APPLY_PATCH_INSTRUCTIONS = `## apply_patch Format
++When calling \`apply_patch\`, pass a patch string in the \`patch\` parameter with this structure:
++*** Begin Patch
++*** Update File: path/to/file.ext
++@@ optional context header
++ unchanged context line
++-removed line
+++added line
++*** Add File: path/to/new_file.ext
+++new file line
++*** Delete File: path/to/old_file.ext
++*** End Patch`;
 diff --git a/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts b/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts
 index 3363ac1..abc764d 100644
 --- a/extensions/openai-codex-compat/codex-provider/codex-provider-runtime.ts
@@ -115,28 +443,197 @@ index 4571ee7..c10d947 100644
    }
 
    const messages = convertToLlm(
+diff --git a/extensions/openai-codex-compat/config.ts b/extensions/openai-codex-compat/config.ts
+index 7da792d..6a38a24 100644
+--- a/extensions/openai-codex-compat/config.ts
++++ b/extensions/openai-codex-compat/config.ts
+@@ -5,7 +5,7 @@ import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
+ import type { Static } from "typebox";
+ import { Value } from "typebox/value";
+ import { isObject } from "./codex-protocol.ts";
+-
++import { DEFAULT_APPLY_PATCH_MODELS, parseApplyPatchModels } from "./apply-patch-models.ts";
+ export const WEB_SEARCH_MODE_SCHEMA = {
+   enum: ["disabled", "cached", "indexed", "live"],
+ } as const;
+@@ -51,6 +51,8 @@ export interface CodexCompatConfig {
+   responsesLite: boolean;
+   /** Replace Pi's active edit and write tools with the extension's apply_patch tool. */
+   applyPatch: boolean;
++  /** Comma-separated model patterns that use apply_patch instead of edit/hashline. */
++  applyPatchModels: string;
+   /** Show exact model-facing apply_patch feedback while its TUI result is collapsed. */
+   applyPatchDebug: boolean;
+   /** Persist failed apply_patch requests and their complete pre-execution snapshots for review. */
+@@ -80,6 +82,7 @@ export const CONFIG_ENVIRONMENT_VARIABLES = {
+   fastMode: `${ENV_PREFIX}FAST_MODE`,
+   responsesLite: `${ENV_PREFIX}RESPONSES_LITE`,
+   applyPatch: `${ENV_PREFIX}APPLY_PATCH`,
++  applyPatchModels: `${ENV_PREFIX}APPLY_PATCH_MODELS`,
+   applyPatchDebug: `${ENV_PREFIX}APPLY_PATCH_DEBUG`,
+   applyPatchDiagnostics: `${ENV_PREFIX}APPLY_PATCH_DIAGNOSTICS`,
+   toolBackground: `${ENV_PREFIX}TOOL_BACKGROUND`,
+@@ -97,6 +100,7 @@ export type ConfigLayer = {
+   fastMode?: boolean;
+   responsesLite?: boolean;
+   applyPatch?: boolean;
++  applyPatchModels?: string;
+   applyPatchDebug?: boolean;
+   applyPatchDiagnostics?: boolean;
+   toolBackground?: CodexToolBackground;
+@@ -115,6 +119,7 @@ export const DEFAULT_CONFIG: CodexCompatConfig = {
+   fastMode: false,
+   responsesLite: false,
+   applyPatch: true,
++  applyPatchModels: DEFAULT_APPLY_PATCH_MODELS,
+   applyPatchDebug: false,
+   applyPatchDiagnostics: false,
+   toolBackground: "subtle",
+@@ -182,6 +187,10 @@ export function parseEnvironmentConfig(environment: Environment = process.env):
+
+   const applyPatch = environmentBoolean(environment, CONFIG_ENVIRONMENT_VARIABLES.applyPatch);
+   if (applyPatch !== undefined) layer.applyPatch = applyPatch;
++  const applyPatchModelsRaw = environment[CONFIG_ENVIRONMENT_VARIABLES.applyPatchModels];
++  if (applyPatchModelsRaw !== undefined) {
++    layer.applyPatchModels = parseApplyPatchModels(applyPatchModelsRaw) ?? "";
++  }
+
+   const applyPatchDebug = environmentBoolean(
+     environment,
+@@ -284,6 +293,8 @@ export function parseConfig(value: unknown): ConfigLayer {
+   const applyPatch = value["applyPatch"];
+   if (isBoolean(applyPatch)) layer.applyPatch = applyPatch;
+
++  const applyPatchModels = parseApplyPatchModels(value["applyPatchModels"]);
++  if (applyPatchModels !== undefined) layer.applyPatchModels = applyPatchModels;
+   const applyPatchDebug = value["applyPatchDebug"];
+   if (isBoolean(applyPatchDebug)) layer.applyPatchDebug = applyPatchDebug;
+
+@@ -367,6 +378,9 @@ export function resolveConfig(
+   if (isBoolean(merged.fastMode)) config.fastMode = merged.fastMode;
+   if (isBoolean(merged.responsesLite)) config.responsesLite = merged.responsesLite;
+   if (isBoolean(merged.applyPatch)) config.applyPatch = merged.applyPatch;
++  if (typeof merged.applyPatchModels === "string") {
++    config.applyPatchModels = merged.applyPatchModels;
++  }
+   if (isBoolean(merged.applyPatchDebug)) config.applyPatchDebug = merged.applyPatchDebug;
+   if (isBoolean(merged.applyPatchDiagnostics)) {
+     config.applyPatchDiagnostics = merged.applyPatchDiagnostics;
+@@ -414,6 +428,7 @@ export function configLayer(config: CodexCompatConfig): ConfigLayer {
+     fastMode: config.fastMode,
+     responsesLite: config.responsesLite,
+     applyPatch: config.applyPatch,
++    applyPatchModels: config.applyPatchModels,
+     applyPatchDebug: config.applyPatchDebug,
+     applyPatchDiagnostics: config.applyPatchDiagnostics,
+     toolBackground: config.toolBackground,
 diff --git a/extensions/openai-codex-compat/index.ts b/extensions/openai-codex-compat/index.ts
-index 6fc5043..01e944e 100644
+index 6fc5043..d5dff0c 100644
 --- a/extensions/openai-codex-compat/index.ts
 +++ b/extensions/openai-codex-compat/index.ts
-@@ -14,7 +14,8 @@ import registerRemoteCompaction, { remoteCompactionApi } from "./remote-compacti
- import registerCodexRequestOptions from "./request-options.ts";
+@@ -1,3 +1,4 @@
++import { existsSync } from "node:fs";
+ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+ import * as piAi from "@earendil-works/pi-ai";
+ import * as piCodingAgent from "@earendil-works/pi-coding-agent";
+@@ -11,11 +12,16 @@ import registerOutputLimitContinuation, {
+   outputLimitContinuationApi,
+ } from "./output-limit-continuation.ts";
+ import registerRemoteCompaction, { remoteCompactionApi } from "./remote-compaction.ts";
+-import registerCodexRequestOptions from "./request-options.ts";
++import {
++  hashlineConfigPath,
++  NON_CODEX_APPLY_PATCH_INSTRUCTIONS,
++  syncHashlineDisableOnModels,
++} from "./apply-patch-models.ts";
++import registerCodexRequestOptions, { isCodexModel } from "./request-options.ts";
  import registerCodexSettings, { loadSessionConfig } from "./settings-pane.ts";
  import registerCodexThreadLineage, { codexThreadLineageApi } from "./codex-thread-lineage.ts";
 -import registerCodexTools, { syncCodexTools } from "./tools.ts";
+-
 +import registerCodexTools, { syncCodexTools, CODEX_TOOL_NAMES } from "./tools.ts";
 +import registerToolRecovery from "./tool-recovery.ts";
-
  export {
    closeOpenAICodexWebSocketSessions,
-@@ -63,6 +64,7 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
+   getOpenAICodexWebSocketDebugStats,
+@@ -23,6 +29,25 @@ export {
+   type OpenAICodexWebSocketDebugStats,
+ } from "./codex-transport.ts";
+
++const HASHLINE_EDIT_TOOL_NAMES = [
++  "replace",
++  "replace_match",
++  "insert",
++  "copy",
++  "move",
++  "undo_last_change",
++] as const;
++
++/**
++ * Whether pi-hashline-edit-pro is installed. Its anchored tools conflict with `apply_patch`, so its
++ * `disableOnModels` must follow the patch gate on those machines only.
++ */
++function hashlineInstalled(pi: Pick<ExtensionAPI, "getActiveTools">): boolean {
++  if (existsSync(hashlineConfigPath())) return true;
++  const active = new Set(pi.getActiveTools());
++  return HASHLINE_EDIT_TOOL_NAMES.some((name) => active.has(name));
++}
++
+ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
+   requirePiRuntime(piAi, piCodingAgent, pi);
+   let activeConfig: CodexCompatConfig | undefined;
+@@ -39,10 +64,18 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
+   const resolveApplyPatchDiagnostics = () =>
+     activeConfig?.applyPatchDiagnostics ?? DEFAULT_CONFIG.applyPatchDiagnostics;
+
++  // Set when the pane changed the patch gate after Pi had already declared this session's tools.
++  let patchGateChanged = false;
++
+   pi.on("session_start", (event, ctx) => {
+     sessionContext = ctx;
+     activeConfig = undefined;
+     activeConfig = resolveConfig(ctx);
++    patchGateChanged = false;
++    // The settings pane stores the same patterns here; refresh them after an out-of-band edit.
++    if (hashlineInstalled(pi)) {
++      syncHashlineDisableOnModels(activeConfig.applyPatchModels, activeConfig.applyPatch);
++    }
+     installCodexFooter(ctx, resolveConfig);
+     if (event.reason !== "reload" && ctx.mode === "tui") {
+       ctx.ui.notify("pi-openai-codex-compat loaded · /codex-settings", "info");
+@@ -63,12 +96,32 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
    registerOutputLimitContinuation(outputLimitContinuationApi(pi));
    registerRemoteCompaction(remoteCompactionApi(pi), codexProvider, resolveConfig);
    registerCodexModelPolicy(modelPolicy, resolveConfig, commandTools);
 +  registerToolRecovery(pi, CODEX_TOOL_NAMES);
++  // Non-Codex models were not trained on the Codex tool description, so apply_patch contributes a
++  // short format section. A pane change reapplies the gate before the next turn when the host
++  // could not reload the session.
++  pi.on("before_agent_start", (event, ctx) => {
++    if (patchGateChanged) {
++      patchGateChanged = false;
++      syncCodexTools(modelPolicy, ctx.model, resolveConfig(ctx), commandTools);
++    }
++    if (pi.getActiveTools().includes("apply_patch") && !isCodexModel(ctx.model)) {
++      event.systemPromptOptions.sections.apply_patch_format = NON_CODEX_APPLY_PATCH_INSTRUCTIONS;
++    } else {
++      delete event.systemPromptOptions.sections.apply_patch_format;
++    }
++  });
++
    registerCodexSettings(pi, {
      getConfig: resolveConfig,
      hasPersistentSessions: commandTools.hasPersistentSessions,
+     onChange(config, ctx) {
+       activeConfig = config;
++      patchGateChanged = true;
+       codexProvider.updateSessionConfig(ctx.sessionId, config);
++      if (hashlineInstalled(pi)) {
++        syncHashlineDisableOnModels(config.applyPatchModels, config.applyPatch);
++      }
+       syncCodexTools(modelPolicy, ctx.model, config, commandTools);
+     },
+   });
 diff --git a/extensions/openai-codex-compat/model-policy.ts b/extensions/openai-codex-compat/model-policy.ts
 index d13ca85..9039ac6 100644
 --- a/extensions/openai-codex-compat/model-policy.ts
@@ -195,6 +692,188 @@ index 9fbc767..4e547bc 100644
      },
    },
    required: ["type", "name", "description", "tools"],
+diff --git a/extensions/openai-codex-compat/settings-pane.ts b/extensions/openai-codex-compat/settings-pane.ts
+index 3d4539a..0081d35 100644
+--- a/extensions/openai-codex-compat/settings-pane.ts
++++ b/extensions/openai-codex-compat/settings-pane.ts
+@@ -29,11 +29,17 @@ import {
+   configLayer,
+   type CodexCompatConfig,
+ } from "./config.ts";
++import {
++  buildApplyPatchModelSelectItems,
++  collectSelectableModelKeys,
++  formatApplyPatchModelsSummary,
++  isApplyPatchModel,
++  toggleModelInApplyPatchModels,
++} from "./apply-patch-models.ts";
+ import type { ConfigContext } from "./config-context.ts";
+ import { selectedRegistryModel } from "./model-context.ts";
+ import { isCodexModel } from "./request-options.ts";
+ import { usesResponsesLite } from "./responses-lite.ts";
+-
+ export const settingFields: SettingsField[] = [
+   {
+     id: "fastMode",
+@@ -75,9 +81,29 @@ export const settingFields: SettingsField[] = [
+   {
+     id: "applyPatch",
+     label: "apply_patch tool",
+-    description: "Replace Pi edit and write tools with Codex apply_patch.",
++    description: "Replace Pi edit and write tools with Codex apply_patch on selected models.",
+     choices: [false, true],
+   },
++  {
++    id: "applyPatchModels",
++    label: "apply_patch models",
++    description:
++      "Press Enter to open the model list, Up/Down to select a model, and Enter to toggle between apply_patch and edit.",
++    choices: [],
++    format: (value) =>
++      formatApplyPatchModelsSummary(typeof value === "string" ? value : undefined),
++    multiToggle: {
++      getItems: (value) =>
++        buildApplyPatchModelSelectItems({
++          patterns: typeof value === "string" ? value : undefined,
++        }),
++      onToggle: (value, targetKey) =>
++        toggleModelInApplyPatchModels(
++          typeof value === "string" ? value : undefined,
++          targetKey,
++        ),
++    },
++  },
+   {
+     id: "applyPatchDebug",
+     label: "apply_patch debug output",
+@@ -134,7 +160,10 @@ export type SettingsCallbacks = {
+ export type CodexSettingsContext = ConfigContext &
+   SettingsSessionContext &
+   Pick<ExtensionCommandContext, "mode" | "model" | "isIdle" | "waitForIdle"> & {
+-    modelRegistry: Pick<ExtensionCommandContext["modelRegistry"], "find">;
++    reload?: () => Promise<void>;
++    modelRegistry: Pick<ExtensionCommandContext["modelRegistry"], "find"> & {
++      getAvailable?: () => readonly Model<Api>[];
++    };
+     ui: {
+       custom: <T>(factory: SettingsMenuFactory<T>) => Promise<T>;
+       notify: ExtensionCommandContext["ui"]["notify"];
+@@ -150,6 +179,24 @@ export type CodexSettingsApi = {
+ };
+ export const SESSION_SETTINGS_TYPE = "pi-openai-codex-compat:settings";
+
++/**
++ * Re-read both configuration stores after the patch gate changed. `pi-hashline-edit-pro` reads its
++ * configuration only at session start, so its anchored `read`, `grep`, and `replace` tools keep the
++ * previous mode until a fresh load. Hosts without `ctx.reload` keep the saved values and rely on the
++ * `before_agent_start` reapplication instead.
++ */
++async function reloadAfterPatchGateChange(ctx: CodexSettingsContext): Promise<void> {
++  if (typeof ctx.reload !== "function") return;
++  try {
++    await ctx.reload();
++  } catch (error) {
++    ctx.ui.notify(
++      `Tool switch saved. Reopen Pi to apply it: ${error instanceof Error ? error.message : String(error)}`,
++      "warning",
++    );
++  }
++}
++
+ export function loadSessionConfig(ctx: ConfigContext & SettingsSessionContext): CodexCompatConfig {
+   const saved = readSessionSettings(ctx, SESSION_SETTINGS_TYPE, settingFields);
+   return resolveConfig(
+@@ -195,10 +242,47 @@ export default function registerCodexSettings(
+         const sessionState = readSessionSettings(ctx, SESSION_SETTINGS_TYPE, settingFields).session;
+         for (const id of Object.keys(locked)) delete sessionState.changes[id];
+         let appliedShell = current.shellTool;
++        let patchGateChanged = false;
+         const model = selectedRegistryModel(ctx);
++        const currentModel = model ?? ctx.model;
++        const availableModels = ctx.modelRegistry.getAvailable?.() ?? [];
+         const fields = settingFields.map((field) => {
+-          const inactive =
+-            !isCodexModel(model) || (field.id === "responsesLite" && !usesResponsesLite(model.id));
++          if (field.id === "applyPatchModels") {
++            return {
++              ...field,
++              format: (value: unknown) =>
++                formatApplyPatchModelsSummary(
++                  typeof value === "string" ? value : undefined,
++                  currentModel,
++                ),
++              multiToggle: {
++                getItems: (value: unknown) =>
++                  buildApplyPatchModelSelectItems({
++                    currentModel,
++                    availableModels,
++                    patterns: typeof value === "string" ? value : undefined,
++                  }),
++                onToggle: (value: unknown, targetKey: string) => {
++                  const patterns = typeof value === "string" ? value : undefined;
++                  const knownKeys = collectSelectableModelKeys({
++                    currentModel,
++                    availableModels,
++                    patterns,
++                  }).map((entry) => entry.key);
++                  return toggleModelInApplyPatchModels(patterns, targetKey, knownKeys);
++                },
++              },
++            };
++          }
++          const patchField =
++            field.id === "applyPatch" ||
++            field.id === "applyPatchDebug" ||
++            field.id === "applyPatchDiagnostics";
++          const inactive = patchField
++            ? field.id !== "applyPatch" &&
++              !isApplyPatchModel(currentModel, current.applyPatchModels)
++            : !isCodexModel(model) ||
++              (field.id === "responsesLite" && !usesResponsesLite(model.id));
+           return {
+             ...field,
+             description: `${inactive ? "Inactive on this model. " : ""}${field.description}`,
+@@ -212,10 +296,17 @@ export default function registerCodexSettings(
+             current: { ...current, autoCompactAtPercent: current.autoCompactAtPercent ?? null },
+             session: sessionState,
+             fields,
+-            status: () =>
++            status: (draftValues) =>
+               isCodexModel(model)
+                 ? "Codex settings apply when applied to session or saved."
+-                : "Configured preferences are inactive on this provider.",
++                : isApplyPatchModel(
++                      currentModel,
++                      typeof draftValues["applyPatchModels"] === "string"
++                        ? draftValues["applyPatchModels"]
++                        : current.applyPatchModels,
++                    )
++                  ? "apply_patch is enabled for this model; other Codex settings apply on openai-codex."
++                  : "This model uses edit (hashline). Open apply_patch models to switch it to apply_patch.",
+             prepare: (signal) => waitForSettingsIdle(() => ctx.waitForIdle(), signal),
+             guard: (values) => {
+               if (ctx.model?.id !== selection?.id || ctx.model?.provider !== selection?.provider) {
+@@ -236,6 +327,12 @@ export default function registerCodexSettings(
+             },
+             apply: (values, nextSession) => {
+               const config = resolveConfig(parseConfig(values), {}, environment);
++              if (
++                config.applyPatch !== current.applyPatch ||
++                config.applyPatchModels !== current.applyPatchModels
++              ) {
++                patchGateChanged = true;
++              }
+               pi.appendEntry(
+                 SESSION_SETTINGS_TYPE,
+                 sessionSettingsEntry(sessionId, values, nextSession, locked),
+@@ -245,6 +342,7 @@ export default function registerCodexSettings(
+             },
+           }),
+         );
++        if (patchGateChanged) await reloadAfterPatchGateChange(ctx);
+       } catch (error) {
+         ctx.ui.notify(
+           error instanceof Error ? error.message : "Could not open Codex settings.",
 diff --git a/extensions/openai-codex-compat/tool-recovery.ts b/extensions/openai-codex-compat/tool-recovery.ts
 new file mode 100644
 index 0000000..f9fb8df
@@ -272,10 +951,31 @@ index 0000000..f9fb8df
 +  });
 +}
 diff --git a/extensions/openai-codex-compat/tools.ts b/extensions/openai-codex-compat/tools.ts
-index 7cef697..f288902 100644
+index 7cef697..cc2ae15 100644
 --- a/extensions/openai-codex-compat/tools.ts
 +++ b/extensions/openai-codex-compat/tools.ts
-@@ -29,6 +29,7 @@ const CODEX_EXTENSION_TOOLS = [
+@@ -14,10 +14,20 @@ import type { ConfigResolver } from "./config-context.ts";
+ import { DEFAULT_CONFIG } from "./config.ts";
+ import registerImageGeneration, { type ImageGenerationApi } from "./image-generation.ts";
+ import { IMAGE_GENERATION_TOOL_NAME, WEB_RUN_TOOL_NAME } from "./namespaced-tools.ts";
++import { isApplyPatchModel } from "./apply-patch-models.ts";
+ import { isCodexModel } from "./request-options.ts";
+ import registerWebRun, { type WebRunApi } from "./web-run.ts";
+
+ const PI_EDIT_TOOLS = ["edit", "write"] as const;
++const HASHLINE_EDIT_TOOLS = [
++  "replace",
++  "replace_match",
++  "insert",
++  "copy",
++  "move",
++  "undo_last_change",
++  "outline",
++] as const;
+ const PI_BASH_TOOL = "bash";
+ const CODEX_COMMAND_TOOLS = [
+   EXEC_COMMAND_TOOL_NAME,
+@@ -29,6 +39,7 @@ const CODEX_EXTENSION_TOOLS = [
    IMAGE_GENERATION_TOOL_NAME,
    WEB_RUN_TOOL_NAME,
  ] as const;
@@ -283,3 +983,149 @@ index 7cef697..f288902 100644
  export type CodexToolActivationApi = Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">;
  export type CodexToolsApi = CodexToolActivationApi &
    ApplyPatchApi &
+@@ -42,13 +53,18 @@ const suppressedBashTools = new WeakMap<CodexToolActivationApi, boolean>();
+ export function setApplyPatchEnabled(pi: CodexToolActivationApi, enabled: boolean): void {
+   const active = new Set(pi.getActiveTools());
+   active.delete(APPLY_PATCH_TOOL_NAME);
++  const editTools = [...PI_EDIT_TOOLS, ...HASHLINE_EDIT_TOOLS];
+   if (enabled) {
+     let suppressed = suppressedEditTools.get(pi);
+     if (!suppressed) {
+-      suppressed = new Set(PI_EDIT_TOOLS.filter((tool) => active.has(tool)));
++      suppressed = new Set(editTools.filter((tool) => active.has(tool)));
+       suppressedEditTools.set(pi, suppressed);
++    } else {
++      for (const tool of editTools) {
++        if (active.has(tool)) suppressed.add(tool);
++      }
+     }
+-    for (const tool of PI_EDIT_TOOLS) active.delete(tool);
++    for (const tool of editTools) active.delete(tool);
+     active.add(APPLY_PATCH_TOOL_NAME);
+   } else {
+     active.delete(APPLY_PATCH_TOOL_NAME);
+@@ -123,7 +139,12 @@ export function syncCodexTools(
+   bashReplaced = false,
+ ): void {
+   const codexSelected = isCodexModel(model);
+-  setApplyPatchEnabled(pi, codexSelected && config.applyPatch);
++  const applyPatchSelected =
++    config.applyPatch &&
++    (config.applyPatchModels !== undefined
++      ? isApplyPatchModel(model, config.applyPatchModels)
++      : codexSelected);
++  setApplyPatchEnabled(pi, applyPatchSelected);
+   const unifiedExecActive = setCodexCommandTool(
+     pi,
+     codexSelected ? config.shellTool : undefined,
+diff --git a/extensions/settings-menu.ts b/extensions/settings-menu.ts
+index ca53a39..a737a9d 100644
+--- a/extensions/settings-menu.ts
++++ b/extensions/settings-menu.ts
+@@ -41,6 +41,10 @@ export type SettingsField = {
+   choices: SettingValue[];
+   number?: { min: number; max: number; integer?: boolean; exclusiveMin?: boolean; unit: string };
+   format?: (value: SettingValue) => string;
++  multiToggle?: {
++    getItems: (value: SettingValue) => SelectItem[];
++    onToggle: (value: SettingValue, selectedItemValue: string) => SettingValue;
++  };
+ };
+ export type SettingsMenuOptions = {
+   title: string;
+@@ -188,6 +192,31 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
+         change(field, !current);
+         return;
+       }
++      if (field.multiToggle) {
++        const buildPicker = (val: SettingValue, selectedIndex = 0) => {
++          const choices = field.multiToggle!.getItems(val);
++          const picker = new SelectList(choices, 10, listTheme, {
++            maxPrimaryColumnWidth: 1000,
++          });
++          picker.setSelectedIndex(Math.max(0, Math.min(choices.length - 1, selectedIndex)));
++          picker.onSelect = (item) => {
++            const idx = Math.max(0, choices.findIndex((c) => c.value === item.value));
++            const nextVal = field.multiToggle!.onToggle(draft[field.id], item.value);
++            change(field, nextVal);
++            const nextChild = buildPicker(draft[field.id], idx);
++            child = { field, list: nextChild.picker, choices: nextChild.choices };
++            notice =
++              "Toggled model. Up/Down select · Enter toggle · Ctrl+S save · Esc back.";
++            updateFocus();
++          };
++          return { picker, choices };
++        };
++        const initial = buildPicker(current, 0);
++        child = { field, list: initial.picker, choices: initial.choices };
++        notice = "Up/Down select model · Enter toggle apply_patch / edit · Ctrl+S save · Esc back.";
++        updateFocus();
++        return;
++      }
+       const choices: SelectItem[] = field.choices.map((value, index) => ({
+         value: String(index),
+         label: fieldValue(field, value),
+@@ -385,7 +414,9 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
+           if (child.list && child.choices && child.visible !== visible) {
+             const previous = child.list;
+             const selected = previous.getSelectedItem()?.value;
+-            child.list = new SelectList(child.choices, visible, listTheme);
++            child.list = new SelectList(child.choices, visible, listTheme, {
++              maxPrimaryColumnWidth: 1000,
++            });
+             child.list.setSelectedIndex(
+               Math.max(
+                 0,
+@@ -397,7 +428,11 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
+           }
+           const editor = child.input ?? child.list;
+           if (editor) zone(editor, "results");
+-          text(`${keyName("tui.select.confirm")} select · ${keyName("tui.select.cancel")} back`);
++          text(
++            child.field.multiToggle
++              ? `${keyName("tui.select.up")}/${keyName("tui.select.down")} select · ${keyName("tui.select.confirm")} toggle · Ctrl+S save · ${keyName("tui.select.cancel")} back`
++              : `${keyName("tui.select.confirm")} select · ${keyName("tui.select.cancel")} back`,
++          );
+         } else {
+           const hint = `${keyName("tui.select.confirm")} ${focus === "actions" ? "select" : "change"} · Space ${focus === "search" ? "search" : "select"} · ${keyName("tui.input.tab")} focus · Ctrl+S save · ${keyName("tui.select.cancel")} discard · F1 details`;
+           const hints = busy
+@@ -518,13 +553,25 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
+         }
+         if (keys.matches(data, "tui.select.cancel")) {
+           if (child) {
++            const wasMultiToggle = Boolean(child.field.multiToggle);
+             child = undefined;
+             failed = false;
+-            notice = "Field edit cancelled.";
++            notice = wasMultiToggle
++              ? dirty()
++                ? `${dirty()} draft change(s). Not applied.`
++                : "No unsaved changes."
++              : "Field edit cancelled.";
+             updateFocus();
+           } else close();
+         } else if (child) {
+-          if (matchesKey(data, Key.ctrl("s"))) return;
++          if (matchesKey(data, Key.ctrl("s"))) {
++            if (child.field.multiToggle) {
++              child = undefined;
++              updateFocus();
++              commit("save", true).catch(saveFailed);
++            }
++            return;
++          }
+           if (keys.matches(data, "tui.select.confirm")) {
+             if (child.input) confirmNumber();
+             else {
+diff --git a/extensions/settings-session.ts b/extensions/settings-session.ts
+index 93d25fc..684798f 100644
+--- a/extensions/settings-session.ts
++++ b/extensions/settings-session.ts
+@@ -16,6 +16,7 @@ function object(value: unknown): value is Record<string, unknown> {
+ }
+
+ function valid(field: SettingsField, value: unknown): value is SettingValue {
++  if (field.multiToggle && typeof value === "string") return true;
+   if (field.choices.some((choice) => choice === value)) return true;
+   const rule = field.number;
+   return Boolean(

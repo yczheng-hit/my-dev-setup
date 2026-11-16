@@ -29,11 +29,17 @@ import {
   configLayer,
   type CodexCompatConfig,
 } from "./config.ts";
+import {
+  buildApplyPatchModelSelectItems,
+  collectSelectableModelKeys,
+  formatApplyPatchModelsSummary,
+  isApplyPatchModel,
+  toggleModelInApplyPatchModels,
+} from "./apply-patch-models.ts";
 import type { ConfigContext } from "./config-context.ts";
 import { selectedRegistryModel } from "./model-context.ts";
 import { isCodexModel } from "./request-options.ts";
 import { usesResponsesLite } from "./responses-lite.ts";
-
 export const settingFields: SettingsField[] = [
   {
     id: "fastMode",
@@ -75,8 +81,28 @@ export const settingFields: SettingsField[] = [
   {
     id: "applyPatch",
     label: "apply_patch tool",
-    description: "Replace Pi edit and write tools with Codex apply_patch.",
+    description: "Replace Pi edit and write tools with Codex apply_patch on selected models.",
     choices: [false, true],
+  },
+  {
+    id: "applyPatchModels",
+    label: "apply_patch models",
+    description:
+      "Press Enter to open the model list, Up/Down to select a model, and Enter to toggle between apply_patch and edit.",
+    choices: [],
+    format: (value) =>
+      formatApplyPatchModelsSummary(typeof value === "string" ? value : undefined),
+    multiToggle: {
+      getItems: (value) =>
+        buildApplyPatchModelSelectItems({
+          patterns: typeof value === "string" ? value : undefined,
+        }),
+      onToggle: (value, targetKey) =>
+        toggleModelInApplyPatchModels(
+          typeof value === "string" ? value : undefined,
+          targetKey,
+        ),
+    },
   },
   {
     id: "applyPatchDebug",
@@ -134,7 +160,10 @@ export type SettingsCallbacks = {
 export type CodexSettingsContext = ConfigContext &
   SettingsSessionContext &
   Pick<ExtensionCommandContext, "mode" | "model" | "isIdle" | "waitForIdle"> & {
-    modelRegistry: Pick<ExtensionCommandContext["modelRegistry"], "find">;
+    reload?: () => Promise<void>;
+    modelRegistry: Pick<ExtensionCommandContext["modelRegistry"], "find"> & {
+      getAvailable?: () => readonly Model<Api>[];
+    };
     ui: {
       custom: <T>(factory: SettingsMenuFactory<T>) => Promise<T>;
       notify: ExtensionCommandContext["ui"]["notify"];
@@ -149,6 +178,24 @@ export type CodexSettingsApi = {
   ) => void;
 };
 export const SESSION_SETTINGS_TYPE = "pi-openai-codex-compat:settings";
+
+/**
+ * Re-read both configuration stores after the patch gate changed. `pi-hashline-edit-pro` reads its
+ * configuration only at session start, so its anchored `read`, `grep`, and `replace` tools keep the
+ * previous mode until a fresh load. Hosts without `ctx.reload` keep the saved values and rely on the
+ * `before_agent_start` reapplication instead.
+ */
+async function reloadAfterPatchGateChange(ctx: CodexSettingsContext): Promise<void> {
+  if (typeof ctx.reload !== "function") return;
+  try {
+    await ctx.reload();
+  } catch (error) {
+    ctx.ui.notify(
+      `Tool switch saved. Reopen Pi to apply it: ${error instanceof Error ? error.message : String(error)}`,
+      "warning",
+    );
+  }
+}
 
 export function loadSessionConfig(ctx: ConfigContext & SettingsSessionContext): CodexCompatConfig {
   const saved = readSessionSettings(ctx, SESSION_SETTINGS_TYPE, settingFields);
@@ -195,10 +242,47 @@ export default function registerCodexSettings(
         const sessionState = readSessionSettings(ctx, SESSION_SETTINGS_TYPE, settingFields).session;
         for (const id of Object.keys(locked)) delete sessionState.changes[id];
         let appliedShell = current.shellTool;
+        let patchGateChanged = false;
         const model = selectedRegistryModel(ctx);
+        const currentModel = model ?? ctx.model;
+        const availableModels = ctx.modelRegistry.getAvailable?.() ?? [];
         const fields = settingFields.map((field) => {
-          const inactive =
-            !isCodexModel(model) || (field.id === "responsesLite" && !usesResponsesLite(model.id));
+          if (field.id === "applyPatchModels") {
+            return {
+              ...field,
+              format: (value: unknown) =>
+                formatApplyPatchModelsSummary(
+                  typeof value === "string" ? value : undefined,
+                  currentModel,
+                ),
+              multiToggle: {
+                getItems: (value: unknown) =>
+                  buildApplyPatchModelSelectItems({
+                    currentModel,
+                    availableModels,
+                    patterns: typeof value === "string" ? value : undefined,
+                  }),
+                onToggle: (value: unknown, targetKey: string) => {
+                  const patterns = typeof value === "string" ? value : undefined;
+                  const knownKeys = collectSelectableModelKeys({
+                    currentModel,
+                    availableModels,
+                    patterns,
+                  }).map((entry) => entry.key);
+                  return toggleModelInApplyPatchModels(patterns, targetKey, knownKeys);
+                },
+              },
+            };
+          }
+          const patchField =
+            field.id === "applyPatch" ||
+            field.id === "applyPatchDebug" ||
+            field.id === "applyPatchDiagnostics";
+          const inactive = patchField
+            ? field.id !== "applyPatch" &&
+              !isApplyPatchModel(currentModel, current.applyPatchModels)
+            : !isCodexModel(model) ||
+              (field.id === "responsesLite" && !usesResponsesLite(model.id));
           return {
             ...field,
             description: `${inactive ? "Inactive on this model. " : ""}${field.description}`,
@@ -212,10 +296,17 @@ export default function registerCodexSettings(
             current: { ...current, autoCompactAtPercent: current.autoCompactAtPercent ?? null },
             session: sessionState,
             fields,
-            status: () =>
+            status: (draftValues) =>
               isCodexModel(model)
                 ? "Codex settings apply when applied to session or saved."
-                : "Configured preferences are inactive on this provider.",
+                : isApplyPatchModel(
+                      currentModel,
+                      typeof draftValues["applyPatchModels"] === "string"
+                        ? draftValues["applyPatchModels"]
+                        : current.applyPatchModels,
+                    )
+                  ? "apply_patch is enabled for this model; other Codex settings apply on openai-codex."
+                  : "This model uses edit (hashline). Open apply_patch models to switch it to apply_patch.",
             prepare: (signal) => waitForSettingsIdle(() => ctx.waitForIdle(), signal),
             guard: (values) => {
               if (ctx.model?.id !== selection?.id || ctx.model?.provider !== selection?.provider) {
@@ -236,6 +327,12 @@ export default function registerCodexSettings(
             },
             apply: (values, nextSession) => {
               const config = resolveConfig(parseConfig(values), {}, environment);
+              if (
+                config.applyPatch !== current.applyPatch ||
+                config.applyPatchModels !== current.applyPatchModels
+              ) {
+                patchGateChanged = true;
+              }
               pi.appendEntry(
                 SESSION_SETTINGS_TYPE,
                 sessionSettingsEntry(sessionId, values, nextSession, locked),
@@ -245,6 +342,7 @@ export default function registerCodexSettings(
             },
           }),
         );
+        if (patchGateChanged) await reloadAfterPatchGateChange(ctx);
       } catch (error) {
         ctx.ui.notify(
           error instanceof Error ? error.message : "Could not open Codex settings.",

@@ -16,6 +16,7 @@ function object(value: unknown): value is Record<string, unknown> {
 }
 
 function valid(field: SettingsField, value: unknown): value is SettingValue {
+  if (field.multiToggle && typeof value === "string") return true;
   if (field.choices.some((choice) => choice === value)) return true;
   const rule = field.number;
   return Boolean(

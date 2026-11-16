@@ -14,10 +14,20 @@ import type { ConfigResolver } from "./config-context.ts";
 import { DEFAULT_CONFIG } from "./config.ts";
 import registerImageGeneration, { type ImageGenerationApi } from "./image-generation.ts";
 import { IMAGE_GENERATION_TOOL_NAME, WEB_RUN_TOOL_NAME } from "./namespaced-tools.ts";
+import { isApplyPatchModel } from "./apply-patch-models.ts";
 import { isCodexModel } from "./request-options.ts";
 import registerWebRun, { type WebRunApi } from "./web-run.ts";
 
 const PI_EDIT_TOOLS = ["edit", "write"] as const;
+const HASHLINE_EDIT_TOOLS = [
+  "replace",
+  "replace_match",
+  "insert",
+  "copy",
+  "move",
+  "undo_last_change",
+  "outline",
+] as const;
 const PI_BASH_TOOL = "bash";
 const CODEX_COMMAND_TOOLS = [
   EXEC_COMMAND_TOOL_NAME,
@@ -43,13 +53,18 @@ const suppressedBashTools = new WeakMap<CodexToolActivationApi, boolean>();
 export function setApplyPatchEnabled(pi: CodexToolActivationApi, enabled: boolean): void {
   const active = new Set(pi.getActiveTools());
   active.delete(APPLY_PATCH_TOOL_NAME);
+  const editTools = [...PI_EDIT_TOOLS, ...HASHLINE_EDIT_TOOLS];
   if (enabled) {
     let suppressed = suppressedEditTools.get(pi);
     if (!suppressed) {
-      suppressed = new Set(PI_EDIT_TOOLS.filter((tool) => active.has(tool)));
+      suppressed = new Set(editTools.filter((tool) => active.has(tool)));
       suppressedEditTools.set(pi, suppressed);
+    } else {
+      for (const tool of editTools) {
+        if (active.has(tool)) suppressed.add(tool);
+      }
     }
-    for (const tool of PI_EDIT_TOOLS) active.delete(tool);
+    for (const tool of editTools) active.delete(tool);
     active.add(APPLY_PATCH_TOOL_NAME);
   } else {
     active.delete(APPLY_PATCH_TOOL_NAME);
@@ -124,7 +139,12 @@ export function syncCodexTools(
   bashReplaced = false,
 ): void {
   const codexSelected = isCodexModel(model);
-  setApplyPatchEnabled(pi, codexSelected && config.applyPatch);
+  const applyPatchSelected =
+    config.applyPatch &&
+    (config.applyPatchModels !== undefined
+      ? isApplyPatchModel(model, config.applyPatchModels)
+      : codexSelected);
+  setApplyPatchEnabled(pi, applyPatchSelected);
   const unifiedExecActive = setCodexCommandTool(
     pi,
     codexSelected ? config.shellTool : undefined,

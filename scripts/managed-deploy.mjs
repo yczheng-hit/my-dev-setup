@@ -136,7 +136,12 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
   seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');
   merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'));
-  merge('pi-hashline-edit-pro.json', path.join(hashlineDir, 'config.json'));
+  merge('pi-hashline-edit-pro.json', path.join(hashlineDir, 'config.json'), (repoVal) => {
+    const localHashline = readObject(path.join(hashlineDir, 'config.json'));
+    return Array.isArray(localHashline.disableOnModels)
+      ? { ...repoVal, disableOnModels: localHashline.disableOnModels }
+      : repoVal;
+  });
   for (const file of walk(path.join(repo, 'pi/extensions'))) {
     const relative = path.relative(path.join(repo, 'pi/extensions'), file);
     if (relative === 'claude-rules.ts') continue;

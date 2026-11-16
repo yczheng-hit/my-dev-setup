@@ -245,3 +245,15 @@ test('machine policy files are initialized once, not copied back or merged on la
     for (const [index, file] of files.entries()) assert.deepEqual(fs.readFileSync(file), before[index]);
   } finally { f.cleanup(); }
 });
+
+test('deployment keeps machine-synced hashline disableOnModels while merging other repo defaults', () => {
+  const f = fixture(); try {
+    const target = path.join(f.home, '.config/pi-hashline-edit-pro/config.json');
+    f.put(target, JSON.stringify({ disableOnModels: ['openai-codex/*', 'local/opus'], autoRead: false }));
+    f.apply(f.plan());
+    const merged = JSON.parse(fs.readFileSync(target, 'utf8'));
+    assert.deepEqual(merged.disableOnModels, ['openai-codex/*', 'local/opus']);
+    assert.equal(merged.autoRead, false);
+    assert.deepEqual(f.plan().changes, []);
+  } finally { f.cleanup(); }
+});

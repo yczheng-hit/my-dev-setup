@@ -257,6 +257,7 @@ Example:
   "toolBackground": "subtle",
   "shellTool": "unified_exec",
   "applyPatch": true,
+  "applyPatchModels": "openai-codex/*",
   "applyPatchDebug": false,
   "applyPatchDiagnostics": false,
   "imageGeneration": true,
@@ -277,7 +278,8 @@ Defaults:
 | `responsesLite`         | boolean                                              | `false`        | Uses Codex's Responses Lite input envelope on supported models when enabled. By default, those models use ordinary Responses instructions and tools.                                                                                      |
 | `toolBackground`        | `subtle`, `status`, `none`                           | `subtle`       | Controls the shared self-rendered background for command tools, `apply_patch`, `image_gen.imagegen`, and `web.run`. `status` uses Pi's pending/success/error backgrounds; `none` keeps the custom layout transparent.                     |
 | `shellTool`             | `unified_exec`, `shell_command`                      | `unified_exec` | Selects the command surface on `openai-codex` models. The selected Codex command surface replaces Pi `bash` only when `bash` was active.                                                                                                  |
-| `applyPatch`            | boolean                                              | `true`         | On selected `openai-codex` models, uses the extension's `apply_patch` tool instead of Pi's active `edit` and `write` tools. Other providers always use their normal Pi tool set.                                                          |
+| `applyPatch`            | boolean                                              | `true`         | On models matched by `applyPatchModels`, uses the extension's `apply_patch` tool instead of Pi's active `edit` and `write` tools. Unmatched models keep their normal Pi tool set.                                                          |
+| `applyPatchModels`      | comma-separated model globs, `!` excludes               | `openai-codex/*` | Model patterns that use `apply_patch`. Matching is case-insensitive on `id`, `provider/id`, and `api`; later patterns win, and a `!pattern` exclusion can carve one model out of a broader glob. `/codex-settings` lists models with Up/Down and toggles the highlighted one with Enter. |
 | `applyPatchDebug`       | boolean                                              | `false`        | Shows the exact model-facing tool result while a completed `apply_patch` result is collapsed. Expanded results continue to show the normal visual summary and complete diffs.                                                             |
 | `applyPatchDiagnostics` | boolean                                              | `false`        | Persists failed patch requests with pre-execution text snapshots or binary metadata for every instruction, outcomes, and trace identifiers. See [`apply_patch`](#apply_patch) for storage and sensitivity details.                        |
 | `imageGeneration`       | boolean                                              | `true`         | Enables the extension-owned `image_gen.imagegen` tool on selected `openai-codex` models.                                                                                                                                                  |
@@ -304,6 +306,7 @@ Every setting can also be overridden for one Pi process with an environment vari
 | `toolBackground`        | `PI_OPENAI_CODEX_COMPAT_TOOL_BACKGROUND`         |
 | `shellTool`             | `PI_OPENAI_CODEX_COMPAT_SHELL_TOOL`              |
 | `applyPatch`            | `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH`             |
+| `applyPatchModels`      | `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH_MODELS`      |
 | `applyPatchDebug`       | `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH_DEBUG`       |
 | `applyPatchDiagnostics` | `PI_OPENAI_CODEX_COMPAT_APPLY_PATCH_DIAGNOSTICS` |
 | `imageGeneration`       | `PI_OPENAI_CODEX_COMPAT_IMAGE_GENERATION`        |
@@ -456,7 +459,9 @@ The package registers an `apply_patch` tool using the Codex patch format:
 *** End Patch
 ```
 
-While `applyPatch` is enabled and an `openai-codex` model is selected, the extension temporarily disables Pi's active `edit` and `write` tools. Turning the setting off or selecting another provider restores only the tools that were active before `apply_patch` replaced them.
+While `applyPatch` is enabled and the selected model matches `applyPatchModels`, the extension temporarily disables Pi's active `edit` and `write` tools. Turning the setting off, or selecting a model that no other pattern matches, restores only the tools that were active before `apply_patch` replaced them.
+
+`applyPatchModels` defaults to `openai-codex/*`, so behavior without configuration matches earlier releases. Matching uses the same case-insensitive globs over a model's `id`, `provider/id`, and `api`; later patterns win, so `openai-codex/*, !openai-codex/gpt-5.6-luna` keeps one Codex model on Pi's edit tools. On a model that is not `openai-codex`, the extension additionally appends a short `apply_patch` format section to the system prompt, because those models were not trained on the Codex tool description. When `pi-hashline-edit-pro` is installed, saving the pane also writes the same `applyPatchModels` patterns to its `disableOnModels`, so the anchored `read`, `grep`, and `replace`-family tools stay off exactly while `apply_patch` is on. The `/codex-settings` row lists the current model first, then `settings.json` `enabledModels`, then every available model; Up/Down moves, Enter toggles the highlighted model, and Ctrl+S saves.
 
 Supported operations:
 

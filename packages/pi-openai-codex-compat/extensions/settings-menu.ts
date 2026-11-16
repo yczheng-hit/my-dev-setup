@@ -41,6 +41,10 @@ export type SettingsField = {
   choices: SettingValue[];
   number?: { min: number; max: number; integer?: boolean; exclusiveMin?: boolean; unit: string };
   format?: (value: SettingValue) => string;
+  multiToggle?: {
+    getItems: (value: SettingValue) => SelectItem[];
+    onToggle: (value: SettingValue, selectedItemValue: string) => SettingValue;
+  };
 };
 export type SettingsMenuOptions = {
   title: string;
@@ -186,6 +190,31 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
       if (current === undefined) return;
       if (typeof current === "boolean") {
         change(field, !current);
+        return;
+      }
+      if (field.multiToggle) {
+        const buildPicker = (val: SettingValue, selectedIndex = 0) => {
+          const choices = field.multiToggle!.getItems(val);
+          const picker = new SelectList(choices, 10, listTheme, {
+            maxPrimaryColumnWidth: 1000,
+          });
+          picker.setSelectedIndex(Math.max(0, Math.min(choices.length - 1, selectedIndex)));
+          picker.onSelect = (item) => {
+            const idx = Math.max(0, choices.findIndex((c) => c.value === item.value));
+            const nextVal = field.multiToggle!.onToggle(draft[field.id], item.value);
+            change(field, nextVal);
+            const nextChild = buildPicker(draft[field.id], idx);
+            child = { field, list: nextChild.picker, choices: nextChild.choices };
+            notice =
+              "Toggled model. Up/Down select · Enter toggle · Ctrl+S save · Esc back.";
+            updateFocus();
+          };
+          return { picker, choices };
+        };
+        const initial = buildPicker(current, 0);
+        child = { field, list: initial.picker, choices: initial.choices };
+        notice = "Up/Down select model · Enter toggle apply_patch / edit · Ctrl+S save · Esc back.";
+        updateFocus();
         return;
       }
       const choices: SelectItem[] = field.choices.map((value, index) => ({
@@ -385,7 +414,9 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
           if (child.list && child.choices && child.visible !== visible) {
             const previous = child.list;
             const selected = previous.getSelectedItem()?.value;
-            child.list = new SelectList(child.choices, visible, listTheme);
+            child.list = new SelectList(child.choices, visible, listTheme, {
+              maxPrimaryColumnWidth: 1000,
+            });
             child.list.setSelectedIndex(
               Math.max(
                 0,
@@ -397,7 +428,11 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
           }
           const editor = child.input ?? child.list;
           if (editor) zone(editor, "results");
-          text(`${keyName("tui.select.confirm")} select · ${keyName("tui.select.cancel")} back`);
+          text(
+            child.field.multiToggle
+              ? `${keyName("tui.select.up")}/${keyName("tui.select.down")} select · ${keyName("tui.select.confirm")} toggle · Ctrl+S save · ${keyName("tui.select.cancel")} back`
+              : `${keyName("tui.select.confirm")} select · ${keyName("tui.select.cancel")} back`,
+          );
         } else {
           const hint = `${keyName("tui.select.confirm")} ${focus === "actions" ? "select" : "change"} · Space ${focus === "search" ? "search" : "select"} · ${keyName("tui.input.tab")} focus · Ctrl+S save · ${keyName("tui.select.cancel")} discard · F1 details`;
           const hints = busy
@@ -518,13 +553,25 @@ export function settingsMenu(options: SettingsMenuOptions): SettingsMenuFactory<
         }
         if (keys.matches(data, "tui.select.cancel")) {
           if (child) {
+            const wasMultiToggle = Boolean(child.field.multiToggle);
             child = undefined;
             failed = false;
-            notice = "Field edit cancelled.";
+            notice = wasMultiToggle
+              ? dirty()
+                ? `${dirty()} draft change(s). Not applied.`
+                : "No unsaved changes."
+              : "Field edit cancelled.";
             updateFocus();
           } else close();
         } else if (child) {
-          if (matchesKey(data, Key.ctrl("s"))) return;
+          if (matchesKey(data, Key.ctrl("s"))) {
+            if (child.field.multiToggle) {
+              child = undefined;
+              updateFocus();
+              commit("save", true).catch(saveFailed);
+            }
+            return;
+          }
           if (keys.matches(data, "tui.select.confirm")) {
             if (child.input) confirmNumber();
             else {
