@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { inspectInstallation, executable } from "./maintenance-policy.mjs";
 
@@ -249,7 +249,25 @@ export async function restartSinglePane(entry, options = {}) {
     });
   };
 
-  // Step 2: Graceful quit (esc -> ctrl+c -> ctrl+d)
+  // If restarting the current pane from a detached worker while it is still finishing a reply,
+  // wait briefly (up to 15s) for it to settle to idle before sending quit keys.
+  if (entry.isCurrent && options.waitForCurrentIdle) {
+    const idleDeadline = Date.now() + 15_000;
+    while (Date.now() < idleDeadline) {
+      try {
+        const info = runHerdrJson(["pane", "get", paneId], runCmd);
+        const st = info?.result?.pane?.agent_status;
+        if (!st || st === "idle" || st === "done") break;
+      } catch {
+        break;
+      }
+      await sleep(400);
+    }
+  }
+
+  // Step 2: Graceful quit (double esc to dismiss any open modal/selector -> ctrl+c -> ctrl+d)
+  sendKey("esc");
+  await sleep(100);
   sendKey("esc");
   await sleep(150);
   sendKey("ctrl+c");
@@ -270,6 +288,8 @@ export async function restartSinglePane(entry, options = {}) {
 
   if (!exited) {
     // Fallback: two ctrl+c + ctrl+d
+    sendKey("esc");
+    await sleep(100);
     sendKey("ctrl+c");
     await sleep(120);
     sendKey("ctrl+c");
@@ -292,23 +312,43 @@ export async function restartSinglePane(entry, options = {}) {
 
   // Step 3: Restart in the same pane with exact --session <jsonl>
   const tempName = `pi-restart-${paneId.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`.slice(0, 32);
-  runHerdrJson(
-    [
-      "agent",
-      "start",
-      tempName,
-      "--kind",
-      "pi",
-      "--pane",
-      paneId,
-      "--timeout",
-      String(startTimeoutMs),
-      "--",
-      "--session",
-      entry.sessionFile,
-    ],
-    runCmd,
-  );
+  try {
+    runHerdrJson(
+      [
+        "agent",
+        "start",
+        tempName,
+        "--kind",
+        "pi",
+        "--pane",
+        paneId,
+        "--timeout",
+        String(startTimeoutMs),
+        "--",
+        "--session",
+        entry.sessionFile,
+      ],
+      runCmd,
+    );
+  } catch (startErr) {
+    // Fallback recovery so a pane is never left stranded at an empty shell prompt
+    const escapedSession = `'${String(entry.sessionFile).replace(/'/g, "'\\''")}'`;
+    runCmd("herdr", ["pane", "send-text", paneId, `pi --session ${escapedSession}\r`], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const recoverDeadline = Date.now() + 15_000;
+    let recovered = false;
+    while (Date.now() < recoverDeadline) {
+      await sleep(POLL_INTERVAL_MS);
+      const info = runHerdrJson(["pane", "get", paneId], runCmd);
+      if (info?.result?.pane?.agent === "pi") {
+        recovered = true;
+        break;
+      }
+    }
+    if (!recovered) throw startErr;
+  }
 
   // Step 4: Process & version verification + clear temporary name
   const procInfo = runHerdrJson(["pane", "process-info", "--pane", paneId], runCmd);
@@ -390,16 +430,43 @@ export async function runCli(argv = process.argv.slice(2)) {
   }
 
   const installation = inspectInstallation();
+  const isDetachedSelf = process.env.PI_RESTART_DETACHED === "1";
+  let failures = 0;
+
   for (const entry of plan.toRestart) {
-    const result = await restartSinglePane(entry, {
-      installation,
-      quitTimeoutMs: options.quitTimeoutMs,
-    });
-    console.log(
-      `OK\t${result.paneId}\tpid=${result.pid}\tcurrent-version=${result.version}\tsession=${path.basename(result.sessionFile)}`,
-    );
+    if (entry.isCurrent && !isDetachedSelf) {
+      const selfScript = fileURLToPath(import.meta.url);
+      const child = spawn(
+        process.execPath,
+        [selfScript, "--yes", `--pane=${entry.paneId}`, "--include-busy", "--include-current"],
+        {
+          detached: true,
+          stdio: "ignore",
+          env: { ...process.env, PI_RESTART_DETACHED: "1" },
+        },
+      );
+      child.unref();
+      console.log(
+        `SCHEDULED\t${entry.paneId}\tself-restart detached (will wait for idle and restore ${path.basename(entry.sessionFile)})`,
+      );
+      continue;
+    }
+
+    try {
+      const result = await restartSinglePane(entry, {
+        installation,
+        quitTimeoutMs: options.quitTimeoutMs,
+        waitForCurrentIdle: entry.isCurrent && isDetachedSelf,
+      });
+      console.log(
+        `OK\t${result.paneId}\tpid=${result.pid}\tcurrent-version=${result.version}\tsession=${path.basename(result.sessionFile)}`,
+      );
+    } catch (err) {
+      failures += 1;
+      console.error(`BAD\t${entry.paneId}\t${err?.message ?? String(err)}`);
+    }
   }
-  return 0;
+  return failures === 0 ? 0 : 1;
 }
 
 const isMain = (() => {
