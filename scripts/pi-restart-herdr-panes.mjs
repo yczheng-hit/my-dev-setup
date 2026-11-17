@@ -291,7 +291,7 @@ export async function restartSinglePane(entry, options = {}) {
   }
 
   // Step 3: Restart in the same pane with exact --session <jsonl>
-  const tempName = `pi-restart-${paneId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const tempName = `pi-restart-${paneId.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`.slice(0, 32);
   runHerdrJson(
     [
       "agent",
