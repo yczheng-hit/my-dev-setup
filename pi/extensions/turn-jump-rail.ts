@@ -75,10 +75,21 @@ export function resolveRenderer(reference: AnyObject): AltScreen {
 	}
 }
 
-function measureLines(component: unknown, width: number): number {
+const measuredHeightCache = new WeakMap<object, { width: number; height: number }>();
+
+function measureLines(component: unknown, width: number, cacheable = false): number {
+	if (!component || typeof component !== "object") return 0;
+	if (cacheable) {
+		const hit = measuredHeightCache.get(component);
+		if (hit && hit.width === width) return hit.height;
+	}
 	try {
 		const render = (component as { render?: (w: number) => string[] }).render;
-		return typeof render === "function" ? (render.call(component, width)?.length ?? 0) : 0;
+		const height = typeof render === "function" ? (render.call(component, width)?.length ?? 0) : 0;
+		if (cacheable && height > 0) {
+			measuredHeightCache.set(component, { width, height });
+		}
+		return height;
 	} catch {
 		return 0;
 	}
@@ -113,9 +124,13 @@ export function collectTurnAnchors(children: readonly unknown[], width: number):
 	let currentTurn: TurnAnchor | undefined;
 
 	function walk(nodes: readonly unknown[], offset: number): number {
-		for (const child of nodes) {
+		const len = nodes.length;
+		for (let i = 0; i < len; i++) {
+			const child = nodes[i];
+			// All completed components before the last 2 tail items have immutable heights for a given width
+			const cacheable = len > 4 && i < len - 2;
 			if (isUserPromptComponent(child)) {
-				const height = measureLines(child, width);
+				const height = measureLines(child, width, cacheable);
 				if (height > 0) {
 					if (currentTurn) currentTurn.end = Math.max(currentTurn.end, offset);
 					currentTurn = {
@@ -127,7 +142,7 @@ export function collectTurnAnchors(children: readonly unknown[], width: number):
 				}
 				offset += height;
 			} else if (isAssistantReplyComponent(child)) {
-				const height = measureLines(child, width);
+				const height = measureLines(child, width, cacheable);
 				if (height > 0) {
 					if (!currentTurn) {
 						currentTurn = {
@@ -150,7 +165,7 @@ export function collectTurnAnchors(children: readonly unknown[], width: number):
 				if (nested !== undefined) {
 					offset = walk(nested, offset);
 				} else {
-					const height = measureLines(child, width);
+					const height = measureLines(child, width, cacheable);
 					if (currentTurn && height > 0) {
 						currentTurn.end = offset + height;
 					}
