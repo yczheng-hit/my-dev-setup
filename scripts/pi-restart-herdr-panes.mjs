@@ -243,18 +243,18 @@ export async function restartSinglePane(entry, options = {}) {
   const paneId = entry.paneId;
 
   const sendKey = (key) => {
-    runCmd("herdr", ["pane", "send-keys", "--pane", paneId, key], {
+    runCmd("herdr", ["pane", "send-keys", paneId, key], {
       encoding: "utf8",
       timeout: 5_000,
     });
   };
 
-  // Step 2: Graceful quit (Esc -> Ctrl+C -> Ctrl+D)
-  sendKey("Esc");
+  // Step 2: Graceful quit (esc -> ctrl+c -> ctrl+d)
+  sendKey("esc");
   await sleep(150);
-  sendKey("C-c");
+  sendKey("ctrl+c");
   await sleep(150);
-  sendKey("C-d");
+  sendKey("ctrl+d");
 
   const deadline = Date.now() + quitTimeoutMs;
   let exited = false;
@@ -269,12 +269,12 @@ export async function restartSinglePane(entry, options = {}) {
   }
 
   if (!exited) {
-    // Fallback: two Ctrl+C + Ctrl+D
-    sendKey("C-c");
+    // Fallback: two ctrl+c + ctrl+d
+    sendKey("ctrl+c");
     await sleep(120);
-    sendKey("C-c");
+    sendKey("ctrl+c");
     await sleep(150);
-    sendKey("C-d");
+    sendKey("ctrl+d");
     const forceDeadline = Date.now() + 5_000;
     while (Date.now() < forceDeadline) {
       await sleep(POLL_INTERVAL_MS);

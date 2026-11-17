@@ -161,9 +161,9 @@ test("restartSinglePane executes quit -> poll -> agent start --session -> proces
   assert.equal(res.paneId, "w8:p1");
   assert.equal(res.pid, 4242);
   assert.equal(res.version, "1.5.2");
-  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys --pane w8:p1 Esc"));
-  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys --pane w8:p1 C-c"));
-  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys --pane w8:p1 C-d"));
+  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys w8:p1 esc"));
+  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys w8:p1 ctrl+c"));
+  assert.ok(calls.some((c) => c.join(" ") === "herdr pane send-keys w8:p1 ctrl+d"));
   assert.ok(
     calls.some(
       (c) =>
