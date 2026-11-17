@@ -32,7 +32,7 @@ index 0000000..67dd70c
 +}
 +module.exports = { createForegroundGate };
 diff --git a/extensions/scheduler/index.ts b/extensions/scheduler/index.ts
-index 0485891..0058e1d 100644
+index 0485891..ec199ff 100644
 --- a/extensions/scheduler/index.ts
 +++ b/extensions/scheduler/index.ts
 @@ -3,30 +3,40 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
@@ -243,7 +243,7 @@ index 0485891..0058e1d 100644
 +	/** Persist before dispatch; ambiguous crash windows are never automatically replayed. */
 +	async function flushWakes(ctx: ExtensionContext, generation = sessionGeneration): Promise<void> {
 +		if (deliveryRunning || !isSessionActive(ctx, generation) || foreground.reason(ctx)) { updateStatus(ctx); return; }
-+		if (!tasks.some(task => task.pendingWake?.state === "queued" && task.pendingWake.sessionFile === currentSessionFile(ctx))) return;
++		if (!tasks.some(task => task.pendingWake?.state === "queued" && task.pendingWake.sessionFile === currentSessionFile(ctx))) { updateStatus(ctx); return; }
 +		deliveryRunning = true;
 +		try {
 +			const claimed = await transactTasks(current => {

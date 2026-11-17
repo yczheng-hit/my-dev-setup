@@ -180,7 +180,7 @@ export default function schedulerExtension(pi: ExtensionAPI) {
 	/** Persist before dispatch; ambiguous crash windows are never automatically replayed. */
 	async function flushWakes(ctx: ExtensionContext, generation = sessionGeneration): Promise<void> {
 		if (deliveryRunning || !isSessionActive(ctx, generation) || foreground.reason(ctx)) { updateStatus(ctx); return; }
-		if (!tasks.some(task => task.pendingWake?.state === "queued" && task.pendingWake.sessionFile === currentSessionFile(ctx))) return;
+		if (!tasks.some(task => task.pendingWake?.state === "queued" && task.pendingWake.sessionFile === currentSessionFile(ctx))) { updateStatus(ctx); return; }
 		deliveryRunning = true;
 		try {
 			const claimed = await transactTasks(current => {
