@@ -6,10 +6,51 @@
 import type { ContextEditEntryDraft, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 
 const STEER_INTERRUPT_ENTRY = "cc-steer.interrupted";
+const PROBE_WIDGET_KEY = "esc-restore-input-probe";
+
+type ChatContainerLike = {
+	children?: unknown[];
+	invalidate?: () => void;
+};
+
+type ScreenLike = {
+	getPrimaryScrollView?: () => { child?: { children?: unknown[] } } | undefined;
+	children?: Array<{ children?: unknown[] }>;
+	requestRender?: () => void;
+};
+
+function unwrapScreen(raw: unknown): ScreenLike | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const ref = raw as Record<string, unknown>;
+	const probe = "__escRestoreUnwrap__";
+	ref[probe] = function (this: unknown) {
+		return this;
+	};
+	let target: unknown;
+	try {
+		target = (ref[probe] as () => unknown)();
+		return (target ?? ref) as ScreenLike;
+	} catch {
+		return ref as ScreenLike;
+	} finally {
+		if (target && typeof target === "object") {
+			delete (target as Record<string, unknown>)[probe];
+		}
+		delete ref[probe];
+	}
+}
+
+function resolveChatContainer(screen: ScreenLike | undefined): ChatContainerLike | undefined {
+	if (!screen) return undefined;
+	const doc = screen.getPrimaryScrollView?.()?.child ?? screen.children?.[0];
+	const chat = doc?.children?.[2] as ChatContainerLike | undefined;
+	return chat && Array.isArray(chat.children) ? chat : undefined;
+}
 
 interface ActiveRun {
 	rawText: string;
 	preRunLeafId: string | null;
+	chatChildCountBefore?: number;
 	started: boolean;
 	toolExecuted: boolean;
 	midTurnInputSeen: boolean;
@@ -59,12 +100,25 @@ function findAbortedUserEntry(branch: SessionEntry[], preRunLeafId: string | nul
 
 export default function escRestoreInput(pi: ExtensionAPI) {
 	let activeRun: ActiveRun | undefined;
+	let liveScreen: ScreenLike | undefined;
 
 	const reset = () => {
 		activeRun = undefined;
 	};
 
-	pi.on("session_start", reset);
+	pi.on("session_start", (_event, ctx) => {
+		reset();
+		if (!ctx.hasUI) return;
+		try {
+			ctx.ui.setWidget(PROBE_WIDGET_KEY, (tui) => {
+				liveScreen = unwrapScreen(tui);
+				return { render: () => [], invalidate: () => {} };
+			});
+			ctx.ui.setWidget(PROBE_WIDGET_KEY, undefined);
+		} catch {
+			// Ignore in headless/non-widget harnesses
+		}
+	});
 	pi.on("session_shutdown", reset);
 
 	pi.on("input", (event, ctx) => {
@@ -74,9 +128,11 @@ export default function escRestoreInput(pi: ExtensionAPI) {
 			return;
 		}
 		if (!event.text.trim()) return;
+		const chat = resolveChatContainer(liveScreen);
 		activeRun = {
 			rawText: event.text,
 			preRunLeafId: ctx.sessionManager.getLeafId(),
+			chatChildCountBefore: chat?.children?.length,
 			started: false,
 			toolExecuted: false,
 			midTurnInputSeen: false,
@@ -142,6 +198,17 @@ export default function escRestoreInput(pi: ExtensionAPI) {
 
 		const target = findAbortedUserEntry(ctx.sessionManager.getBranch(), run.preRunLeafId);
 		if (target === "unsafe") return;
+
+		const chat = resolveChatContainer(liveScreen);
+		if (
+			chat?.children &&
+			typeof run.chatChildCountBefore === "number" &&
+			chat.children.length > run.chatChildCountBefore
+		) {
+			chat.children.splice(run.chatChildCountBefore);
+			chat.invalidate?.();
+			liveScreen?.requestRender?.();
+		}
 
 		ctx.ui.setEditorText(run.rawText);
 		ctx.ui.notify("已取消并退回输入框", "info");

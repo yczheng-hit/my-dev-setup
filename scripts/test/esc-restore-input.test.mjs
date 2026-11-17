@@ -116,16 +116,26 @@ async function createSessionFixture({ onStream, tools = [] } = {}) {
 		customTools: tools,
 		noTools: "all",
 	}));
-
 	let draft = "";
 	const notices = [];
 	const errors = [];
+	const chatChildren = [];
+	const mockScreen = {
+		getPrimaryScrollView: () => ({
+			child: {
+				children: [{}, {}, { children: chatChildren, invalidate: () => {} }],
+			},
+		}),
+		requestRender: () => {},
+	};
 	const noop = () => {};
 	const ui = {
 		notify: (text, type) => notices.push({ text, type }),
 		setStatus: noop,
 		setWorkingMessage: noop,
-		setWidget: noop,
+		setWidget: (_key, factory) => {
+			if (typeof factory === "function") factory(mockScreen, {});
+		},
 		setFooter: noop,
 		getEditorComponent: () => undefined,
 		setEditorComponent: noop,
@@ -160,13 +170,18 @@ async function createSessionFixture({ onStream, tools = [] } = {}) {
 		onError: (err) => errors.push(err),
 	});
 	assert.deepEqual(errors, []);
-
+	session.subscribe((event) => {
+		if (event.type === "message_start") {
+			chatChildren.push({ role: event.message.role });
+		}
+	});
 	return {
 		session,
 		sm,
 		calls,
 		notices,
 		errors,
+		chatChildren,
 		getDraft: () => draft,
 		setDraft: (text) => {
 			draft = text;
@@ -206,19 +221,20 @@ test(
 		try {
 			// Turn 1 completes normally
 			await f.session.prompt("第一条正常指令");
-			assert.equal(f. getDraft(), "");
+			assert.equal(f.getDraft(), "");
 			const leafAfterTurn1 = f.sm.getLeafId();
 			assert.ok(leafAfterTurn1);
+			const childrenAfterTurn1 = f.chatChildren.length;
 
 			// Turn 2 is immediately aborted with Esc
 			shouldAbort = true;
 			await f.session.prompt("第二条发错的指令 --typo");
 
-			// Editor has the mistaken prompt restored, and projected context omits the aborted turn without session_tree
+			// Editor has the mistaken prompt restored, projected context omits the aborted turn, and UI chatContainer removes the aborted bubble
 			assert.equal(f.getDraft(), "第二条发错的指令 --typo");
+			assert.equal(f.chatChildren.length, childrenAfterTurn1);
 			assert.ok(!JSON.stringify(f.sm.buildSessionContext().messages).includes("第二条发错的指令 --typo"));
 			assert.ok(f.notices.some((n) => n.text.includes("已取消并退回输入框")));
-
 			// Turn 2 retried after fixing typo: model context should NOT contain the aborted prompt
 			shouldAbort = false;
 			f.setDraft("");
