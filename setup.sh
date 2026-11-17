@@ -305,6 +305,13 @@ else
 fi
 
 # ---------------------------------------------------------------- done
+if [ "$DRY_RUN" = 0 ] && [ -f "$REPO/scripts/pi-restart-herdr-panes.mjs" ]; then
+  chmod +x "$REPO/scripts/pi-restart-herdr-panes.mjs"
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$REPO/scripts/pi-restart-herdr-panes.mjs" "$HOME/.local/bin/pi-restart-herdr-panes"
+  log "linked     ~/.local/bin/pi-restart-herdr-panes"
+fi
+
 step "Done"
 if [ "$DRY_RUN" = 0 ] && [ "$problems" = 0 ] && [ "$CLEAN_BACKUPS" = 1 ]; then
   rm -rf "$HOME/.my-dev-setup-backups"
