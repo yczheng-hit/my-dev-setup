@@ -28,11 +28,12 @@ function atomic(file, content) {
 function stateRoot(agentDir) { return path.join(agentDir, 'state/my-dev-setup'); }
 export function parseArgs(args) {
   const command = args.shift() ?? 'check';
-  if (!['check', 'update', 'bootstrap', 'status'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status [--repo DIR] [--agent-dir DIR] [--apply]');
+  if (!['check', 'update', 'bootstrap', 'status'].includes(command)) throw new Error('usage: maintain.mjs check|update|bootstrap|status [--repo DIR] [--agent-dir DIR] [--apply] [--clean-backups]');
   const options = { command, repo: ROOT, agentDir: path.resolve(process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), '.pi/agent')) };
   while (args.length) {
     const flag = args.shift();
     if (flag === '--apply') options.apply = true;
+    else if (flag === '--clean-backups' || flag === '--prune-backups') options.cleanBackups = true;
     else if (['--repo', '--agent-dir'].includes(flag) && args[0] && !args[0].startsWith('--')) options[flag === '--repo' ? 'repo' : 'agentDir'] = path.resolve(args.shift());
     else throw new Error(`Unknown/missing option: ${flag}`);
   }
@@ -254,11 +255,23 @@ export function applyPrepared(options, target, prepared, { command = run, detect
     }
     const settingsFile = path.join(prepared.stage, 'resolved-settings.json');
     atomic(settingsFile, json(resolvedSettings(repo, target)));
-    command('/bin/bash', [path.join(repo, 'setup.sh'), '--skip-tool-updates'], { env: { ...env, MY_DEV_SETUP_SETTINGS: settingsFile } });
+    const setupArgs = [path.join(repo, 'setup.sh'), '--skip-tool-updates', ...(options.cleanBackups ? ['--clean-backups'] : [])];
+    command('/bin/bash', setupArgs, { env: { ...env, MY_DEV_SETUP_SETTINGS: settingsFile } });
     command(runtimeNode, [path.join(repo, 'scripts/check-pi-extensions.mjs'), repo, '--host', actual.host, '--agent-dir', agentDir, '--settings', settingsFile], { env });
-    atomic(path.join(backup, 'receipt.json'), json({ installation, target, status: 'applied' }));
-    atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: target.host.version, backup, restartRequired: true }));
-    console.log(`applied\tPi ${target.host.version} installed; use the new runtime on your next normal Pi start. Backup: ${backup}`);
+    if (options.cleanBackups) {
+      const sRoot = stateRoot(agentDir);
+      for (const entry of fs.readdirSync(sRoot)) {
+        if (entry.startsWith('backup-') || entry.startsWith('retired-deferred-') || entry === 'preflight-backups') {
+          fs.rmSync(path.join(sRoot, entry), { recursive: true, force: true });
+        }
+      }
+      atomic(path.join(sRoot, 'status.json'), json({ status: 'applied', host: target.host.version, backup: null, backupCleaned: true, restartRequired: true }));
+      console.log(`applied\tPi ${target.host.version} installed; backups cleaned after verification.`);
+    } else {
+      atomic(path.join(backup, 'receipt.json'), json({ installation, target, status: 'applied' }));
+      atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'applied', host: target.host.version, backup, restartRequired: true }));
+      console.log(`applied\tPi ${target.host.version} installed; use the new runtime on your next normal Pi start. Backup: ${backup}`);
+    }
   } catch (error) {
     atomic(path.join(backup, 'failure.json'), json({ status: 'failed', error: error.message }));
     atomic(path.join(stateRoot(agentDir), 'status.json'), json({ status: 'failed', targetHost: target.host.version, backup, error: error.message, restartRequired: true }));

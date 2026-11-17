@@ -14,6 +14,7 @@ BACKUP_DIR="$HOME/.my-dev-setup-backups/$(date +%Y%m%d-%H%M%S)"
 DRY_RUN=0
 NO_REBUILD=0
 SKIP_TOOL_UPDATES=0
+CLEAN_BACKUPS=0
 problems=0   # anything that leaves a plugin broken: reported at the end, exit status 1
 
 for arg in "$@"; do
@@ -21,7 +22,8 @@ for arg in "$@"; do
     --dry-run|-n) DRY_RUN=1 ;;
     --no-rebuild) NO_REBUILD=1 ;;
     --skip-tool-updates) SKIP_TOOL_UPDATES=1 ;;
-    *) echo "usage: $0 [--dry-run] [--no-rebuild] [--skip-tool-updates]" >&2; exit 2 ;;
+    --clean-backups|--prune-backups) CLEAN_BACKUPS=1 ;;
+    *) echo "usage: $0 [--dry-run] [--no-rebuild] [--skip-tool-updates] [--clean-backups]" >&2; exit 2 ;;
   esac
 done
 
@@ -304,7 +306,10 @@ fi
 
 # ---------------------------------------------------------------- done
 step "Done"
-if [ "$DRY_RUN" = 0 ] && [ -d "$BACKUP_DIR" ]; then
+if [ "$DRY_RUN" = 0 ] && [ "$problems" = 0 ] && [ "$CLEAN_BACKUPS" = 1 ]; then
+  rm -rf "$HOME/.my-dev-setup-backups"
+  log "cleaned    backups after successful verification"
+elif [ "$DRY_RUN" = 0 ] && [ -d "$BACKUP_DIR" ]; then
   log "previous files backed up to ${BACKUP_DIR/#$HOME/~}"
 fi
 if [ "$problems" != 0 ]; then

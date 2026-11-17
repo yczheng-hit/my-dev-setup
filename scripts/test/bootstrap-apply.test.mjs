@@ -118,3 +118,23 @@ for (const scenario of ['missing-herdr', 'unknown-owner', 'nested-symlink', 'cha
     } finally { f.close(); }
   });
 }
+
+test('--clean-backups removes backup directories after successful verification', () => {
+  const f = fixture();
+  try {
+    applyPrepared({ ...f, cleanBackups: true }, f.lock, f.prepared, {
+      detect: f.detect,
+      command: f.command,
+      hasHerdr: () => true,
+    });
+    const state = path.join(f.agentDir, 'state/my-dev-setup');
+    const status = JSON.parse(fs.readFileSync(path.join(state, 'status.json'), 'utf8'));
+    assert.equal(status.status, 'applied');
+    assert.equal(status.backupCleaned, true);
+    assert.equal(status.backup, null);
+    assert.equal(fs.readdirSync(state).some(name => name.startsWith('backup-')), false);
+    assert.ok(f.calls.some(call => call.binary === '/bin/bash' && call.args.includes('--clean-backups')));
+  } finally {
+    f.close();
+  }
+});

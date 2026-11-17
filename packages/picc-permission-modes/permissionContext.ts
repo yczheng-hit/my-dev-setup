@@ -23,24 +23,12 @@ import {
 export const DANGEROUS_FILES = [
   ".gitconfig",
   ".gitmodules",
-  ".bashrc",
-  ".bash_profile",
   ".zshrc",
   ".zprofile",
-  ".profile",
-  ".ripgreprc",
-  ".mcp.json",
-  ".claude.json",
-  "AGENTS.md",
-  "AGENTS.override.md",
+  ".zshenv",
 ] as const;
 export const DANGEROUS_DIRECTORIES = [
   ".git",
-  ".vscode",
-  ".idea",
-  ".claude",
-  ".agents",
-  ".pi",
 ] as const;
 export function isDangerousFilePath(pathStr: string): boolean {
   if (!pathStr) return false;

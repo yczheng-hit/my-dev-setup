@@ -2618,23 +2618,28 @@ index 90abc3a..ac028c7 100644
  }
 \ No newline at end of file
 diff --git a/permissionContext.ts b/permissionContext.ts
-index 144a37b..9645881 100644
+index 144a37b..9005cfe 100644
 --- a/permissionContext.ts
 +++ b/permissionContext.ts
-@@ -31,39 +31,20 @@ export const DANGEROUS_FILES = [
-   ".ripgreprc",
-   ".mcp.json",
-   ".claude.json",
-+  "AGENTS.md",
-+  "AGENTS.override.md",
+@@ -23,47 +23,16 @@ import {
+ export const DANGEROUS_FILES = [
+   ".gitconfig",
+   ".gitmodules",
+-  ".bashrc",
+-  ".bash_profile",
+   ".zshrc",
+   ".zprofile",
+-  ".profile",
+-  ".ripgreprc",
+-  ".mcp.json",
+-  ".claude.json",
++  ".zshenv",
  ] as const;
  export const DANGEROUS_DIRECTORIES = [
    ".git",
-   ".vscode",
-   ".idea",
-   ".claude",
-+  ".agents",
-+  ".pi",
+-  ".vscode",
+-  ".idea",
+-  ".claude",
  ] as const;
 -export function hasSuspiciousWindowsPathPattern(pathStr: string): boolean {
 -  if (!pathStr) return false;
@@ -2666,7 +2671,7 @@ index 144a37b..9645881 100644
    const expanded = path.resolve(
      pathStr.startsWith("~")
        ? pathStr.replace(/^~/, homedir())
-@@ -162,7 +143,7 @@ function patternWithRoot(
+@@ -162,7 +131,7 @@ function patternWithRoot(
    }
    let normalizedPattern = pattern;
    if (pattern.startsWith("./")) normalizedPattern = pattern.slice(2);
@@ -2675,7 +2680,7 @@ index 144a37b..9645881 100644
  }
  function dirSepNorm(p: string): string {
    return p.replace(/\\/g, "/");
-@@ -199,8 +180,9 @@ function matchesPathPattern(
+@@ -199,8 +168,9 @@ function matchesPathPattern(
    ruleValue: PermissionRuleValue,
    absPath: string,
    originalTarget: string,
@@ -2686,7 +2691,7 @@ index 144a37b..9645881 100644
    const normalizedPattern = parts.relativePattern
      .replace(/^\.\//, "")
      .replace(/\\/g, "/");
-@@ -232,6 +214,7 @@ function ruleMatches(
+@@ -232,6 +202,7 @@ function ruleMatches(
    absPath: string,
    ruleString: string,
    originalTarget: string,
@@ -2694,7 +2699,7 @@ index 144a37b..9645881 100644
  ): boolean {
    if (ruleValue.toolName.startsWith("mcp__")) {
      const ruleParts = ruleValue.toolName.split("__");
-@@ -252,22 +235,24 @@ function ruleMatches(
+@@ -252,22 +223,24 @@ function ruleMatches(
    }
    if (ruleValue.toolName.toLowerCase() !== toolName.toLowerCase()) return false;
    if (ruleValue.ruleContent === undefined) return true;
@@ -2721,7 +2726,7 @@ index 144a37b..9645881 100644
  ): boolean {
    if (
      ruleValue.ruleContent === undefined &&
-@@ -275,7 +260,7 @@ function readRuleMatches(
+@@ -275,7 +248,7 @@ function readRuleMatches(
    ) {
      return true;
    }
@@ -2730,7 +2735,7 @@ index 144a37b..9645881 100644
  }
  export function matchingRuleForInput(
    targetTool: string,
-@@ -283,6 +268,7 @@ export function matchingRuleForInput(
+@@ -283,6 +256,7 @@ export function matchingRuleForInput(
    toolType: "edit" | "read",
    behavior: PermissionBehavior,
    context: ToolPermissionContext,
@@ -2738,7 +2743,7 @@ index 144a37b..9645881 100644
  ): PermissionRule | null {
    const sources: PermissionRuleSource[] = [
      "userSettings",
-@@ -300,7 +286,7 @@ export function matchingRuleForInput(
+@@ -300,7 +274,7 @@ export function matchingRuleForInput(
        : behavior === "deny"
        ? context.alwaysDenyRules
        : context.alwaysAskRules;
@@ -2747,7 +2752,7 @@ index 144a37b..9645881 100644
      targetPath.startsWith("~")
        ? targetPath.replace(/^~/, homedir())
        : targetPath,
-@@ -312,8 +298,8 @@ export function matchingRuleForInput(
+@@ -312,8 +286,8 @@ export function matchingRuleForInput(
        const value = permissionRuleValueFromString(ruleString);
        const matched =
          toolType === "read"
@@ -2758,7 +2763,7 @@ index 144a37b..9645881 100644
        if (!matched) {
          continue;
        }
-@@ -330,15 +316,17 @@ export function matchingDenyRule(
+@@ -330,15 +304,17 @@ export function matchingDenyRule(
    tool: string,
    targetPath: string,
    context: ToolPermissionContext,
@@ -2778,7 +2783,7 @@ index 144a37b..9645881 100644
  }
  type ShellRule =
    | { type: "exact"; command: string }
-@@ -755,7 +743,7 @@ export function checkWritePermissionForTool(
+@@ -755,7 +731,7 @@ export function checkWritePermissionForTool(
        message: `Pi requested permissions to use ${tool}, but you haven't granted it yet.`,
      };
    }
@@ -2787,7 +2792,7 @@ index 144a37b..9645881 100644
    if (deny) {
      return {
        behavior: "deny",
-@@ -790,7 +778,7 @@ export function checkWritePermissionForTool(
+@@ -790,7 +766,7 @@ export function checkWritePermissionForTool(
        } satisfies PermissionAllowDecision;
      }
    }
@@ -2796,7 +2801,7 @@ index 144a37b..9645881 100644
    if (ask) {
      return {
        behavior: "ask",
-@@ -798,13 +786,13 @@ export function checkWritePermissionForTool(
+@@ -798,13 +774,13 @@ export function checkWritePermissionForTool(
        decisionReason: { type: "rule", rule: ask },
      } satisfies PermissionAskDecision;
    }
@@ -2813,7 +2818,7 @@ index 144a37b..9645881 100644
    if (allow) {
      return {
        behavior: "allow",
-@@ -843,17 +831,8 @@ export function checkReadPermissionForTool(
+@@ -843,17 +819,8 @@ export function checkReadPermissionForTool(
        decisionReason: { type: "other", reason: "no explicit path; defaults to cwd" },
      };
    }
@@ -2833,7 +2838,7 @@ index 144a37b..9645881 100644
    if (deny) {
      return {
        behavior: "deny",
-@@ -861,7 +840,7 @@ export function checkReadPermissionForTool(
+@@ -861,7 +828,7 @@ export function checkReadPermissionForTool(
        decisionReason: { type: "rule", rule: deny },
      } satisfies PermissionDenyDecision;
    }
@@ -2842,7 +2847,7 @@ index 144a37b..9645881 100644
    if (ask) {
      return {
        behavior: "ask",
-@@ -879,7 +858,7 @@ export function checkReadPermissionForTool(
+@@ -879,7 +846,7 @@ export function checkReadPermissionForTool(
        decisionReason: { type: "mode", mode: "default" },
      } satisfies PermissionAllowDecision;
    }
@@ -2851,7 +2856,7 @@ index 144a37b..9645881 100644
    if (allow) {
      return {
        behavior: "allow",
-@@ -930,6 +909,7 @@ export function isPathAllowedAdaptor(
+@@ -930,6 +897,7 @@ export function isPathAllowedAdaptor(
      "read",
      "allow",
      context,

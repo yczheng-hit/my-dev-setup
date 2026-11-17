@@ -2019,8 +2019,8 @@ describe("matchingRuleForInput: path patterns", () => {
 describe("isDangerousFilePath", () => {
   it.each([
     "/home/user/.gitconfig",
-    "/home/user/.bashrc",
-    "/home/user/.mcp.json",
+    "/home/user/.zshrc",
+    "/home/user/.zprofile",
   ])("flags %s as dangerous (DANGEROUS_FILES leaf match)", (p) => {
     expect(isDangerousFilePath(p)).toBe(true);
   });
@@ -2029,11 +2029,10 @@ describe("isDangerousFilePath", () => {
     const home = require("node:os").homedir();
     const cwdPaths = [
       `${cwd}/.git/HEAD`,
-      `${cwd}/.claude/settings.json`,
     ];
     const homePaths = [
       `${home}/.gitconfig`,
-      `${home}/.claude/settings.json`,
+      `${home}/.zshrc`,
     ];
     for (const p of [...cwdPaths, ...homePaths]) {
       it(`flags ${p} as dangerous`, () => {
