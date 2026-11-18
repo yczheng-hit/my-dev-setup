@@ -537,7 +537,7 @@ index 7da792d..0da8ef3 100644
      applyPatchDiagnostics: config.applyPatchDiagnostics,
      toolBackground: config.toolBackground,
 diff --git a/extensions/openai-codex-compat/index.ts b/extensions/openai-codex-compat/index.ts
-index 6fc5043..d2be2ce 100644
+index 6fc5043..d5dff0c 100644
 --- a/extensions/openai-codex-compat/index.ts
 +++ b/extensions/openai-codex-compat/index.ts
 @@ -1,3 +1,4 @@
@@ -610,22 +610,11 @@ index 6fc5043..d2be2ce 100644
      installCodexFooter(ctx, resolveConfig);
      if (event.reason !== "reload" && ctx.mode === "tui") {
        ctx.ui.notify("pi-openai-codex-compat loaded · /codex-settings", "info");
-@@ -63,12 +96,43 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
+@@ -63,12 +96,32 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
    registerOutputLimitContinuation(outputLimitContinuationApi(pi));
    registerRemoteCompaction(remoteCompactionApi(pi), codexProvider, resolveConfig);
    registerCodexModelPolicy(modelPolicy, resolveConfig, commandTools);
-+  registerToolRecovery(pi, [
-+    ...CODEX_TOOL_NAMES,
-+    "bash",
-+    "edit",
-+    "write",
-+    "replace",
-+    "replace_match",
-+    "insert",
-+    "copy",
-+    "move",
-+    "undo_last_change",
-+  ]);
++  registerToolRecovery(pi, CODEX_TOOL_NAMES);
 +  // Non-Codex models were not trained on the Codex tool description, so apply_patch contributes a
 +  // short format section. A pane change reapplies the gate before the next turn when the host
 +  // could not reload the session.
@@ -896,10 +885,10 @@ index 3d4539a..0081d35 100644
            error instanceof Error ? error.message : "Could not open Codex settings.",
 diff --git a/extensions/openai-codex-compat/tool-recovery.ts b/extensions/openai-codex-compat/tool-recovery.ts
 new file mode 100644
-index 0000000..f9a7c19
+index 0000000..4de5105
 --- /dev/null
 +++ b/extensions/openai-codex-compat/tool-recovery.ts
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,77 @@
 +import type { AgentMessage } from "@earendil-works/pi-agent-core";
 +import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 +import { getCurrentTools } from "@earendil-works/pi-ai";
@@ -949,6 +938,11 @@ index 0000000..f9a7c19
 +
 +export default function registerToolRecovery(pi: Pick<ExtensionAPI, "on">, toolNames: readonly string[]): void {
 +  const ownedTools: ReadonlySet<string> = new Set(toolNames);
++  const dispatchRecoverableTools: ReadonlySet<string> = new Set([
++    ...toolNames,
++    ...editRecoverable,
++    ...shellRecoverable,
++  ]);
 +  let hiddenTools = new Set<string>();
 +  pi.on("before_agent_start", (event, ctx) => {
 +    hiddenTools = new Set(event.systemPromptOptions.hiddenTools);
@@ -968,7 +962,7 @@ index 0000000..f9a7c19
 +  // Unknown calls skip tool hooks. Read request declarations without rewriting the prompt or history.
 +  pi.on("context_with_system", event => {
 +    const active = getCurrentTools(event.messages).map(tool => tool.name).filter(name => !hiddenTools.has(name));
-+    const messages = recoverUnavailableCodexCalls(event.messages, active, ownedTools);
++    const messages = recoverUnavailableCodexCalls(event.messages, active, dispatchRecoverableTools);
 +    return messages ? { messages } : undefined;
 +  });
 +}

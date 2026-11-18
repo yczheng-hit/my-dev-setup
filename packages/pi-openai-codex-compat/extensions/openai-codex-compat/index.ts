@@ -96,18 +96,7 @@ export default function registerOpenAICodexCompat(pi: ExtensionAPI): void {
   registerOutputLimitContinuation(outputLimitContinuationApi(pi));
   registerRemoteCompaction(remoteCompactionApi(pi), codexProvider, resolveConfig);
   registerCodexModelPolicy(modelPolicy, resolveConfig, commandTools);
-  registerToolRecovery(pi, [
-    ...CODEX_TOOL_NAMES,
-    "bash",
-    "edit",
-    "write",
-    "replace",
-    "replace_match",
-    "insert",
-    "copy",
-    "move",
-    "undo_last_change",
-  ]);
+  registerToolRecovery(pi, CODEX_TOOL_NAMES);
   // Non-Codex models were not trained on the Codex tool description, so apply_patch contributes a
   // short format section. A pane change reapplies the gate before the next turn when the host
   // could not reload the session.

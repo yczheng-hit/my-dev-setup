@@ -47,6 +47,11 @@ export function recoverUnavailableCodexCalls(messages: AgentMessage[], activeNam
 
 export default function registerToolRecovery(pi: Pick<ExtensionAPI, "on">, toolNames: readonly string[]): void {
   const ownedTools: ReadonlySet<string> = new Set(toolNames);
+  const dispatchRecoverableTools: ReadonlySet<string> = new Set([
+    ...toolNames,
+    ...editRecoverable,
+    ...shellRecoverable,
+  ]);
   let hiddenTools = new Set<string>();
   pi.on("before_agent_start", (event, ctx) => {
     hiddenTools = new Set(event.systemPromptOptions.hiddenTools);
@@ -66,7 +71,7 @@ export default function registerToolRecovery(pi: Pick<ExtensionAPI, "on">, toolN
   // Unknown calls skip tool hooks. Read request declarations without rewriting the prompt or history.
   pi.on("context_with_system", event => {
     const active = getCurrentTools(event.messages).map(tool => tool.name).filter(name => !hiddenTools.has(name));
-    const messages = recoverUnavailableCodexCalls(event.messages, active, ownedTools);
+    const messages = recoverUnavailableCodexCalls(event.messages, active, dispatchRecoverableTools);
     return messages ? { messages } : undefined;
   });
 }
