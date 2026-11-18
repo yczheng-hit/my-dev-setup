@@ -135,7 +135,12 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
   if (exists(path.join(repo, 'pi/sol-pi.json'))) seedConfig(path.join(agentDir, 'sol-pi.json'), source('sol-pi.json'), 'config');
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
   seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');
-  merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'));
+  merge('openai-codex-compat.json', path.join(agentDir, 'openai-codex-compat.json'), (repoVal) => {
+    const localCodex = readObject(path.join(agentDir, 'openai-codex-compat.json'));
+    return typeof localCodex.applyPatchModels === 'string'
+      ? { ...repoVal, applyPatchModels: localCodex.applyPatchModels }
+      : repoVal;
+  });
   merge('pi-hashline-edit-pro.json', path.join(hashlineDir, 'config.json'), (repoVal) => {
     const localHashline = readObject(path.join(hashlineDir, 'config.json'));
     return Array.isArray(localHashline.disableOnModels)

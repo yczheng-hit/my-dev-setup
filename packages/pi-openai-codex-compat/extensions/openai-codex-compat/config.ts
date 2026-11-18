@@ -37,7 +37,7 @@ export const CODEX_TOOL_BACKGROUND_SCHEMA = {
 export type CodexToolBackground = Static<typeof CODEX_TOOL_BACKGROUND_SCHEMA>;
 
 export const CODEX_SHELL_TOOL_SCHEMA = {
-  enum: ["unified_exec", "shell_command"],
+  enum: ["unified_exec", "shell_command", "bash"],
 } as const;
 
 export type CodexShellTool = Static<typeof CODEX_SHELL_TOOL_SCHEMA>;

@@ -1,5 +1,6 @@
 {
   "responsesLite": true,
   "reasoningSummary": "off",
-  "imageGeneration": false
+  "imageGeneration": false,
+  "shellTool": "bash"
 }

@@ -107,7 +107,7 @@ export function setCodexCommandTool(
   const active = new Set(pi.getActiveTools());
   for (const tool of CODEX_COMMAND_TOOLS) active.delete(tool);
 
-  if (shellTool === undefined) {
+  if (shellTool === undefined || shellTool === "bash") {
     if (suppressedBashTools.get(pi)) active.add(PI_BASH_TOOL);
     suppressedBashTools.delete(pi);
     pi.setActiveTools([...active]);

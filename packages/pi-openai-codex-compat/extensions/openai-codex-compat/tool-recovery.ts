@@ -3,18 +3,20 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 
 const SECTION = "codex_tool_surface_recovery";
-const editTools = ["replace", "replace_match", "insert", "copy", "move", "edit", "write"];
+const editTools = ["apply_patch", "replace", "replace_match", "insert", "copy", "move", "edit", "write"];
 const shellTools = ["bash", "powershell", "exec_command", "shell_command"];
+const editRecoverable = new Set([...editTools, "undo_last_change", "outline"]);
+const shellRecoverable = new Set([...shellTools, "write_stdin"]);
 
 function alternatives(active: ReadonlySet<string>, toolName?: string): string {
   const lines: string[] = [];
-  if (toolName === undefined || toolName === "apply_patch") {
+  if (toolName === undefined || editRecoverable.has(toolName)) {
     const edits = editTools.filter(name => active.has(name));
     lines.push(edits.length
       ? `Current editing tools: ${edits.join(", ")}. Read their current schemas before use.`
       : "No editing replacement is currently declared; do not invent one or bypass tool restrictions.");
   }
-  if (toolName === undefined || ["exec_command", "shell_command", "write_stdin"].includes(toolName)) {
+  if (toolName === undefined || shellRecoverable.has(toolName)) {
     const shells = shellTools.filter(name => active.has(name));
     lines.push(shells.length
       ? `Current command tools: ${shells.join(", ")}. Start a new command if needed; old Codex exec session IDs cannot be resumed through a different tool.`

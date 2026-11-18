@@ -43,9 +43,22 @@ export function isGptModel(model: ModelLike | undefined): boolean {
  * default rules. Project context, skills, cwd, and other extensions' sections stay.
  */
 export function applyGptPrompt(options: PromptOptions): void {
-  const codexTools = options.selectedTools.includes("apply_patch") || options.selectedTools.includes("exec_command");
+  const hasExecCommand = options.selectedTools.includes("exec_command");
+  const hasApplyPatch = options.selectedTools.includes("apply_patch");
   options.customPrompt = GPT_PROMPT;
-  options.sections.gpt_tools = codexTools ? TOOLS_CODEX : TOOLS_PI;
+  if (hasExecCommand && hasApplyPatch) {
+    options.sections.gpt_tools = TOOLS_CODEX;
+  } else if (hasApplyPatch && !hasExecCommand) {
+    options.sections.gpt_tools = TOOLS_CODEX
+      .replace(
+        /- `exec_command` runs shell commands[^\n]*/,
+        "- `bash` runs shell commands.",
+      )
+      .replace(/through `exec_command`/g, "through `bash`")
+      .replace(/with `exec_command` \([^)]*\) or the `read` tool when it is available/, "with the `read` tool");
+  } else {
+    options.sections.gpt_tools = TOOLS_PI;
+  }
   options.promptGuidelines = options.promptGuidelines.filter((rule) => !DROPPED_DEFAULT_GUIDELINES.has(rule));
 }
 
