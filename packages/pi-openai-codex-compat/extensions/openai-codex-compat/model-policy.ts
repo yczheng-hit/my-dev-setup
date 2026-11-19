@@ -102,8 +102,9 @@ export default function registerCodexModelPolicy(
   });
 
   pi.onModelSelect(async (event, ctx) => {
+    const bashReplaced = declaresCodexCommandTool(ctx.sessionManager.getBranch());
     if (restoringRejectedSwitch) {
-      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools);
+      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools, bashReplaced);
       return;
     }
 
@@ -113,7 +114,7 @@ export default function registerCodexModelPolicy(
       previousModel === undefined ||
       !activeBranchHasCheckpoint(ctx)
     ) {
-      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools);
+      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools, bashReplaced);
       return;
     }
 

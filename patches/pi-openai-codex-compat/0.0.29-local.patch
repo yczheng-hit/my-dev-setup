@@ -644,7 +644,7 @@ index 6fc5043..d5dff0c 100644
      },
    });
 diff --git a/extensions/openai-codex-compat/model-policy.ts b/extensions/openai-codex-compat/model-policy.ts
-index d13ca85..9039ac6 100644
+index d13ca85..f20b881 100644
 --- a/extensions/openai-codex-compat/model-policy.ts
 +++ b/extensions/openai-codex-compat/model-policy.ts
 @@ -75,6 +75,7 @@ export function codexModelPolicyApi(pi: ExtensionAPI): CodexModelPolicyApi {
@@ -654,6 +654,26 @@ index d13ca85..9039ac6 100644
 +  if (process.env.PI_OPENAI_CODEX_NATIVE_COMPACTION !== "1") return false;
    return hasNativeCheckpointEntry(ctx.sessionManager.getBranch());
  }
+
+@@ -101,8 +102,9 @@ export default function registerCodexModelPolicy(
+   });
+
+   pi.onModelSelect(async (event, ctx) => {
++    const bashReplaced = declaresCodexCommandTool(ctx.sessionManager.getBranch());
+     if (restoringRejectedSwitch) {
+-      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools);
++      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools, bashReplaced);
+       return;
+     }
+
+@@ -112,7 +114,7 @@ export default function registerCodexModelPolicy(
+       previousModel === undefined ||
+       !activeBranchHasCheckpoint(ctx)
+     ) {
+-      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools);
++      syncCodexTools(pi, event.model, resolveConfig(ctx), commandTools, bashReplaced);
+       return;
+     }
 
 diff --git a/extensions/openai-codex-compat/remote-compaction.ts b/extensions/openai-codex-compat/remote-compaction.ts
 index 3c26ac3..5883470 100644
@@ -967,7 +987,7 @@ index 0000000..4de5105
 +  });
 +}
 diff --git a/extensions/openai-codex-compat/tools.ts b/extensions/openai-codex-compat/tools.ts
-index 7cef697..9e57f5a 100644
+index 7cef697..530f1c5 100644
 --- a/extensions/openai-codex-compat/tools.ts
 +++ b/extensions/openai-codex-compat/tools.ts
 @@ -14,10 +14,20 @@ import type { ConfigResolver } from "./config-context.ts";
@@ -1020,16 +1040,23 @@ index 7cef697..9e57f5a 100644
      active.add(APPLY_PATCH_TOOL_NAME);
    } else {
      active.delete(APPLY_PATCH_TOOL_NAME);
-@@ -91,7 +107,7 @@ export function setCodexCommandTool(
+@@ -89,10 +105,13 @@ export function setCodexCommandTool(
+   bashReplaced = false,
+ ): boolean {
    const active = new Set(pi.getActiveTools());
++  const hadCodexCommand = CODEX_COMMAND_TOOLS.some((tool) => active.has(tool));
    for (const tool of CODEX_COMMAND_TOOLS) active.delete(tool);
 
 -  if (shellTool === undefined) {
+-    if (suppressedBashTools.get(pi)) active.add(PI_BASH_TOOL);
 +  if (shellTool === undefined || shellTool === "bash") {
-     if (suppressedBashTools.get(pi)) active.add(PI_BASH_TOOL);
++    if (suppressedBashTools.get(pi) || bashReplaced || hadCodexCommand) {
++      active.add(PI_BASH_TOOL);
++    }
      suppressedBashTools.delete(pi);
      pi.setActiveTools([...active]);
-@@ -123,7 +139,12 @@ export function syncCodexTools(
+     return false;
+@@ -123,7 +142,12 @@ export function syncCodexTools(
    bashReplaced = false,
  ): void {
    const codexSelected = isCodexModel(model);
