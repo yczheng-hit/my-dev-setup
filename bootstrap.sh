@@ -15,7 +15,7 @@ for arg in "$@"; do
 done
 command -v node >/dev/null || { echo 'Install Node >=22.19/npm using your preferred Node manager first.' >&2; exit 1; }
 case "$mode" in
-  check) exec node "$REPO/scripts/maintain.mjs" check "${extra_args[@]}" ;;
-  prepare) exec node "$REPO/scripts/maintain.mjs" update "${extra_args[@]}" ;;
-  apply) exec node "$REPO/scripts/maintain.mjs" bootstrap --apply "${extra_args[@]}" ;;
+  check) exec node "$REPO/scripts/maintain.mjs" check ${extra_args[@]+"${extra_args[@]}"} ;;
+  prepare) exec node "$REPO/scripts/maintain.mjs" update ${extra_args[@]+"${extra_args[@]}"} ;;
+  apply) exec node "$REPO/scripts/maintain.mjs" bootstrap --apply ${extra_args[@]+"${extra_args[@]}"} ;;
 esac
