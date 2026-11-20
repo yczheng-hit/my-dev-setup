@@ -6,13 +6,9 @@
  * automatically pick up the change (immediately if idle, or on agent_settled).
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import {
-	getAgentDir,
-	resolveModelScopeWithDiagnostics,
-	type ExtensionAPI,
-	type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export interface WatchedSettingsSnapshot {
 	defaultProvider?: string;
@@ -86,10 +82,9 @@ export default function hotSyncSettings(pi: ExtensionAPI): void {
 	let watchers: fs.FSWatcher[] = [];
 	let applyingExternalChange = false;
 
-	const agentDir = getAgentDir();
+	const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 	const settingsPath = path.join(agentDir, "settings.json");
 	const modelsPath = path.join(agentDir, "models.json");
-
 	async function applyChanges(ctx: ExtensionContext): Promise<void> {
 		if (applyingExternalChange) return;
 		applyingExternalChange = true;
@@ -123,12 +118,19 @@ export default function hotSyncSettings(pi: ExtensionAPI): void {
 			// 1. Update session._scopedModels in-place so Ctrl+P and /model immediately use the new scope
 			if (diff.enabledModelsChanged || modelsRefreshed) {
 				try {
-					const runtime = (ctx.modelRegistry as unknown as { runtime?: any }).runtime;
-					const liveScoped = ctx.scopedModels as unknown as any[];
-					if (runtime && Array.isArray(liveScoped)) {
+					const liveScoped = ctx.scopedModels as unknown as Array<{ model: any; thinkingLevel?: any }>;
+					const available = ctx.modelRegistry.getAvailable();
+					if (Array.isArray(liveScoped) && Array.isArray(available)) {
 						if (Array.isArray(next.enabledModels) && next.enabledModels.length > 0) {
-							const resolved = await resolveModelScopeWithDiagnostics(next.enabledModels, runtime);
-							liveScoped.splice(0, liveScoped.length, ...resolved.scopedModels);
+							const byKey = new Map(available.map((m) => [`${m.provider}/${m.id}`.toLowerCase(), m]));
+							const nextScoped: Array<{ model: any; thinkingLevel?: any }> = [];
+							for (const pattern of next.enabledModels) {
+								const m = byKey.get(pattern.toLowerCase());
+								if (m && !nextScoped.some((s) => s.model.provider === m.provider && s.model.id === m.id)) {
+									nextScoped.push({ model: m });
+								}
+							}
+							liveScoped.splice(0, liveScoped.length, ...nextScoped);
 						} else {
 							liveScoped.splice(0, liveScoped.length);
 						}
