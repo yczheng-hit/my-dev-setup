@@ -11,6 +11,9 @@ import { inspectInstallation, executable } from "./maintenance-policy.mjs";
 const DEFAULT_QUIT_TIMEOUT_MS = Number(process.env.QUIT_TIMEOUT ?? 25) * 1000;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const POLL_INTERVAL_MS = 300;
+const DEFAULT_START_ATTEMPTS = 3;
+const DEFAULT_START_RETRY_DELAY_MS = 1_500;
+const DEFAULT_SHELL_PROMPT_WAIT_MS = 5_000;
 
 export function parseRestartArgs(argv) {
   const options = {
@@ -152,6 +155,21 @@ export function formatRestartPlan(plan) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait until the pane reports no agent, i.e. Herdr sees its interactive shell prompt again. */
+async function waitForShellPrompt(paneId, runCmd, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const info = runHerdrJson(["pane", "get", paneId], runCmd);
+      if (!info?.result?.pane?.agent) return true;
+    } catch {
+      // Herdr may be mid-restart; keep polling until the deadline.
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return false;
 }
 
 export function verifyPidInstallation(pid, expectedInstallation, options = {}) {
@@ -310,33 +328,54 @@ export async function restartSinglePane(entry, options = {}) {
     throw new Error(`Pane ${paneId} did not exit Pi within ${Math.round(quitTimeoutMs / 1000)}s`);
   }
 
-  // Step 3: Restart in the same pane with exact --session <jsonl>
+  // Step 3: Restart in the same pane with exact --session <jsonl>.
+  // `agent start` needs the pane back at its shell prompt, so retry before falling back: the
+  // fallback types a visible `pi --session …` line into the pane's shell.
   const tempName = `pi-restart-${paneId.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`.slice(0, 32);
-  try {
-    runHerdrJson(
-      [
-        "agent",
-        "start",
-        tempName,
-        "--kind",
-        "pi",
-        "--pane",
-        paneId,
-        "--timeout",
-        String(startTimeoutMs),
-        "--",
-        "--session",
-        entry.sessionFile,
-      ],
-      runCmd,
+  const startArgs = [
+    "agent",
+    "start",
+    tempName,
+    "--kind",
+    "pi",
+    "--pane",
+    paneId,
+    "--timeout",
+    String(startTimeoutMs),
+    "--",
+    "--session",
+    entry.sessionFile,
+  ];
+  const startAttempts = options.startAttempts ?? DEFAULT_START_ATTEMPTS;
+  const retryDelayMs = options.startRetryDelayMs ?? DEFAULT_START_RETRY_DELAY_MS;
+  const shellPromptWaitMs = options.shellPromptWaitMs ?? DEFAULT_SHELL_PROMPT_WAIT_MS;
+  let startErr;
+  for (let attempt = 1; attempt <= startAttempts; attempt++) {
+    if (attempt > 1) {
+      await waitForShellPrompt(paneId, runCmd, shellPromptWaitMs);
+      await sleep(retryDelayMs * attempt);
+    }
+    try {
+      runHerdrJson(startArgs, runCmd);
+      startErr = undefined;
+      break;
+    } catch (error) {
+      startErr = error;
+    }
+  }
+  if (startErr) {
+    // Last resort so a pane is never left at a bare prompt. The leading space keeps the line out of
+    // shell history when HIST_IGNORE_SPACE is set; `pane run` sends the text and Enter atomically.
+    console.log(
+      `FALLBACK\t${paneId}\tagent start failed ${startAttempts}x; typed the launch line into the pane`,
     );
-  } catch (startErr) {
-    // Fallback recovery so a pane is never left stranded at an empty shell prompt
     const escapedSession = `'${String(entry.sessionFile).replace(/'/g, "'\\''")}'`;
-    runCmd("herdr", ["pane", "send-text", paneId, `pi --session ${escapedSession}\r`], {
-      encoding: "utf8",
-      timeout: 5_000,
-    });
+    const launchLine = ` pi --session ${escapedSession}`;
+    try {
+      runCmd("herdr", ["pane", "run", paneId, launchLine], { encoding: "utf8", timeout: 5_000 });
+    } catch {
+      runCmd("herdr", ["pane", "send-text", paneId, `${launchLine}\r`], { encoding: "utf8", timeout: 5_000 });
+    }
     const recoverDeadline = Date.now() + 15_000;
     let recovered = false;
     while (Date.now() < recoverDeadline) {

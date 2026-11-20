@@ -176,3 +176,82 @@ test("restartSinglePane executes quit -> poll -> agent start --session -> proces
   );
   assert.ok(calls.some((c) => c.join(" ") === "herdr agent rename w8:p1 --clear"));
 });
+
+function paneRunCmdMock({ startFailures = 0, allStartsFail = false } = {}) {
+  const calls = [];
+  let paneGets = 0;
+  let starts = 0;
+  let fallbackIssued = false;
+  const runCmd = (bin, args) => {
+    calls.push([bin, ...args]);
+    if (bin === "herdr" && args[0] === "pane" && args[1] === "get") {
+      paneGets += 1;
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          result: { pane: { agent: paneGets === 1 || fallbackIssued ? "pi" : null } },
+        }),
+      };
+    }
+    if (bin === "herdr" && args[0] === "pane" && args[1] === "run") {
+      fallbackIssued = true;
+      return { status: 0, stdout: "{}" };
+    }
+    if (bin === "herdr" && args[0] === "pane" && args[1] === "process-info") {
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          result: { process_info: { foreground_processes: [{ pid: 4242, argv0: "pi", name: "node" }] } },
+        }),
+      };
+    }
+    if (bin === "herdr" && args[0] === "agent" && args[1] === "start") {
+      starts += 1;
+      const fail = allStartsFail || starts <= startFailures;
+      return fail ? { status: 1, stdout: "", stderr: "synthetic start failure" } : { status: 0, stdout: "{}" };
+    }
+    if (bin === "lsof") return { status: 0, stdout: "" };
+    return { status: 0, stdout: "{}" };
+  };
+  return { calls, runCmd, starts: () => starts };
+}
+
+const FAST_OPTIONS = {
+  quitTimeoutMs: 5_000,
+  startRetryDelayMs: 1,
+  shellPromptWaitMs: 5,
+  installation: { version: "1.5.2", host: "/fake/host" },
+};
+
+test("restartSinglePane retries agent start before falling back to a typed command", async () => {
+  const mock = paneRunCmdMock({ startFailures: 1 });
+  const res = await restartSinglePane(
+    { paneId: "w8:p1", sessionFile: "/Users/test/.pi/agent/sessions/s1.jsonl" },
+    { runCmd: mock.runCmd, ...FAST_OPTIONS },
+  );
+  assert.equal(res.pid, 4242);
+  assert.equal(mock.starts(), 2, "retried once after the first failure");
+  assert.ok(
+    !mock.calls.some((c) => c[1] === "pane" && c[2] === "run"),
+    "no typed command when a retry succeeds",
+  );
+  assert.ok(!mock.calls.some((c) => c.join(" ").includes("pi --session")));
+});
+
+test("restartSinglePane falls back to a quiet pane run command only after all retries fail", async () => {
+  const mock = paneRunCmdMock({ allStartsFail: true });
+  const res = await restartSinglePane(
+    { paneId: "w8:p1", sessionFile: "/Users/test/.pi/agent/sessions/s1.jsonl" },
+    { runCmd: mock.runCmd, startAttempts: 2, ...FAST_OPTIONS },
+  );
+  assert.equal(res.pid, 4242);
+  assert.equal(mock.starts(), 2);
+  const runCall = mock.calls.find((c) => c[1] === "pane" && c[2] === "run");
+  assert.ok(runCall, "used pane run for the fallback");
+  assert.equal(runCall[3], "w8:p1");
+  assert.match(runCall[4], /^ pi --session '\/Users\/test\/\.pi\/agent\/sessions\/s1\.jsonl'$/);
+  assert.ok(
+    !mock.calls.some((c) => c[1] === "pane" && c[2] === "send-text"),
+    "pane run replaces send-text",
+  );
+});
