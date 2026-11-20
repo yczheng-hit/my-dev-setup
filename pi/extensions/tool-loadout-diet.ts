@@ -355,6 +355,11 @@ export function createToolLoadoutDietController(pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("context", (event) => {
+		const sanitized = sanitizeCompactedToolCalls(event.messages as any[]);
+		return sanitized ? { messages: sanitized as any } : undefined;
+	});
+
 	return {
 		getState(): ToolLoadoutState {
 			return loadoutState;
@@ -367,6 +372,49 @@ export function createToolLoadoutDietController(pi: ExtensionAPI) {
 			return hiddenDeclarations.length > 0 ? { hiddenDeclarations } : undefined;
 		},
 	};
+}
+
+const MINIMAL_VALID_ARGS: Record<string, Record<string, unknown>> = {
+	bash: { command: ":" },
+	exec_command: { cmd: ":" },
+	shell_command: { command: ":" },
+	read: { path: "." },
+	grep: { pattern: "." },
+	write: { path: ".", content: "" },
+	apply_patch: { patch: "*** Begin Patch\n*** End Patch" },
+	replace: { remove_from: "aaaaa", remove_to: "aaaaa", text: "" },
+	replace_match: { replace_from: "aaaaa", replace_to: "aaaaa", match: "a", replacement: "a" },
+	insert: { anchor: "aaaaa", direction: "after", text: "" },
+	codemode: { code: "return '';" },
+};
+
+export function sanitizeCompactedToolCalls(messages: readonly any[]): any[] | undefined {
+	if (!Array.isArray(messages)) return undefined;
+	let changed = false;
+	const next = messages.map((msg) => {
+		if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) return msg;
+		let msgChanged = false;
+		const content = msg.content.map((block: any) => {
+			if (
+				!block ||
+				block.type !== "toolCall" ||
+				!block.arguments ||
+				typeof block.arguments !== "object"
+			) {
+				return block;
+			}
+			const keys = Object.keys(block.arguments);
+			if (keys.length === 1 && keys[0] === "compacted") {
+				msgChanged = true;
+				changed = true;
+				const replacementArgs = MINIMAL_VALID_ARGS[block.name] ?? {};
+				return { ...block, arguments: { ...replacementArgs } };
+			}
+			return block;
+		});
+		return msgChanged ? { ...msg, content } : msg;
+	});
+	return changed ? next : undefined;
 }
 
 export default function toolLoadoutDiet(_pi: ExtensionAPI) {

@@ -4,6 +4,7 @@ import {
   computeHiddenDeclarations,
   createToolLoadoutDietController,
   deriveToolLoadoutState,
+  sanitizeCompactedToolCalls,
 } from '../../pi/extensions/tool-loadout-diet.ts';
 
 const ALL_DECLARED_TOOLS = [
@@ -239,4 +240,38 @@ test('controller wires prepareLoadout and refreshes hidden declarations on mode 
   assert.equal(updatedChanges.hiddenDeclarations.includes('get_search_content'), false);
   assert.equal(updatedChanges.hiddenDeclarations.includes('bg_output'), false);
   assert.equal(updatedChanges.hiddenDeclarations.includes('manage_scheduled_task'), false);
+});
+
+test('sanitizeCompactedToolCalls rewrites { compacted: ... } toolCall args into schema-valid args', () => {
+  const messages = [
+    {
+      role: 'assistant',
+      content: [
+        {
+          type: 'toolCall',
+          id: 'c1',
+          name: 'bash',
+          arguments: { compacted: 'see the tool result for a summary of this span' },
+        },
+        {
+          type: 'toolCall',
+          id: 'c2',
+          name: 'read',
+          arguments: { compacted: 'see the tool result for a summary of this span' },
+        },
+        {
+          type: 'toolCall',
+          id: 'c3',
+          name: 'bash',
+          arguments: { command: 'ls -la' },
+        },
+      ],
+    },
+  ];
+  const sanitized = sanitizeCompactedToolCalls(messages);
+  assert.ok(sanitized);
+  assert.deepEqual(sanitized[0].content[0].arguments, { command: ':' });
+  assert.deepEqual(sanitized[0].content[1].arguments, { path: '.' });
+  assert.deepEqual(sanitized[0].content[2].arguments, { command: 'ls -la' });
+  assert.equal(sanitizeCompactedToolCalls(sanitized), undefined);
 });
