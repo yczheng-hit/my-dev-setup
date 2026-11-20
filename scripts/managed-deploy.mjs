@@ -131,7 +131,8 @@ export function buildPlan({ repo, agentDir, home = os.homedir(), herdrDir = path
     const old = previous.get(target);
     if (old) preserved.set(target, old);
   };
-  for (const name of ['AGENTS.md', 'keybindings.json', 'pi-cc-extensions.json', 'WATCHDOG.yml']) add(path.join(agentDir, name), source(name));
+  seedConfig(path.join(agentDir, 'AGENTS.md'), source('AGENTS.md'), 'config');
+  for (const name of ['keybindings.json', 'pi-cc-extensions.json', 'WATCHDOG.yml']) add(path.join(agentDir, name), source(name));
   if (exists(path.join(repo, 'pi/sol-pi.json'))) seedConfig(path.join(agentDir, 'sol-pi.json'), source('sol-pi.json'), 'config');
   for (const file of walk(path.join(repo, 'pi/themes'))) add(path.join(agentDir, 'themes', path.relative(path.join(repo, 'pi/themes'), file)), fs.readFileSync(file));
   seedConfig(path.join(path.dirname(agentDir), 'permissions.json'), source('permissions.json'), 'config');

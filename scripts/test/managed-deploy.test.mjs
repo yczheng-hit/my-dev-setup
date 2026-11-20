@@ -108,7 +108,7 @@ test('stale plan and modified deployed file refuse all writes or restores', () =
     assert.throws(() => f.apply(plan), /Changed since/);
     assert.equal(fs.existsSync(path.join(f.root, 'backups')), false);
     const backup = f.apply(f.plan());
-    f.put(path.join(f.agentDir, 'AGENTS.md'), 'user edit after deployment');
+    f.put(path.join(f.agentDir, 'keybindings.json'), 'user edit after deployment');
     const settings = fs.readFileSync(path.join(f.agentDir, 'settings.json'));
     assert.throws(() => restoreBackup(backup, true), /Changed since/);
     assert.deepEqual(fs.readFileSync(path.join(f.agentDir, 'settings.json')), settings);
@@ -237,7 +237,7 @@ for (const resolved of [false, true]) {
 test('machine policy files are initialized once, not copied back or merged on later deployment', () => {
   const f = fixture(); try {
     f.apply(f.plan());
-    const files = [path.join(path.dirname(f.agentDir), 'permissions.json'), path.join(f.agentDir, 'extensions/picc-permission-modes/config.json')];
+    const files = [path.join(f.agentDir, 'AGENTS.md'), path.join(path.dirname(f.agentDir), 'permissions.json'), path.join(f.agentDir, 'extensions/picc-permission-modes/config.json')];
     for (const file of files) fs.appendFileSync(file, '\n');
     const before = files.map(file => fs.readFileSync(file));
     assert.deepEqual(f.plan().changes, []);
