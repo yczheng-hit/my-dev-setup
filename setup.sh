@@ -313,60 +313,9 @@ if [ "$DRY_RUN" = 0 ] && [ -f "$REPO/scripts/pi-restart-herdr-panes.mjs" ]; then
 fi
 
 supi_headless="$PI_DIR/npm/node_modules/@mrclrchtr/supi-review/node_modules/@mrclrchtr/supi-code-intelligence/src/headless.ts"
-if [ "$DRY_RUN" = 0 ] && [ -f "$supi_headless" ] && grep -q '^import { createSessionCache }' "$supi_headless" 2>/dev/null; then
-  cat > "$supi_headless" << 'EOF'
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-export const HEADLESS_INSPECTION_TOOL_NAMES = [
-  "code_resolve",
-  "code_inspect",
-  "code_orientation",
-  "code_graph",
-  "code_find",
-  "code_health",
-] as const;
-
-const inspectionToolNames = new Set<string>(HEADLESS_INSPECTION_TOOL_NAMES);
-
-export default async function headlessInspectionProfile(pi: ExtensionAPI): Promise<void> {
-  const [
-    { createSessionCache },
-    { registerGradleObservations },
-    { registerLspSessionLifecycle },
-    { createLspAdapterState },
-    { registerCodeIntelligenceTools },
-    { CODE_INTELLIGENCE_TOOL_SPECS },
-  ] = await Promise.all([
-    import("./app/app.ts"),
-    import("./gradle/consent.ts"),
-    import("./substrate/lsp/lifecycle.ts"),
-    import("./substrate/lsp/state.ts"),
-    import("./tool/register.ts"),
-    import("./tool/specs.ts"),
-  ]);
-
-  const sessions = createSessionCache();
-  const lspState = createLspAdapterState();
-  const gradle = registerGradleObservations(pi, { interactive: false });
-  registerLspSessionLifecycle(pi, lspState, (ctx) => {
-    const session = sessions.getOrCreate(ctx.cwd);
-    session.attachLspController(lspState.controller);
-    session.seedSentinelSnapshot(lspState.sentinelSnapshot);
-    session.setProjectTrusted(ctx.isProjectTrusted());
-    session.setGradleObserver(gradle.forContext(ctx));
-    session.setAutomaticPathPolicy(lspState.providerLease?.automaticPathPolicy ?? null);
-  });
-  pi.on("session_shutdown", () => sessions.clear());
-
-  registerCodeIntelligenceTools(
-    pi,
-    sessions.getOrCreate,
-    undefined,
-    CODE_INTELLIGENCE_TOOL_SPECS.filter((spec) => inspectionToolNames.has(spec.name)),
-  );
-}
-EOF
-  log "optimized  @mrclrchtr/supi-review lazy code-intelligence import"
+if [ "$DRY_RUN" = 0 ] && [ -f "$supi_headless" ]; then
+  supi_result="$(node "$REPO/scripts/supi-lazy-imports.mjs" "$supi_headless")"
+  log "supi-review $supi_result"
 fi
 step "Done"
 if [ "$DRY_RUN" = 0 ] && [ "$problems" = 0 ] && [ "$CLEAN_BACKUPS" = 1 ]; then
