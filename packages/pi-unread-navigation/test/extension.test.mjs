@@ -24,13 +24,14 @@ const msg = (timestamp = 1) => ({ role: 'assistant', timestamp, provider: 'fixtu
 
 function renderer(t) {
   const tui = new TuiAltScreen({ columns: 50, rows: 15, write() {}, hideCursor() {} }, false);
-  tui.stopped = false; tui.altScreenActive = true; tui.requestRender = () => {};
+  // Pi 1.6 caches component output between frames; a render request must mark the content dirty.
+  tui.stopped = false; tui.altScreenActive = true; tui.requestRender = () => { tui.contentChanged = true; };
   const chat = new Container();
   const viewport = createChatViewport({ document: chat, pendingMessages: new Container(), status: new Container(),
     editor: new Text('editor', 0, 0), footer: new Text('footer', 0, 0), scrollbar: 'hidden' });
   tui.setLayoutRoot(viewport.root);
   t.after(() => { tui.stopped = true; tui.altScreenActive = false; });
-  return { tui, chat, viewport, render: () => tui.doRender() };
+  return { tui, chat, viewport, render: () => { tui.contentChanged = true; tui.doRender(); } };
 }
 
 test('actual stable TUI reference is unwrapped; renderer replacement and disposal are owned', (t) => {

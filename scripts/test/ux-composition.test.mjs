@@ -67,7 +67,10 @@ test('AGENTS + independent reviewer + BTW + scheduler + unread + HUD share one s
     ({ session } = await sdk.createAgentSession({ cwd, agentDir, settingsManager: settings, modelRuntime: runtime, model: runtime.getModel('fixture-main', 'main'),
       resourceLoader: loader, sessionManager: sm, noTools: 'all' }));
     tui = new TuiAltScreen({ columns: 70, rows: 18, write() {}, hideCursor() {} }, false);
-    tui.stopped = false; tui.altScreenActive = true; tui.requestRender = () => {};
+    // Pi 1.6 caches component output between frames; a render request must mark the content dirty.
+    tui.stopped = false; tui.altScreenActive = true; tui.requestRender = () => { tui.contentChanged = true; };
+    const doRender = tui.doRender.bind(tui);
+    tui.doRender = () => { tui.contentChanged = true; doRender(); };
     const chat = new Container(); chat.addChild(new Text('history\n'.repeat(35), 0, 0));
     const viewport = createChatViewport({ document: chat, pendingMessages: new Container(), status: new Container(), editor: new Text('editor'), footer: new Text('footer'), scrollbar: 'hidden' });
     tui.setLayoutRoot(viewport.root); tui.doRender(); tui.scrollToTop(); tui.doRender();

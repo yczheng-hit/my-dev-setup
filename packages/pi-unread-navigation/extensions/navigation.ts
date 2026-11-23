@@ -79,6 +79,19 @@ export function installNavigation(reference: AnyObject, options: Options = {}) {
     if (indicator && indicator.row >= top && indicator.row < end) end = indicator.row;
     const contentRow = (screenRow: number) => screenRow - scrollBox!.rect.y + sv.scrollTop;
 
+    // Pi 1.6 stops building per-child mouseLayout for plain containers (render caching), so fall
+    // back to measuring rendered children. Both paths return component/height pairs in layout order.
+    const childEntries = (node: AnyObject, width: number) => {
+      const layoutChildren = node.mouseLayout?.width === width ? node.mouseLayout.children : undefined;
+      if (layoutChildren) {
+        return layoutChildren.map((child: AnyObject) => ({ component: child.component, height: child.height }));
+      }
+      return (node.children ?? []).map((child: AnyObject) => ({
+        component: child,
+        height: typeof child.render === 'function' ? child.render(width).length : 0,
+      }));
+    };
+
     const visitComponent = (component: AnyObject, screenRow: number, width: number) => {
       if (component.lastMessage && component.contentContainer && !component.isStreaming) {
         let cached = components.get(component);
@@ -92,15 +105,14 @@ export function installNavigation(reference: AnyObject, options: Options = {}) {
           const textChildren = new Set(component.contentContainer.children?.filter((child: AnyObject) => child.constructor?.name === 'Markdown'));
           const locate = (node: AnyObject, row: number, nodeWidth: number) => {
             if (textChildren.has(node)) {
-              const height = node.cachedLines?.length;
+              const height = node.cachedLines?.length ?? node.render(nodeWidth).length;
               if (Number.isFinite(height) && height > 0) reply.spans.push({
                 start: contentRow(row), height, width: nodeWidth,
                 visibleStart: Math.max(0, top - row), visibleEnd: Math.min(height, end - row),
               });
               return;
             }
-            if (node.mouseLayout?.width !== nodeWidth) return;
-            for (const child of node.mouseLayout.children) {
+            for (const child of childEntries(node, nodeWidth)) {
               locate(child.component, row, nodeWidth);
               row += child.height;
             }
@@ -109,8 +121,7 @@ export function installNavigation(reference: AnyObject, options: Options = {}) {
         }
         return;
       }
-      if (component.mouseLayout?.width !== width) return;
-      for (const child of component.mouseLayout.children) {
+      for (const child of childEntries(component, width)) {
         visitComponent(child.component, screenRow, width);
         screenRow += child.height;
       }
