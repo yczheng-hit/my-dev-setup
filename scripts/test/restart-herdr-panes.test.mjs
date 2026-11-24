@@ -177,37 +177,36 @@ test("restartSinglePane executes quit -> poll -> agent start --session -> proces
   assert.ok(calls.some((c) => c.join(" ") === "herdr agent rename w8:p1 --clear"));
 });
 
-function paneRunCmdMock({ startFailures = 0, allStartsFail = false } = {}) {
+function paneRunCmdMock({ startFailures = 0, allStartsFail = false, piAfterQuit = false } = {}) {
   const calls = [];
   let paneGets = 0;
   let starts = 0;
-  let fallbackIssued = false;
+  let typedIntoShell = false;
+  let startSucceeded = false;
+  // Pi owns the pane's foreground: a successful start, our typed line, or a pane that came up on
+  // its own even though `agent start` reported an error.
+  const piRunning = () => startSucceeded || typedIntoShell || (piAfterQuit && starts > 0);
   const runCmd = (bin, args) => {
     calls.push([bin, ...args]);
     if (bin === "herdr" && args[0] === "pane" && args[1] === "get") {
       paneGets += 1;
-      return {
-        status: 0,
-        stdout: JSON.stringify({
-          result: { pane: { agent: paneGets === 1 || fallbackIssued ? "pi" : null } },
-        }),
-      };
+      const agent = paneGets === 1 ? "pi" : piRunning() ? "pi" : null;
+      return { status: 0, stdout: JSON.stringify({ result: { pane: { agent } } }) };
     }
     if (bin === "herdr" && args[0] === "pane" && args[1] === "run") {
-      fallbackIssued = true;
+      typedIntoShell = true;
       return { status: 0, stdout: "{}" };
     }
     if (bin === "herdr" && args[0] === "pane" && args[1] === "process-info") {
-      return {
-        status: 0,
-        stdout: JSON.stringify({
-          result: { process_info: { foreground_processes: [{ pid: 4242, argv0: "pi", name: "node" }] } },
-        }),
-      };
+      const foreground = piRunning()
+        ? [{ pid: 4242, argv0: "pi", name: "node" }]
+        : [{ pid: 1111, argv0: "zsh", name: "zsh" }];
+      return { status: 0, stdout: JSON.stringify({ result: { process_info: { foreground_processes: foreground } } }) };
     }
     if (bin === "herdr" && args[0] === "agent" && args[1] === "start") {
       starts += 1;
       const fail = allStartsFail || starts <= startFailures;
+      if (!fail) startSucceeded = true;
       return fail ? { status: 1, stdout: "", stderr: "synthetic start failure" } : { status: 0, stdout: "{}" };
     }
     if (bin === "lsof") return { status: 0, stdout: "" };
@@ -220,6 +219,7 @@ const FAST_OPTIONS = {
   quitTimeoutMs: 5_000,
   startRetryDelayMs: 1,
   shellPromptWaitMs: 5,
+  shellOnlyWaitMs: 20,
   installation: { version: "1.5.2", host: "/fake/host" },
 };
 
@@ -253,5 +253,19 @@ test("restartSinglePane falls back to a quiet pane run command only after all re
   assert.ok(
     !mock.calls.some((c) => c[1] === "pane" && c[2] === "send-text"),
     "pane run replaces send-text",
+  );
+});
+
+test("restartSinglePane never types into a pane that already runs pi", async () => {
+  const mock = paneRunCmdMock({ allStartsFail: true, piAfterQuit: true });
+  const res = await restartSinglePane(
+    { paneId: "w8:p1", sessionFile: "/Users/test/.pi/agent/sessions/s1.jsonl" },
+    { runCmd: mock.runCmd, startAttempts: 2, ...FAST_OPTIONS },
+  );
+  assert.equal(res.pid, 4242);
+  assert.equal(mock.starts(), 2);
+  assert.ok(
+    !mock.calls.some((c) => c[1] === "pane" && (c[2] === "run" || c[2] === "send-text")),
+    "nothing is typed when the pane already runs pi",
   );
 });

@@ -14,6 +14,7 @@ const POLL_INTERVAL_MS = 300;
 const DEFAULT_START_ATTEMPTS = 3;
 const DEFAULT_START_RETRY_DELAY_MS = 1_500;
 const DEFAULT_SHELL_PROMPT_WAIT_MS = 5_000;
+const DEFAULT_SHELL_ONLY_WAIT_MS = 15_000;
 
 export function parseRestartArgs(argv) {
   const options = {
@@ -170,6 +171,42 @@ async function waitForShellPrompt(paneId, runCmd, timeoutMs) {
     await sleep(POLL_INTERVAL_MS);
   }
   return false;
+}
+
+/** Wait until Herdr reports Pi as the pane's agent again. */
+async function waitForPi(paneId, runCmd, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const info = runHerdrJson(["pane", "get", paneId], runCmd);
+      if (info?.result?.pane?.agent === "pi") return true;
+    } catch {
+      // Keep polling; the pane may still be launching.
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return false;
+}
+
+/**
+ * Whether Pi already owns the pane's foreground. `agent start` can report a failure after Pi came
+ * up, and text typed into a pane whose foreground is Pi becomes a user message, so both Herdr's
+ * agent view and the foreground process are checked before typing anything.
+ */
+function paneRunsPi(paneId, runCmd) {
+  try {
+    const info = runHerdrJson(["pane", "get", paneId], runCmd);
+    if (info?.result?.pane?.agent === "pi") return true;
+  } catch {
+    // Fall through to the process check.
+  }
+  try {
+    const procInfo = runHerdrJson(["pane", "process-info", "--pane", paneId], runCmd);
+    const list = procInfo?.result?.process_info?.foreground_processes ?? [];
+    return list.some((proc) => proc?.argv0 === "pi" || proc?.name === "pi");
+  } catch {
+    return false;
+  }
 }
 
 export function verifyPidInstallation(pid, expectedInstallation, options = {}) {
@@ -364,29 +401,43 @@ export async function restartSinglePane(entry, options = {}) {
     }
   }
   if (startErr) {
-    // Last resort so a pane is never left at a bare prompt. The leading space keeps the line out of
-    // shell history when HIST_IGNORE_SPACE is set; `pane run` sends the text and Enter atomically.
-    console.log(
-      `FALLBACK\t${paneId}\tagent start failed ${startAttempts}x; typed the launch line into the pane`,
-    );
-    const escapedSession = `'${String(entry.sessionFile).replace(/'/g, "'\\''")}'`;
-    const launchLine = ` pi --session ${escapedSession}`;
-    try {
-      runCmd("herdr", ["pane", "run", paneId, launchLine], { encoding: "utf8", timeout: 5_000 });
-    } catch {
-      runCmd("herdr", ["pane", "send-text", paneId, `${launchLine}\r`], { encoding: "utf8", timeout: 5_000 });
-    }
-    const recoverDeadline = Date.now() + 15_000;
-    let recovered = false;
-    while (Date.now() < recoverDeadline) {
-      await sleep(POLL_INTERVAL_MS);
-      const info = runHerdrJson(["pane", "get", paneId], runCmd);
-      if (info?.result?.pane?.agent === "pi") {
-        recovered = true;
-        break;
+    // A reported failure can arrive after Pi is already up. Text typed into such a pane becomes a
+    // user message, so nothing is sent unless the pane is provably a clean shell.
+    if (paneRunsPi(paneId, runCmd)) {
+      console.log(
+        `SKIP\t${paneId}\tagent start reported an error but the pane already runs pi; nothing typed`,
+      );
+    } else {
+      const shellOnlyWaitMs = options.shellOnlyWaitMs ?? DEFAULT_SHELL_ONLY_WAIT_MS;
+      const shellReady = await waitForShellPrompt(paneId, runCmd, shellOnlyWaitMs);
+      if (!shellReady && !paneRunsPi(paneId, runCmd)) throw startErr;
+      if (!paneRunsPi(paneId, runCmd)) {
+        // Last resort so a pane is never left at a bare prompt. The leading space keeps the line out
+        // of shell history when HIST_IGNORE_SPACE is set; `pane run` sends text and Enter atomically.
+        console.log(
+          `FALLBACK\t${paneId}\tagent start failed ${startAttempts}x; typed the launch line into the shell`,
+        );
+        const escapedSession = `'${String(entry.sessionFile).replace(/'/g, "'\\''")}'`;
+        const launchLine = ` pi --session ${escapedSession}`;
+        try {
+          runCmd("herdr", ["pane", "run", paneId, launchLine], { encoding: "utf8", timeout: 5_000 });
+        } catch {
+          runCmd("herdr", ["pane", "send-text", paneId, `${launchLine}\r`], { encoding: "utf8", timeout: 5_000 });
+        }
+        let recovered = await waitForPi(paneId, runCmd, 15_000);
+        if (!recovered && !paneRunsPi(paneId, runCmd)) {
+          // Still a shell: the typed line did not submit, so send exactly one Enter.
+          try {
+            runCmd("herdr", ["pane", "send-text", paneId, "\r"], { encoding: "utf8", timeout: 5_000 });
+          } catch {
+            // Reported by the recovery check below.
+          }
+          recovered = await waitForPi(paneId, runCmd, 5_000);
+        }
+        if (!recovered) recovered = paneRunsPi(paneId, runCmd);
+        if (!recovered) throw startErr;
       }
     }
-    if (!recovered) throw startErr;
   }
 
   // Step 4: Process & version verification + clear temporary name
