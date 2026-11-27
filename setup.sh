@@ -317,6 +317,11 @@ if [ "$DRY_RUN" = 0 ] && [ -f "$supi_headless" ]; then
   supi_result="$(node "$REPO/scripts/supi-lazy-imports.mjs" "$supi_headless")"
   log "supi-review $supi_result"
 fi
+devin_client="$PI_DIR/npm/node_modules/@buyong/pi-devin/src/core/client.ts"
+if [ "$DRY_RUN" = 0 ] && [ -f "$devin_client" ]; then
+  devin_result="$(node "$REPO/scripts/devin-enterprise-rest.mjs" "$devin_client")"
+  log "pi-devin    $devin_result"
+fi
 step "Done"
 if [ "$DRY_RUN" = 0 ] && [ "$problems" = 0 ] && [ "$CLEAN_BACKUPS" = 1 ]; then
   rm -rf "$HOME/.my-dev-setup-backups"
