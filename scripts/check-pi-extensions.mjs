@@ -128,6 +128,10 @@ async function worker(options) {
       const runner = new ExtensionRunner(result.extensions, result.runtime, cwd, sm, {});
       const noop = () => {};
       runner.onError((error) => { console.log(`fail\t${error.extensionPath}\tshutdown: ${oneLine(error.error)}`); failed++; });
+      // Pi 1.6 hands the runner a ModelRegistry; this probe has none, so provider registrations are
+      // captured here instead of falling through to a missing modelRegistry.registerProvider.
+      const registered = [];
+      const providerLabel = (value) => value?.id ?? value?.name ?? value?.provider ?? 'unknown';
       runner.bindCore({ sendMessage: blocked, sendUserMessage: blocked, appendEntry: (type, data) => sm.appendCustomEntry(type, data),
         setSessionName: noop, getSessionName: () => undefined, setLabel: noop,
         getActiveTools: () => [], getAllTools: () => [], getSettings: () => ({}), setActiveTools: noop,
@@ -137,7 +141,14 @@ async function worker(options) {
         isProjectTrusted: () => false, getSignal: () => new AbortController().signal, abort: noop,
         hasPendingMessages: () => false, shutdown: noop, getContextUsage: () => undefined,
         compact: blocked, getSystemPrompt: () => '', executeTool: blocked,
+      }, {
+        registerProvider: (name, config) => registered.push(`provider:${name ?? providerLabel(config)}`),
+        registerNativeProvider: (provider) => registered.push(`provider:${providerLabel(provider)}`),
+        unregisterProvider: () => {},
+        registerVirtualModel: (definition) => registered.push(`virtual:${providerLabel(definition)}`),
+        unregisterVirtualModel: () => {},
       });
+      if (registered.length > 0) console.log(`ok\tproviders\t${registered.join(' ')}`);
       await runner.emit({ type: 'session_shutdown', reason: 'exit' });
       runner.invalidate('preflight complete');
     }
